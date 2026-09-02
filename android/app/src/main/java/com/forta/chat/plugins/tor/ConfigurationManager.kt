@@ -33,7 +33,6 @@ class ConfigurationManager(private val context: Context) {
 
     val obfs4proxyPath: String get() = "$nativeLibPath/libobfs4proxy.so"
     val snowflakePath: String get() = "$nativeLibPath/libsnowflake.so"
-    val conjurePath: String get() = "$nativeLibPath/libconjure.so"
 
     private val prefs
         get() = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
