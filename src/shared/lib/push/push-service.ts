@@ -1,5 +1,4 @@
 import { PushNotifications } from '@capacitor/push-notifications';
-import { LocalNotifications } from '@capacitor/local-notifications';
 import { isIOS, isNative } from '@/shared/lib/platform';
 import { PushData, type PushPayload } from './push-data-plugin';
 import { IOSVoIPPush } from './ios-voip-push';
@@ -572,24 +571,6 @@ class PushService {
       }
     }
 
-    // 2. Create notification channels
-    await LocalNotifications.requestPermissions();
-    await LocalNotifications.createChannel({
-      id: 'messages',
-      name: tRaw('channel.messages'),
-      description: tRaw('channel.messagesDesc'),
-      importance: 4,
-      sound: 'default',
-      vibration: true,
-    });
-    await LocalNotifications.createChannel({
-      id: 'calls',
-      name: tRaw('channel.calls'),
-      description: tRaw('channel.callsDesc'),
-      importance: 5,
-      sound: 'ringtone',
-      vibration: true,
-    });
 
     // 3. Listen for push data forwarded from native service
     PushData.addListener('pushReceived', (data) => {
@@ -623,13 +604,6 @@ class PushService {
       });
     }
 
-    // Tap on local notification (shown by JS after decryption)
-    LocalNotifications.addListener('localNotificationActionPerformed', (action) => {
-      const { room_id } = action.notification.extra || {};
-      if (room_id) {
-        window.dispatchEvent(new CustomEvent('push:openRoom', { detail: { roomId: room_id } }));
-      }
-    });
 
     // Check for buffered push intent from cold-start (native fired before JS was ready)
     try {
