@@ -42,6 +42,14 @@ vi.mock("@capacitor/app", () => ({
 vi.mock("@/shared/lib/platform", () => ({
   isNative: true,
   isIOS: true,
+  isAndroid: false,
+  isElectron: false,
+  isWeb: false,
+  hasTor: false,
+  isAndroidWeb: false,
+  currentPlatform: "ios",
+  getElectronAPI: () => undefined,
+  resolveAppUpdaterEnabled: () => false,
 }));
 
 import {

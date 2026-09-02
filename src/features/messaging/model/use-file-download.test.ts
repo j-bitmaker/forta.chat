@@ -11,6 +11,12 @@ vi.mock("@/shared/lib/platform", () => ({
   get isElectron() { return mockIsElectron; },
   get isAndroid() { return mockIsAndroid; },
   getElectronAPI: () => window.electronAPI,
+  isIOS: false,
+  isWeb: true,
+  hasTor: false,
+  isAndroidWeb: false,
+  currentPlatform: "web",
+  resolveAppUpdaterEnabled: () => false,
 }));
 
 // --- Auth store mock ---

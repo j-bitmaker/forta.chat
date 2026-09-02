@@ -23,6 +23,12 @@ vi.mock("@/shared/lib/platform", () => ({
   get isElectron() { return false; },
   get isAndroid() { return false; },
   getElectronAPI: () => undefined,
+  isIOS: false,
+  isWeb: true,
+  hasTor: false,
+  isAndroidWeb: false,
+  currentPlatform: "web",
+  resolveAppUpdaterEnabled: () => false,
 }));
 
 // --- Bug report mock — STABLE singleton so we can verify call counts ---
