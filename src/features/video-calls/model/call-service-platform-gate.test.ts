@@ -1,4 +1,9 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
+import { APP_NAME } from '@/shared/config';
+import {
+  WEBRTC_ENGINE_LS_KEY,
+  isNativeWebRTCEngineEnabled,
+} from '@/shared/lib/native-webrtc/webrtc-engine-preference';
 
 // ---------------------------------------------------------------------------
 // WebRTC engine selection per platform — see
@@ -197,6 +202,9 @@ async function loadCallServiceUnderPlatform(platform: PlatformFlags): Promise<Ga
 
   vi.doMock('@/shared/lib/platform', () => platform);
   vi.doMock('@/shared/lib/native-webrtc', () => ({
+    // The engine preference is deliberately NOT stubbed: these tests drive it
+    // through localStorage, which is what the gate reads in production.
+    isNativeWebRTCEngineEnabled,
     installNativeWebRTCProxy: installSpy,
     NativeWebRTC: new Proxy({}, {
       get: (_target, prop) => {
@@ -214,6 +222,9 @@ async function loadCallServiceUnderPlatform(platform: PlatformFlags): Promise<Ga
 describe('call-service module-load WebRTC gate', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The gate reads the engine preference from localStorage at module load,
+    // so each test starts from a clean default.
+    window.localStorage.clear();
   });
 
   it('does NOT install the native WebRTC proxy on iOS (Plan A: WKWebView built-in WebRTC)', async () => {
@@ -303,5 +314,49 @@ describe('call-service module-load WebRTC gate', () => {
     });
 
     expect(installSpy).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Engine kill switch. The native engine ships to every Android device with
+  // no way to back it out short of a release, and it is also the layer we
+  // most often need to rule out when triaging "no audio" reports. The
+  // preference gates the media proxy only, so a device switched to `webview`
+  // keeps native call UI, foreground service and audio routing.
+  // -------------------------------------------------------------------------
+
+  const ANDROID: PlatformFlags = {
+    isNative: true,
+    isAndroid: true,
+    isIOS: false,
+    isElectron: false,
+    isWeb: false,
+    currentPlatform: 'android',
+  };
+
+  it('does NOT install the proxy on Android when the engine is set to webview', async () => {
+    window.localStorage.setItem(
+      `${APP_NAME}:${WEBRTC_ENGINE_LS_KEY}`,
+      JSON.stringify('webview'),
+    );
+
+    const { installSpy, addListenerSpy } = await loadCallServiceUnderPlatform(ANDROID);
+
+    expect(installSpy).not.toHaveBeenCalled();
+    // The onAudioError listener belongs to the native engine — with the
+    // proxy dormant nothing emits it, so it must not be registered either.
+    const audioErrorRegistration = addListenerSpy.mock.calls.find(
+      (call: unknown[]) => call[0] === 'onAudioError',
+    );
+    expect(audioErrorRegistration).toBeUndefined();
+  });
+
+  it('installs the proxy on Android when the stored engine is unreadable', async () => {
+    // A corrupt value must not silently move a device off the default
+    // engine — the fallback is `native`, same as a fresh install.
+    window.localStorage.setItem(`${APP_NAME}:${WEBRTC_ENGINE_LS_KEY}`, '{not json');
+
+    const { installSpy } = await loadCallServiceUnderPlatform(ANDROID);
+
+    expect(installSpy).toHaveBeenCalledOnce();
   });
 });

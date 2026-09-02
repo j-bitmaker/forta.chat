@@ -18,6 +18,10 @@
  */
 
 import { isAndroid, isNative } from "@/shared/lib/platform";
+import {
+  getWebRTCEngine,
+  type WebRTCEngine,
+} from "@/shared/lib/native-webrtc/webrtc-engine-preference";
 import type {
   InviteThrottleRecord,
   InviteThrottleSnapshot,
@@ -35,6 +39,13 @@ export interface BugReportCallDiagnostics {
   inviteHistory: InviteThrottleRecord[];
   /** Convenience: how many of the recorded invites were already expired on arrival. */
   expiredInviteCount: number;
+  /**
+   * Which media stack carried the call on this device. Android defaults to
+   * `native`; a device switched to `webview` is running the WebView's own
+   * WebRTC. Triage needs this to know whether a report says anything about
+   * the native engine at all.
+   */
+  webrtcEngine: WebRTCEngine;
 }
 
 export const EMPTY_CALL_DIAGNOSTICS: BugReportCallDiagnostics = {
@@ -43,10 +54,15 @@ export const EMPTY_CALL_DIAGNOSTICS: BugReportCallDiagnostics = {
   isBtScoOn: false,
   inviteHistory: [],
   expiredInviteCount: 0,
+  webrtcEngine: "native",
 };
 
 export async function collectCallDiagnostics(): Promise<BugReportCallDiagnostics> {
   if (!isNative) return { ...EMPTY_CALL_DIAGNOSTICS };
+
+  // Read before the awaits below: it is a synchronous localStorage lookup and
+  // must be reported even if the native queries that follow all fail.
+  const webrtcEngine = getWebRTCEngine();
 
   // Lazy import — the bug-report module loads on web too, where this
   // path is dead weight. Avoid pulling the native plugin graph until we
@@ -80,5 +96,6 @@ export async function collectCallDiagnostics(): Promise<BugReportCallDiagnostics
     isBtScoOn: audioStatus.isBtScoOn,
     inviteHistory,
     expiredInviteCount: inviteHistory.filter((r) => r.expired).length,
+    webrtcEngine,
   };
 }

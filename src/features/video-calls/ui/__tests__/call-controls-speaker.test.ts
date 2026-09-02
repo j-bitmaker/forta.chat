@@ -20,17 +20,29 @@ import type { CallInfo, CallType } from "@/entities/call/model/types";
 
 vi.mock("@/shared/lib/native-webrtc", () => ({
   installNativeWebRTCProxy: vi.fn(),
+  isNativeWebRTCEngineEnabled: () => true,
   NativeWebRTC: new Proxy({}, {
     get: () => vi.fn().mockResolvedValue({}),
   }),
 }));
 
-// Mutable platform flag — flipped per test before mount.
+// Mutable platform flag — flipped per test before mount. The remaining
+// exports are stubbed as web defaults so a module pulled in transitively
+// (locale store, native-call bridge) does not fail on a missing export.
 const platformMock = { isNative: true };
 vi.mock("@/shared/lib/platform", () => ({
   get isNative() {
     return platformMock.isNative;
   },
+  isAndroid: false,
+  isIOS: false,
+  isElectron: false,
+  isWeb: true,
+  hasTor: false,
+  isAndroidWeb: false,
+  currentPlatform: "web",
+  getElectronAPI: () => undefined,
+  resolveAppUpdaterEnabled: () => false,
 }));
 
 const setAudioDevice = vi.fn().mockResolvedValue(undefined);

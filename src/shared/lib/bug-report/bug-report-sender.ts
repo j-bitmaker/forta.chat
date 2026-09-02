@@ -200,6 +200,7 @@ async function formatBody(
       '## Call diagnostics',
       '| Field | Value |',
       '|-------|-------|',
+      `| WebRTC engine | ${diag.webrtcEngine} |`,
       `| Audio mode | ${diag.audioMode} |`,
       `| Speaker on | ${diag.isSpeakerOn ? 'yes' : 'no'} |`,
       `| BT SCO on | ${diag.isBtScoOn ? 'yes' : 'no'} |`,

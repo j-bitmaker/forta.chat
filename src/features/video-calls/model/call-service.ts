@@ -13,7 +13,11 @@ import type { DiagnosticsWarningDetail } from "./webrtc-diagnostics";
 import { isNative, isAndroid } from "@/shared/lib/platform";
 import { useBugReport } from "@/features/bug-report";
 import { tRaw } from "@/shared/lib/i18n";
-import { installNativeWebRTCProxy, NativeWebRTC } from "@/shared/lib/native-webrtc";
+import {
+  installNativeWebRTCProxy,
+  isNativeWebRTCEngineEnabled,
+  NativeWebRTC,
+} from "@/shared/lib/native-webrtc";
 import { onConnectivityChange } from "@/shared/lib/connectivity";
 import { useToast } from "@/shared/lib/use-toast";
 import {
@@ -86,7 +90,14 @@ let _networkChangeUnsubscribe: (() => void) | null = null;
 // engine that follows Safari's WebRTC implementation. Installing the proxy on
 // iOS would hand the SDK a no-op `NativeWebRTC` plugin (no Swift counterpart
 // exists for Plan A) and silently break call setup.
-if (isAndroid) {
+//
+// `isNativeWebRTCEngineEnabled()` is the runtime escape hatch: a user (or
+// support) can switch a device to the WebView engine from settings when the
+// native path misbehaves, without waiting for a release. It gates the media
+// proxy only — native call UI, foreground service and audio routing stay in
+// place either way, so the two modes differ purely in which stack carries
+// the media. See webrtc-engine-preference.ts.
+if (isAndroid && isNativeWebRTCEngineEnabled()) {
   installNativeWebRTCProxy();
   // D-11: Listen for native audio errors
   NativeWebRTC.addListener("onAudioError", (data) => {

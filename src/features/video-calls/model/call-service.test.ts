@@ -38,6 +38,7 @@ const mockNativeWebRTCMethods: Record<string, Mock> = {
 
 vi.mock('@/shared/lib/native-webrtc', () => ({
   installNativeWebRTCProxy: vi.fn(),
+  isNativeWebRTCEngineEnabled: () => true,
   NativeWebRTC: new Proxy({}, {
     get: (_target, prop) => {
       if (typeof prop === 'string' && prop in mockNativeWebRTCMethods) {
@@ -1186,6 +1187,7 @@ describe('call-service permission flow', () => {
       const freshAddListener = vi.fn().mockResolvedValue({ remove: vi.fn() });
       vi.doMock('@/shared/lib/native-webrtc', () => ({
         installNativeWebRTCProxy: vi.fn(),
+        isNativeWebRTCEngineEnabled: () => true,
         NativeWebRTC: new Proxy({}, {
           get: (_target, prop) => {
             if (prop === 'addListener') return freshAddListener;
