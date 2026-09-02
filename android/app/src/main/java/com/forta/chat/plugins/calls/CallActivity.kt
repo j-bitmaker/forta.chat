@@ -258,7 +258,7 @@ class CallActivity : Activity(), SensorEventListener {
         if (powerManager.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) {
             proximityWakeLock = powerManager.newWakeLock(
                 PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK,
-                "bastyon:call_proximity"
+                "forta:call_proximity"
             )
         }
 

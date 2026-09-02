@@ -28,7 +28,10 @@ class CallConnectionService : ConnectionService() {
 
         fun registerPhoneAccount(context: Context) {
             val handle = getPhoneAccountHandle(context)
-            val account = PhoneAccount.builder(handle, "Bastyon Chat")
+            // IMPORTANT: Do NOT change the PhoneAccountHandle id "BastyonChat" — it must remain
+            // unchanged to avoid orphaning the already-registered phone account on app upgrade.
+            // Only the display label "Forta Chat" may be updated.
+            val account = PhoneAccount.builder(handle, "Forta Chat")
                 .setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)
                 .build()
             val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as TelecomManager

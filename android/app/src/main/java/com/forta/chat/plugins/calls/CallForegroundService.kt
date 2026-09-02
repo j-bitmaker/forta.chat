@@ -40,7 +40,7 @@ class CallForegroundService : Service() {
         private const val TAG = "CallForegroundService"
         private const val CHANNEL_ID = "active_call"
         private const val NOTIFICATION_ID = 10001
-        private const val WAKELOCK_TAG = "bastyon:call_wakelock"
+        private const val WAKELOCK_TAG = "forta:call_wakelock"
 
         const val ACTION_START = "com.forta.chat.CALL_START"
         const val ACTION_STOP = "com.forta.chat.CALL_STOP"
