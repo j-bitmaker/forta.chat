@@ -292,9 +292,20 @@ export function isCallRelated(title, description) {
 export function classifyClusters(title, description, diagnostics) {
   const text = `${title} ${description}`.toLowerCase();
   const clusters = new Set();
+  const has = (...needles) => needles.some((n) => text.includes(n));
 
-  // Stuck-after-call: audioMode is MODE_RINGTONE or MODE_IN_COMMUNICATION
-  // OR text mentions "после звонка/вызова/кнопки громкости/не даёт звонить/продолжается"
+  // Reports are written by users on phones, so the vocabulary is messy:
+  // "неслышим", "неслыши", "не слышно друг друга" all mean the same thing.
+  // Matching on the stem "слыш" plus a negation catches the family without
+  // enumerating every typo.
+  const negatedHearing =
+    /(не|ни|бес)\s*слыш/.test(text) ||
+    /неслыш/.test(text) ||
+    has("плохо слышно", "тихо", "тихий звук", "еле слышно");
+
+  // Stuck after the call: the device is left in a call audio mode, which
+  // breaks media volume until reboot. The diagnostics snapshot is the
+  // strongest signal; the phrases cover reports filed before it existed.
   if (
     diagnostics &&
     (diagnostics.audioMode === "MODE_RINGTONE" ||
@@ -303,95 +314,115 @@ export function classifyClusters(title, description, diagnostics) {
     clusters.add("stuck-after-call");
   }
   if (
-    text.includes("после звонка") ||
-    text.includes("после вызова") ||
-    text.includes("кнопки громкости") ||
-    text.includes("не даёт звонить") ||
-    text.includes("продолжается")
+    has(
+      "после звонка",
+      "после вызова",
+      "кнопки громкости",
+      "регулировать громкость",
+      "regulate the volume",
+      "volume indicator",
+      "не даёт звонить",
+      "не дает звонить",
+      "продолжается",
+      "до перезагрузки",
+      "before the next reboot",
+    )
   ) {
     clusters.add("stuck-after-call");
   }
 
-  // No audio
   if (
-    text.includes("не слышу") ||
-    text.includes("нет звука") ||
-    text.includes("no audio") ||
-    text.includes("silent") ||
-    text.includes("no sound")
+    negatedHearing ||
+    has("нет звука", "no audio", "silent", "no sound", "без звука")
   ) {
     clusters.add("no-audio");
   }
 
-  // Accept button issues
+  // Echo and self-hearing are a distinct failure of the acoustic echo
+  // canceller, not the same thing as silence — they point at a different fix.
+  if (has("слышно самого себя", "слышу себя", "эхо", "echo", "посторонние звуки")) {
+    clusters.add("quality");
+  }
+
+  // Accept button: the tap either drops the call, bounces back as an outgoing
+  // one, or kills the app. All are the same race around answerCall.
   if (
-    text.includes("кнопка") ||
-    text.includes("accept") ||
-    text.includes("button") ||
-    text.includes("не нажимается") ||
-    text.includes("не работает кнопка")
+    has(
+      "зелёную",
+      "зеленую",
+      "зелёная",
+      "зеленая",
+      "accept",
+      "не нажимается",
+      "не работает кнопка",
+    ) ||
+    (has("принять", "ответить", "отвечаю", "отвечая") &&
+      has("сброс", "сбрасывает", "обрывается", "закрывается", "не могу"))
   ) {
     clusters.add("accept-button");
   }
 
-  // Connect fail
   if (
-    text.includes("не подключается") ||
-    text.includes("connect") ||
-    text.includes("failed") ||
-    text.includes("timeout")
+    has(
+      "не подключается",
+      "связи нет",
+      "не проходят звонк",
+      "звонки не работают",
+      "не работает дозвон",
+      "невозможно произвести звонок",
+      "вылезает ошибка",
+      "connect",
+      "failed",
+      "timeout",
+    )
   ) {
     clusters.add("connect-fail");
   }
 
-  // Speaker toggle
+  // Speaker: "громкая связь" is how users say speakerphone.
   if (
-    text.includes("динамик") ||
-    text.includes("speaker") ||
-    text.includes("toggle")
+    has("динамик", "speaker", "toggle", "громкая связь", "громкой связи", "громкую связь")
   ) {
     clusters.add("speaker-toggle");
   }
 
-  // No ringtone
-  if (
-    text.includes("гудок") ||
-    text.includes("ringtone") ||
-    text.includes("notification sound")
-  ) {
+  if (has("гудок", "гудк", "ringtone", "notification sound", "нет звонка", "не звонит")) {
     clusters.add("no-ringtone");
   }
 
-  // Background incoming
+  // Incoming call only works while the app is on screen — the FCM path.
   if (
-    text.includes("фон") ||
-    text.includes("background") ||
-    text.includes("screen off")
+    has(
+      "в фоне",
+      "фоновом режиме",
+      "приложение закрыто",
+      "не открыто",
+      "только при запущенном",
+      "background",
+      "закрытом приложении",
+      "свернут",
+    )
   ) {
     clusters.add("background-incoming");
   }
 
-  // Video issues
-  if (text.includes("видео") || text.includes("video")) {
+  // Duplicate rings: two apps on one account, or a phantom re-ring.
+  if (
+    has("дважды", "два раза", "дубл", "повторн", "4шт", "хотя на самом деле звонка не было") ||
+    (has("bastyon", "бастион", "бастиона") && has("звон", "вызов"))
+  ) {
+    clusters.add("duplicate-ring");
+  }
+
+  if (has("видео", "video", "камер", "camera")) {
     clusters.add("video");
   }
 
-  // Quality issues
-  if (
-    text.includes("качество") ||
-    text.includes("quality") ||
-    text.includes("lag") ||
-    text.includes("latency")
-  ) {
+  if (has("прерыв", "качество", "quality", "заикается", "робот")) {
     clusters.add("quality");
   }
 
-  // Default to "other" if no clusters matched
-  if (clusters.size === 0) {
-    clusters.add("other");
-  }
-
-  return Array.from(clusters).sort();
+  return clusters.size > 0 ? Array.from(clusters) : ["other"];
 }
 
 /**
@@ -472,6 +503,40 @@ export function buildDigest(reports) {
   }).length;
 
   if (outsideGateAudio > 0) {
+  // Objective signals beat prose: the audio mode captured at report time says
+  // whether the device was still stuck when the user wrote in, and the invite
+  // count says whether push ever reached it. Both are independent of wording.
+  const modes = {};
+  let withInvites = 0;
+  let withDiagnostics = 0;
+  for (const r of reports) {
+    if (!r.diagnostics) continue;
+    withDiagnostics += 1;
+    const mode = r.diagnostics.audioMode || "unknown";
+    modes[mode] = (modes[mode] || 0) + 1;
+    if ((r.diagnostics.recentInvites || 0) > 0) withInvites += 1;
+  }
+  const abnormal = Object.entries(modes)
+    .filter(([m]) => m !== "MODE_NORMAL" && m !== "unknown")
+    .reduce((sum, [, n]) => sum + n, 0);
+
+  lines.push("");
+  lines.push("## Audio mode at report time");
+  lines.push(`Reports carrying diagnostics: ${withDiagnostics}`);
+  for (const [mode, count] of Object.entries(modes).sort((a, b) => b[1] - a[1])) {
+    lines.push(`- ${mode}: ${count}`);
+  }
+  lines.push(
+    `_${abnormal} device(s) were still in a call audio mode when the report was filed — the phone's media volume stays broken until that clears._`,
+  );
+
+  lines.push("");
+  lines.push("## Push delivery");
+  lines.push(`- Reports where FCM invites had been received: ${withInvites}`);
+  lines.push(
+    "_A report about missed incoming calls with zero invites points at push delivery; with invites, at how the invite was handled._",
+  );
+
     lines.push("## Outside Vendor Gate");
     lines.push(
       `Devices reporting audio problems but NOT in broken-AEC vendor gate: ${outsideGateAudio}`

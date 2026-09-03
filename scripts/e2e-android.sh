@@ -29,11 +29,37 @@ done
 # `set -a` exports every assignment so Maestro sees them as ${VAR}. Values are
 # never echoed — the file holds a private key.
 if [ -f .env ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . ./.env
-  set +a
-  echo "[e2e] loaded .env"
+  # Parsed line by line rather than sourced: a value may legitimately contain
+  # spaces (a mnemonic phrase is twelve words), and `.` would try to run it as
+  # a command. Nothing from .env is ever echoed.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|'#'*) continue ;;
+    esac
+    key=${line%%=*}
+    value=${line#*=}
+    case "$key" in
+      *[!A-Za-z0-9_]*|'') continue ;;
+    esac
+    # Strip one layer of surrounding quotes if present.
+    case "$value" in
+      \"*\") value=${value#\"}; value=${value%\"} ;;
+      "'"*"'") value=${value#"'"}; value=${value%"'"} ;;
+    esac
+    export "$key=$value"
+  done < .env
+
+  # Accept the shorter TEST1/TEST2 names as aliases so an existing .env works
+  # without being rewritten.
+  : "${MAESTRO_E2E_PRIVATE_KEY:=${TEST1:-}}"
+  : "${MAESTRO_E2E_PRIVATE_KEY_B:=${TEST2:-}}"
+  export MAESTRO_E2E_PRIVATE_KEY MAESTRO_E2E_PRIVATE_KEY_B
+
+  if [ -n "${MAESTRO_E2E_PRIVATE_KEY:-}" ]; then
+    echo "[e2e] loaded .env (account key present)"
+  else
+    echo "[e2e] loaded .env (no account key — credentialed flows will fail)"
+  fi
 else
   echo "[e2e] no .env — only credential-free flows will pass"
 fi

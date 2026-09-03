@@ -25,14 +25,32 @@ scripts/e2e-android.sh --build      # rebuild and reinstall the APK first
 | Flow | Needs credentials | What it proves |
 |------|-------------------|----------------|
 | `00-smoke-launch` | no | The app boots to the sign-in screen — catches a blank WebView |
-| `01-open-chat` | yes | Login completes and a chat opens |
-| `02-send-text` | yes | A message reaches the timeline |
+| `03-login` | yes | The key is accepted, Matrix credentials derive, first sync completes |
+| `01-open-chat` | yes | A room from the list opens |
+| `02-send-text` | yes | A message reaches the timeline — **needs a writable chat**; a channel has no composer |
 
-## Selectors
+`.env` may use either the documented `MAESTRO_E2E_*` names or the short
+`TEST1` / `TEST2` aliases. Values are parsed line by line, never sourced —
+a mnemonic phrase contains spaces and would otherwise be run as a command.
 
-Flows address elements by `data-testid`, which is why a few components carry
-one: `private-key-input`, `message-input`, `send-button`, `chat-header`. Keep
-them when refactoring — text selectors break on every locale change.
+## Selectors — what actually works in a Capacitor WebView
+
+Learned the hard way on the first real runs; do not re-derive it:
+
+- **`data-testid` is invisible to Maestro.** DOM nodes in a WebView expose no
+  `resource-id`, so `id:` selectors never match. The attributes are still in
+  the markup and are useful to DOM tests, but flows cannot use them.
+- **A placeholder arrives as `hint`, not `text`,** so `tapOn: "Enter your
+  private key"` fails. Address such fields by position instead —
+  `tapOn: { below: "Private Key or Mnemonic" }`.
+- **List rows concatenate all their text** ("Bastyon_Team Bastyon_Team Aug 14
+  Forta Chat is…"), and Maestro matches the regex against the whole string.
+  Wrap the name: `".*${MAESTRO_E2E_TARGET_ROOM}.*"`.
+- **Assert on "Go back" to prove a room opened.** A channel is read-only and
+  renders no composer; a fresh chat renders no messages. The back button is
+  the only landmark common to every room.
+- The first Matrix sync after `clearState` takes minutes — chat-list waits
+  need a timeout in the hundreds of seconds, far longer than login itself.
 
 ## Not covered
 

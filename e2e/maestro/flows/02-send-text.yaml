@@ -8,23 +8,22 @@ tags:
 - runFlow: ../subflows/dismiss-permissions.yaml
 - runFlow: ../subflows/login.yaml
 
+# The chat list is populated by the first Matrix sync, which on a cleared
+# account takes minutes — longer than login itself.
 - extendedWaitUntil:
-    visible: ${MAESTRO_E2E_TARGET_ROOM}
-    timeout: 120000
-- tapOn: ${MAESTRO_E2E_TARGET_ROOM}
+    visible: ".*${MAESTRO_E2E_TARGET_ROOM}.*"
+    timeout: 300000
+- tapOn: ".*${MAESTRO_E2E_TARGET_ROOM}.*"
 - extendedWaitUntil:
-    visible:
-      id: "chat-header"
+    visible: "Message"
     timeout: 30000
 
 # A unique body per run: asserting on a fixed string would pass on a message
 # left behind by an earlier run.
 - evalScript: ${output.body = 'maestro ' + Date.now()}
-- tapOn:
-    id: "message-input"
+- tapOn: "Message"
 - inputText: ${output.body}
-- tapOn:
-    id: "send-button"
+- tapOn: "Send"
 
 # The optimistic echo appears immediately; this asserts it reached the timeline,
 # not that the server accepted it.

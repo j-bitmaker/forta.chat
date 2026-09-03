@@ -12,8 +12,12 @@ appId: com.forta.chat
     visible: "Sign In"
     timeout: 30000
 
+# A Capacitor WebView exposes no resource-id for DOM nodes, so `data-testid`
+# is invisible to Maestro, and the placeholder arrives as `hint`, not `text`.
+# The field is addressed by its position under the label instead — see
+# e2e/README.md.
 - tapOn:
-    id: "private-key-input"
+    below: "Private Key or Mnemonic"
 - inputText: ${MAESTRO_E2E_PRIVATE_KEY}
 - hideKeyboard
 
