@@ -454,3 +454,70 @@ describe("timelineShowsAudioNeverEngaged", () => {
     expect(timelineShowsAudioNeverEngaged([])).toBe(false);
   });
 });
+
+describe("classifyClusters — real report wording", () => {
+  // Every case below is taken from the wording of an actual open report, with
+  // the device details stripped. The old keyword list missed all of them.
+
+  it("catches negated hearing written as one word or with typos", () => {
+    // "неслышим", "неслыши" — users type fast on a phone.
+    expect(classifyClusters("", "После соединения при аудиозвонке мы друг друга неслышим", null))
+      .toContain("no-audio");
+    expect(classifyClusters("", "Почему не слышно друг друга при звонке?", null))
+      .toContain("no-audio");
+  });
+
+  it("treats hearing yourself as a quality fault, not silence", () => {
+    // Echo points at the acoustic echo canceller, silence at routing — the
+    // two need different fixes, so they must not land in one bucket.
+    const clusters = classifyClusters("", "При звонке слышно самого себя, посторонние звуки", null);
+    expect(clusters).toContain("quality");
+    expect(clusters).not.toContain("no-audio");
+  });
+
+  it("recognises 'громкая связь' as the speaker toggle", () => {
+    expect(classifyClusters("", "Включая громкую связь не слышно собеседника", null))
+      .toContain("speaker-toggle");
+  });
+
+  it("catches the accept-button race however it is described", () => {
+    expect(
+      classifyClusters("", "При попытке ответить на входящий нажатием зелёной кнопочки всё сбрасывается", null),
+    ).toContain("accept-button");
+    expect(
+      classifyClusters("", "Нажимая принять вызов, звонок либо обрывается, либо приложение закрывается", null),
+    ).toContain("accept-button");
+  });
+
+  it("catches calls that never connect", () => {
+    expect(classifyClusters("", "Звонки проходят, а связи нет", null)).toContain("connect-fail");
+    expect(classifyClusters("", "Не работает дозвон", null)).toContain("connect-fail");
+  });
+
+  it("flags duplicate rings, including the Bastyon coexistence case", () => {
+    expect(classifyClusters("", "Я звонил товарищу 2 раза, а уведомлений об исходящем 4шт", null))
+      .toContain("duplicate-ring");
+    expect(
+      classifyClusters("", "Когда установлены и Бастион и Форта, звонок приходит дважды", null),
+    ).toContain("duplicate-ring");
+  });
+
+  it("does NOT read the word 'телефон' as a background-call report", () => {
+    // The previous classifier matched the substring "фон", so every report
+    // that merely said "телефон" was counted as a background-delivery bug —
+    // 19 of the 22 in that cluster were false.
+    const clusters = classifyClusters("", "Телефон не реагировал на нажатие кнопок громкости", null);
+    expect(clusters).not.toContain("background-incoming");
+  });
+
+  it("still flags a genuine background-delivery report", () => {
+    expect(
+      classifyClusters("", "Когда приложение не открыто (в фоне) входящий вызов не поступает", null),
+    ).toContain("background-incoming");
+  });
+
+  it("uses the audio-mode snapshot as independent evidence of being stuck", () => {
+    expect(classifyClusters("", "звук пропал", { audioMode: "MODE_RINGTONE" }))
+      .toContain("stuck-after-call");
+  });
+});
