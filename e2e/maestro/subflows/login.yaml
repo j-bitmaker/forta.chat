@@ -1,0 +1,26 @@
+appId: com.forta.chat
+---
+# Signs in with MAESTRO_E2E_PRIVATE_KEY. Never hardcode a key here — the file
+# is committed; the key comes from .env through scripts/e2e-android.sh.
+# Cold start lands on the welcome screen, not the form.
+- extendedWaitUntil:
+    visible: "Get Started"
+    timeout: 90000
+- tapOn: "Get Started"
+
+- extendedWaitUntil:
+    visible: "Sign In"
+    timeout: 30000
+
+- tapOn:
+    id: "private-key-input"
+- inputText: ${MAESTRO_E2E_PRIVATE_KEY}
+- hideKeyboard
+
+- tapOn: "Sign In"
+
+# Login derives Matrix credentials and runs the first sync — minutes on a cold
+# account, so this wait is deliberately generous.
+- extendedWaitUntil:
+    notVisible: "Signing in..."
+    timeout: 180000

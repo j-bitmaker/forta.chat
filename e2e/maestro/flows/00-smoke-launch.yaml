@@ -1,0 +1,29 @@
+appId: com.forta.chat
+name: Smoke — app launches to the sign-in screen
+tags:
+  - smoke
+---
+# The only flow that needs no credentials, so it is the one that can gate every
+# build. It catches the failure mode that hurts most and is easiest to miss: a
+# WebView that boots to a blank screen because the bundle failed to load.
+- clearState
+- launchApp
+- runFlow: ../subflows/dismiss-permissions.yaml
+
+# Boot goes through the splash and Dexie init, which is slow on a cold start.
+- extendedWaitUntil:
+    visible: "Get Started"
+    timeout: 90000
+
+# Dialogs can appear late on a slow emulator — clear anything that arrived
+# while the WebView was booting before asserting on the screen behind them.
+- runFlow: ../subflows/dismiss-permissions.yaml
+
+# The first screen is the welcome page; sign-in lives one tap in. Asserting
+# there too proves the router and the key form actually mounted, not just that
+# something rendered.
+- assertVisible: "Create Account"
+- tapOn: "Get Started"
+- extendedWaitUntil:
+    visible: "Sign In"
+    timeout: 30000

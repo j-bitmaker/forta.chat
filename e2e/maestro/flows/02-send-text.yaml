@@ -1,0 +1,33 @@
+appId: com.forta.chat
+name: Send a text message
+tags:
+  - auth
+---
+- clearState
+- launchApp
+- runFlow: ../subflows/dismiss-permissions.yaml
+- runFlow: ../subflows/login.yaml
+
+- extendedWaitUntil:
+    visible: ${MAESTRO_E2E_TARGET_ROOM}
+    timeout: 120000
+- tapOn: ${MAESTRO_E2E_TARGET_ROOM}
+- extendedWaitUntil:
+    visible:
+      id: "chat-header"
+    timeout: 30000
+
+# A unique body per run: asserting on a fixed string would pass on a message
+# left behind by an earlier run.
+- evalScript: ${output.body = 'maestro ' + Date.now()}
+- tapOn:
+    id: "message-input"
+- inputText: ${output.body}
+- tapOn:
+    id: "send-button"
+
+# The optimistic echo appears immediately; this asserts it reached the timeline,
+# not that the server accepted it.
+- extendedWaitUntil:
+    visible: ${output.body}
+    timeout: 30000

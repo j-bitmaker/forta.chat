@@ -1148,6 +1148,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
 
         <!-- Textarea -->
         <textarea
+          data-testid="message-input"
           ref="textareaRef" v-model="text" :placeholder="t('message.placeholder')" rows="1"
           class="flex-1 resize-none rounded-2xl bg-chat-input-bg px-4 py-2.5 text-base leading-[24px] text-text-color outline-none transition-shadow duration-200 placeholder:text-neutral-grad-2 focus:ring-2 focus:ring-color-bg-ac/30"
           :style="{ maxHeight: maxTextareaHeight + 'px', fontSize: '16px' }"
@@ -1181,7 +1182,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
 
         <!-- Send OR record button -->
         <transition name="btn-morph" mode="out-in">
-          <button v-if="sendButtonVisible" key="send"
+          <button v-if="sendButtonVisible" key="send" data-testid="send-button"
             class="send-btn flex h-10 w-10 min-h-tap min-w-tap shrink-0 items-center justify-center rounded-full bg-color-bg-ac text-white transition-all hover:bg-color-bg-ac-1 disabled:opacity-50"
             :disabled="sendButtonDisabled" @click="handleSend">
             <svg v-if="sending" class="contain-strict h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" viewBox="0 0 24 24" />
