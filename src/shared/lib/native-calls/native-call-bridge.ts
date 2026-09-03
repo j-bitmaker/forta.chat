@@ -4,6 +4,7 @@ import { NativeWebRTC } from '@/shared/lib/native-webrtc/native-webrtc-bridge';
 import { isInviteEventExpired } from './invite-ttl';
 import type {
   AudioProbeResult,
+  AudioTimelineEntry,
   InviteThrottleRecord,
   InviteThrottleSnapshot,
   NativeCallNativePlugin,
@@ -13,6 +14,7 @@ import { withRetry } from './with-retry';
 
 export type {
   AudioProbeResult,
+  AudioTimelineEntry,
   InviteThrottleRecord,
   InviteThrottleSnapshot,
 } from './native-call-bridge.types';
@@ -762,6 +764,31 @@ class NativeCallBridge {
     } catch (e) {
       console.warn('[NativeCallBridge] getAudioStatus unavailable:', e);
       return { mode: 'MODE_NORMAL', isSpeakerOn: false, isBtScoOn: false };
+    }
+  }
+
+  /**
+   * Ordered audio-stack events for the current call, oldest first, times
+   * relative to the first entry. Attached to bug reports so triage can see
+   * how the audio stack reached its final state instead of only the state
+   * itself — a device that never left MODE_RINGTONE and one that fell back
+   * into it after hangup are indistinguishable in a snapshot.
+   *
+   * Android only. iOS drives audio through AVAudioSession, which has its own
+   * (separately reported) lifecycle; an empty list keeps the report envelope
+   * shape identical across platforms. An older native build without the
+   * plugin method surfaces as a Capacitor "not registered" rejection, which
+   * is likewise an empty list — a bug report must never fail to submit
+   * because diagnostics are unavailable.
+   */
+  async getAudioTimeline(): Promise<AudioTimelineEntry[]> {
+    if (!isAndroid) return [];
+    try {
+      const result = await NativeCall.getAudioTimeline();
+      return Array.isArray(result?.entries) ? result.entries : [];
+    } catch (e) {
+      console.warn('[NativeCallBridge] getAudioTimeline unavailable:', e);
+      return [];
     }
   }
 

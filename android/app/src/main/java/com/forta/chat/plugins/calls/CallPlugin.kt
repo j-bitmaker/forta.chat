@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.telecom.TelecomManager
 import android.util.Log
+import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -549,6 +550,38 @@ class CallPlugin : Plugin() {
             put("isBtScoOn", isBtScoOn)
         }
         call.resolve(result)
+    }
+
+    /**
+     * Ordered audio events for the current call, oldest first, with times
+     * relative to the first entry. Bug reports attach this so triage can see
+     * how the audio stack reached its final state rather than only what that
+     * state is — the difference between a device that never left MODE_RINGTONE
+     * and one that fell back into it.
+     *
+     * Never fails: an empty timeline (call never started, router replaced) is
+     * a valid answer and must not break report submission.
+     */
+    @PluginMethod
+    fun getAudioTimeline(call: PluginCall) {
+        val entries = try {
+            AudioRouter.getSharedInstance(context).timeline.snapshot()
+        } catch (e: Exception) {
+            Log.w(TAG, "getAudioTimeline failed", e)
+            emptyList()
+        }
+        val firstAt = entries.firstOrNull()?.atMs ?: 0L
+        val array = JSArray()
+        for (entry in entries) {
+            array.put(
+                JSObject().apply {
+                    put("atMs", entry.atMs - firstAt)
+                    put("event", entry.event)
+                    put("detail", entry.detail)
+                },
+            )
+        }
+        call.resolve(JSObject().apply { put("entries", array) })
     }
 
     /**

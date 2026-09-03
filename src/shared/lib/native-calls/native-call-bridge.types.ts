@@ -33,6 +33,17 @@ export interface InviteThrottleRecord {
   callId: string;
 }
 
+/**
+ * One audio-stack event recorded during a call, as produced by
+ * CallAudioTimeline.kt. `atMs` is relative to the first entry, so a report
+ * reads as an elapsed-time sequence rather than wall clock.
+ */
+export interface AudioTimelineEntry {
+  atMs: number;
+  event: string;
+  detail: string;
+}
+
 export interface InviteThrottleSnapshot {
   records: InviteThrottleRecord[];
 }
@@ -119,6 +130,11 @@ export interface NativeCallNativePlugin {
     isSpeakerOn: boolean;
     isBtScoOn: boolean;
   }>;
+  /**
+   * Ordered audio-stack events for the current call — see
+   * {@link NativeCallBridge.getAudioTimeline}.
+   */
+  getAudioTimeline(): Promise<{ entries: AudioTimelineEntry[] }>;
   /**
    * Session 25 / S3-S4: snapshot of the last N FCM `m.call.invite`
    * records. Surfaced by {@link NativeCallBridge.getInviteThrottleSnapshot}.

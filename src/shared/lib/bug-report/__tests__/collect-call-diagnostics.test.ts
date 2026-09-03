@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockGetAudioStatus = vi.fn();
 const mockGetInviteThrottleSnapshot = vi.fn();
+const mockGetAudioTimeline = vi.fn();
 
 vi.mock("@/shared/lib/native-calls", () => ({
   nativeCallBridge: {
     getAudioStatus: mockGetAudioStatus,
     getInviteThrottleSnapshot: mockGetInviteThrottleSnapshot,
+    getAudioTimeline: mockGetAudioTimeline,
   },
 }));
 
@@ -14,6 +16,7 @@ describe("collectCallDiagnostics", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.resetModules();
+    mockGetAudioTimeline.mockResolvedValue([]);
   });
   afterEach(() => {
     vi.resetModules();
@@ -155,5 +158,58 @@ describe("collectCallDiagnostics", () => {
     expect(out.expiredInviteCount).toBe(0);
     expect(mockGetAudioStatus).toHaveBeenCalledOnce();
     expect(mockGetInviteThrottleSnapshot).not.toHaveBeenCalled();
+  });
+  it("attaches the audio timeline on Android", async () => {
+    vi.doMock("@/shared/lib/platform", () => ({
+      isNative: true,
+      isAndroid: true,
+      isIOS: false,
+    }));
+    mockGetAudioStatus.mockResolvedValue({
+      mode: "MODE_RINGTONE",
+      isSpeakerOn: false,
+      isBtScoOn: false,
+    });
+    mockGetInviteThrottleSnapshot.mockResolvedValue({ records: [] });
+    // A device that ends the call back in MODE_RINGTONE: the snapshot alone
+    // cannot say whether it ever left, the timeline can.
+    mockGetAudioTimeline.mockResolvedValue([
+      { atMs: 0, event: "start", detail: "voice" },
+      { atMs: 12, event: "mode", detail: "MODE_IN_COMMUNICATION" },
+      { atMs: 8400, event: "stop", detail: "" },
+    ]);
+
+    const { collectCallDiagnostics } = await import("../collect-call-diagnostics");
+    const out = await collectCallDiagnostics();
+
+    expect(out.audioTimeline.map((e) => e.event)).toEqual([
+      "start",
+      "mode",
+      "stop",
+    ]);
+    expect(mockGetAudioTimeline).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the rest of the report when the timeline query fails", async () => {
+    vi.doMock("@/shared/lib/platform", () => ({
+      isNative: true,
+      isAndroid: true,
+      isIOS: false,
+    }));
+    mockGetAudioStatus.mockResolvedValue({
+      mode: "MODE_IN_COMMUNICATION",
+      isSpeakerOn: true,
+      isBtScoOn: false,
+    });
+    mockGetInviteThrottleSnapshot.mockResolvedValue({ records: [] });
+    // An older native build has no such plugin method — diagnostics being
+    // unavailable must never block a report from being filed.
+    mockGetAudioTimeline.mockRejectedValue(new Error("not registered"));
+
+    const { collectCallDiagnostics } = await import("../collect-call-diagnostics");
+    const out = await collectCallDiagnostics();
+
+    expect(out.audioTimeline).toEqual([]);
+    expect(out.audioMode).toBe("MODE_IN_COMMUNICATION");
   });
 });

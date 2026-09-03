@@ -223,6 +223,22 @@ async function formatBody(
       });
       lines.push('</details>');
     }
+    // The ordered event list is what distinguishes "never left MODE_RINGTONE"
+    // from "fell back into it after hangup". Collapsed so the report stays
+    // scannable; times are relative to the first event.
+    if (diag.audioTimeline.length > 0) {
+      lines.push(
+        '',
+        '<details><summary>Audio timeline</summary>',
+        '',
+        '| t (ms) | event | detail |',
+        '|--------|-------|--------|',
+      );
+      diag.audioTimeline.forEach((e) => {
+        lines.push(`| ${e.atMs} | ${e.event} | ${e.detail || '—'} |`);
+      });
+      lines.push('</details>');
+    }
   }
 
   return lines.join('\n');

@@ -79,6 +79,7 @@ export function parseCallDiagnostics(body) {
     const value = match[2].trim();
 
     if (key === "audio mode") result.audioMode = value;
+    else if (key === "webrtc engine") result.webrtcEngine = value;
     else if (key === "speaker on") result.speakerOn = value.toLowerCase().includes("yes");
     else if (key === "bt sco on") result.btScoOn = value.toLowerCase().includes("yes");
     else if (key === "recent invites") result.recentInvites = parseInt(value, 10) || 0;
@@ -86,6 +87,51 @@ export function parseCallDiagnostics(body) {
   }
 
   return Object.keys(result).length > 0 ? result : null;
+}
+
+/**
+ * Parse the collapsed "Audio timeline" table a report carries when the device
+ * ran a call on the native engine. Entries are `{ atMs, event, detail }`,
+ * oldest first, times relative to the first entry.
+ *
+ * Returns an empty array when the block is absent — most reports predate it,
+ * and iOS never emits one.
+ */
+export function parseAudioTimeline(body) {
+  const block = body.match(
+    /<summary>\s*Audio timeline\s*<\/summary>([\s\S]*?)<\/details>/i
+  );
+  if (!block) return [];
+
+  const entries = [];
+  for (const row of block[1].split("\n")) {
+    const cells = row.match(/\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|/);
+    if (!cells) continue;
+    const atMs = Number.parseInt(cells[1], 10);
+    if (Number.isNaN(atMs)) continue; // header and separator rows
+    const detail = cells[3] === "\u2014" ? "" : cells[3];
+    entries.push({ atMs, event: cells[2], detail });
+  }
+  return entries;
+}
+
+/**
+ * True when the timeline shows audio was never actually handed to the call:
+ * a start with no MODE_IN_COMMUNICATION, or a teardown that had to be forced.
+ * Both are stronger evidence than the audio-mode snapshot, which cannot tell
+ * "never entered call audio" from "already recovered by the time of the report".
+ */
+export function timelineShowsAudioNeverEngaged(entries) {
+  if (!entries.length) return false;
+  const started = entries.some((e) => e.event === "start");
+  if (!started) return false;
+  const engaged = entries.some(
+    (e) => e.event === "mode" || e.event === "mode_reapply"
+  );
+  const forcedDown = entries.some(
+    (e) => e.event === "force_stop" || e.event === "watchdog"
+  );
+  return !engaged || forcedDown;
 }
 
 /**

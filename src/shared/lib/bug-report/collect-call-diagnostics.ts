@@ -23,6 +23,7 @@ import {
   type WebRTCEngine,
 } from "@/shared/lib/native-webrtc/webrtc-engine-preference";
 import type {
+  AudioTimelineEntry,
   InviteThrottleRecord,
   InviteThrottleSnapshot,
 } from "@/shared/lib/native-calls";
@@ -46,6 +47,11 @@ export interface BugReportCallDiagnostics {
    * the native engine at all.
    */
   webrtcEngine: WebRTCEngine;
+  /**
+   * Ordered audio-stack events for the call, oldest first, times relative to
+   * the first entry. Android only; empty elsewhere and on older native builds.
+   */
+  audioTimeline: AudioTimelineEntry[];
 }
 
 export const EMPTY_CALL_DIAGNOSTICS: BugReportCallDiagnostics = {
@@ -55,6 +61,7 @@ export const EMPTY_CALL_DIAGNOSTICS: BugReportCallDiagnostics = {
   inviteHistory: [],
   expiredInviteCount: 0,
   webrtcEngine: "native",
+  audioTimeline: [],
 };
 
 export async function collectCallDiagnostics(): Promise<BugReportCallDiagnostics> {
@@ -80,8 +87,10 @@ export async function collectCallDiagnostics(): Promise<BugReportCallDiagnostics
   // BugReportVoipDiagnostics block. The bridge already short-circuits
   // this on non-Android, but the explicit `if (!isAndroid)` here keeps
   // the bug-report envelope shape obvious to triagers reading the JSON.
+  let audioTimeline: AudioTimelineEntry[] = [];
   let inviteHistory: InviteThrottleRecord[] = [];
   if (isAndroid) {
+    audioTimeline = await nativeCallBridge.getAudioTimeline().catch(() => []);
     const inviteSnapshot: InviteThrottleSnapshot = await nativeCallBridge
       .getInviteThrottleSnapshot()
       .catch(() => ({ records: [] }));
@@ -97,5 +106,6 @@ export async function collectCallDiagnostics(): Promise<BugReportCallDiagnostics
     inviteHistory,
     expiredInviteCount: inviteHistory.filter((r) => r.expired).length,
     webrtcEngine,
+    audioTimeline,
   };
 }

@@ -35,6 +35,13 @@ import android.util.Log
  */
 class AudioRouter private constructor(private val context: Context) {
 
+    /**
+     * Audio events for the current call, surfaced in bug reports. A snapshot
+     * of the audio mode cannot distinguish "never left MODE_RINGTONE" from
+     * "returned to it after the call", which need opposite fixes.
+     */
+    val timeline = CallAudioTimeline()
+
     companion object {
         private const val TAG = "AudioRouter"
         private const val LIFECYCLE_TAG = "AudioLifecycle"
@@ -350,8 +357,15 @@ class AudioRouter private constructor(private val context: Context) {
         this.callType = callType
         this.isActive = true
 
+        // One timeline per call: the previous call's entries would only
+        // confuse triage. An orphaned router never reaches start(), so its
+        // stale entries survive — which is exactly the case worth seeing.
+        timeline.clear()
+        timeline.record("start", callType)
+
         activeDevice = if (callType == "video") Device.SPEAKER else Device.EARPIECE
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        timeline.record("mode", "MODE_IN_COMMUNICATION")
         Log.d(LIFECYCLE_TAG, "start($callType): set mode=MODE_IN_COMMUNICATION, initial active=$activeDevice")
 
         // OEM fix: Some Chinese ROMs (MIUI, RealmeUI, XOS, HyperOS, EMUI,
@@ -376,6 +390,7 @@ class AudioRouter private constructor(private val context: Context) {
                             "Audio mode reset detected at +${delayMs}ms — re-applying MODE_IN_COMMUNICATION",
                         )
                         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                        timeline.record("mode_reapply", "+${delayMs}ms")
                     }
                     // WEE-60: the OEM that resets the audio mode in this window
                     // can also re-assert the global mic-mute flag, clobbering the
@@ -390,6 +405,7 @@ class AudioRouter private constructor(private val context: Context) {
                         )
                     ) {
                         audioManager.setMicrophoneMute(false)
+                        timeline.record("mic_unmute", "reapply +${delayMs}ms")
                         Log.w(
                             LIFECYCLE_TAG,
                             "[vendor=$vendor] OEM re-muted mic at +${delayMs}ms — releasing",
@@ -417,6 +433,7 @@ class AudioRouter private constructor(private val context: Context) {
             override fun run() {
                 val callAlive = CallForegroundService.isRunning
                 if (shouldForceStopForWatchdog(callAlive = callAlive, isRouterActive = isActive)) {
+                    timeline.record("watchdog", "orphaned router — forcing stop")
                     Log.w(
                         LIFECYCLE_TAG,
                         "Audio watchdog: no active call after ${AUDIO_MAX_LIFETIME_MS}ms — forceStop",
@@ -474,6 +491,7 @@ class AudioRouter private constructor(private val context: Context) {
         if (requiresMicUnmute) {
             try {
                 audioManager.setMicrophoneMute(false)
+                timeline.record("mic_unmute", "vendor start tweak")
                 Log.d(LIFECYCLE_TAG, "[vendor=$vendor] explicit setMicrophoneMute(false) on start")
             } catch (e: Exception) {
                 Log.w(LIFECYCLE_TAG, "[vendor=$vendor] setMicrophoneMute(false) on start threw", e)
@@ -493,6 +511,7 @@ class AudioRouter private constructor(private val context: Context) {
         }
 
         isActive = false
+        timeline.record("stop")
 
         // Session 54: cancel the orphan watchdog and the OEM re-apply
         // runnables before tearing down. Without these removeCallbacks,
@@ -621,6 +640,7 @@ class AudioRouter private constructor(private val context: Context) {
      */
     fun forceStop() = synchronized(lifecycleLock) {
         Log.w(LIFECYCLE_TAG, "forceStop() — bypassing guards, brute reset")
+        timeline.record("force_stop")
         isActive = false
 
         // Session 54: same cancellation as stop() — the watchdog itself
@@ -783,6 +803,10 @@ class AudioRouter private constructor(private val context: Context) {
 
         if (target != null) {
             val success = audioManager.setCommunicationDevice(target)
+            timeline.record(
+                "route",
+                "${deviceTypeToString(target.type)}${if (success) "" else " FAILED"}",
+            )
             Log.d(LIFECYCLE_TAG, "setCommunicationDevice(${deviceTypeToString(target.type)}): $success")
         } else if (shouldClearWhenTargetMissing(device)) {
             // Removable device (BT / wired) genuinely gone — fall back to the
@@ -820,6 +844,7 @@ class AudioRouter private constructor(private val context: Context) {
 
     @Suppress("DEPRECATION")
     private fun setDeviceLegacy(device: Device) {
+        timeline.record("route", "$device (legacy)")
         when (device) {
             Device.EARPIECE -> {
                 audioManager.isSpeakerphoneOn = false

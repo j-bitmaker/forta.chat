@@ -8,6 +8,8 @@ import {
   parseCallDiagnostics,
   parseDescription,
   parseEnvironment,
+  parseAudioTimeline,
+  timelineShowsAudioNeverEngaged,
 } from "./triage-call-reports.mjs";
 
 describe("parseEnvironment", () => {
@@ -376,5 +378,79 @@ describe("buildDigest", () => {
     expect(digest).toContain("App Versions");
     expect(digest).toContain("1.11.4");
     expect(digest).toContain("1.11.3");
+  });
+});
+
+describe("parseAudioTimeline", () => {
+  const withTimeline = [
+    "## Call diagnostics",
+    "| Field | Value |",
+    "|-------|-------|",
+    "| WebRTC engine | native |",
+    "| Audio mode | MODE_RINGTONE |",
+    "",
+    "<details><summary>Audio timeline</summary>",
+    "",
+    "| t (ms) | event | detail |",
+    "|--------|-------|--------|",
+    "| 0 | start | voice |",
+    "| 14 | mode | MODE_IN_COMMUNICATION |",
+    "| 1500 | mode_reapply | +1500ms |",
+    "| 9200 | stop | — |",
+    "</details>",
+  ].join("\n");
+
+  it("reads entries oldest-first with relative times", () => {
+    expect(parseAudioTimeline(withTimeline)).toEqual([
+      { atMs: 0, event: "start", detail: "voice" },
+      { atMs: 14, event: "mode", detail: "MODE_IN_COMMUNICATION" },
+      { atMs: 1500, event: "mode_reapply", detail: "+1500ms" },
+      { atMs: 9200, event: "stop", detail: "" },
+    ]);
+  });
+
+  it("returns an empty list for reports without the block", () => {
+    expect(parseAudioTimeline("## Description\nno audio at all")).toEqual([]);
+  });
+
+  it("also picks up the engine row from the diagnostics table", () => {
+    expect(parseCallDiagnostics(withTimeline)?.webrtcEngine).toBe("native");
+  });
+});
+
+describe("timelineShowsAudioNeverEngaged", () => {
+  it("flags a call that started but never entered call audio", () => {
+    // The snapshot would just say MODE_NORMAL — indistinguishable from a
+    // healthy finished call. The timeline shows the mode was never set.
+    expect(
+      timelineShowsAudioNeverEngaged([
+        { atMs: 0, event: "start", detail: "voice" },
+        { atMs: 5000, event: "stop", detail: "" },
+      ]),
+    ).toBe(true);
+  });
+
+  it("flags a call whose teardown had to be forced", () => {
+    expect(
+      timelineShowsAudioNeverEngaged([
+        { atMs: 0, event: "start", detail: "voice" },
+        { atMs: 12, event: "mode", detail: "MODE_IN_COMMUNICATION" },
+        { atMs: 300000, event: "watchdog", detail: "orphaned router" },
+      ]),
+    ).toBe(true);
+  });
+
+  it("does not flag a healthy call", () => {
+    expect(
+      timelineShowsAudioNeverEngaged([
+        { atMs: 0, event: "start", detail: "voice" },
+        { atMs: 12, event: "mode", detail: "MODE_IN_COMMUNICATION" },
+        { atMs: 8000, event: "stop", detail: "" },
+      ]),
+    ).toBe(false);
+  });
+
+  it("does not flag reports that carry no timeline at all", () => {
+    expect(timelineShowsAudioNeverEngaged([])).toBe(false);
   });
 });
