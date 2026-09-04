@@ -173,6 +173,25 @@ object VendorAudioPolicy {
     ): Boolean = requiresSoftwareAec(manufacturer, brand, hwAecCreatable)
 
     /**
+     * As above, but the runtime signal is fetched only when it can change the
+     * answer.
+     *
+     * For a device already on [BROKEN_HW_AEC_VENDORS], step 1 of
+     * [requiresSoftwareAec] answers true on its own, so probing the hardware
+     * AEC buys nothing — and those are precisely the ROMs whose audio APIs are
+     * documented to throw. A caller whose signal costs something (a real
+     * `AcousticEchoCanceler` create/enable/release round-trip) passes it as a
+     * provider, and it stays unread for listed vendors.
+     */
+    fun requiresExplicitMicUnmuteOnStart(
+        manufacturer: String?,
+        brand: String?,
+        hwAecCreatable: () -> Boolean?,
+    ): Boolean =
+        matchesBrokenHwAecFamily(manufacturer, brand) ||
+            requiresSoftwareAec(manufacturer, brand, hwAecCreatable())
+
+    /**
      * Whether the WebRTC factory should use **software** AEC/NS for this device
      * instead of the hardware path. See [BROKEN_HW_AEC_VENDORS].
      *

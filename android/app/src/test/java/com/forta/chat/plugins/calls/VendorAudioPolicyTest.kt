@@ -396,4 +396,45 @@ class VendorAudioPolicyTest {
             VendorAudioPolicy.prefersSoftwareAudioProcessing("UnknownOem", "", hwAecCreatable = true),
         )
     }
+
+    @Test
+    fun listedVendor_neverReadsTheRuntimeProbe() {
+        // The probe is a real AcousticEchoCanceler create/enable/release cycle.
+        // For a listed vendor the list already answers true, so touching the
+        // audio HAL buys nothing — and MIUI/EMUI are exactly the ROMs this
+        // codebase documents as prone to throwing there.
+        var probed = false
+        val probe: () -> Boolean? = {
+            probed = true
+            true
+        }
+
+        assertTrue(
+            "Xiaomi is decided by the vendor list",
+            VendorAudioPolicy.requiresExplicitMicUnmuteOnStart("Xiaomi", "Redmi", probe),
+        )
+        assertFalse("the probe must not run for a listed vendor", probed)
+    }
+
+    @Test
+    fun unlistedVendor_readsTheRuntimeProbe() {
+        // The whole point of WEE-110: a device outside the list whose HW AEC
+        // fails at runtime still gets the mic unmute.
+        var probed = false
+        val probe: () -> Boolean? = {
+            probed = true
+            false
+        }
+
+        assertTrue(
+            "an unlisted device with a failing HW AEC needs the unmute",
+            VendorAudioPolicy.requiresExplicitMicUnmuteOnStart("samsung", "SM-A155F", probe),
+        )
+        assertTrue("the probe must run for an unlisted vendor", probed)
+
+        assertFalse(
+            "an unlisted device with a working HW AEC is left alone",
+            VendorAudioPolicy.requiresExplicitMicUnmuteOnStart("samsung", "SM-A155F") { true },
+        )
+    }
 }

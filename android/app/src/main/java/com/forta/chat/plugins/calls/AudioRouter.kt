@@ -321,25 +321,22 @@ class AudioRouter private constructor(private val context: Context) {
     // proven WEE-54 generic path is the default and vendor branches are purely
     // additive (acceptance criterion A5).
     private val vendor: CallVendor = VendorAudioPolicy.detect(Build.MANUFACTURER, Build.BRAND)
-    // WEE-110: whether the hardware AEC can be created on this device at runtime.
-    // Queried once during router construction (before any call) so we know upfront
-    // whether to fall back to software processing. Wrapped in try/catch because
-    // audio APIs on some OEM ROMs are documented to throw.
-    private val hwAecCreatable: Boolean? by lazy {
-        queryHardwareAecAvailability()
-    }
     // WEE-103: whether this device's audio HAL strands the mic-mute flag asserted
     // on call setup (the broken-HW-AEC family). Resolved once from Build like
     // [vendor]; keyed off manufacturer/brand rather than the coarse CallVendor
     // enum so OEMs that detect() classifies as GENERIC (Infinix/XOS #1008,
     // ZTE/nubia #1009) — and HUAWEI (#1009) — are no longer missed by the gate.
-    // Also now includes runtime signal [hwAecCreatable] so devices outside the
-    // vendor list whose HW AEC fails at runtime are also covered (WEE-110).
+    // Also consults a runtime probe so devices outside the vendor list whose HW
+    // AEC fails at runtime are covered too (WEE-110). The probe is passed as a
+    // provider, not a value: a listed vendor is already decided by the list, and
+    // creating an AcousticEchoCanceler on those ROMs is exactly the kind of call
+    // this file elsewhere documents as prone to throwing. Resolved lazily, so
+    // the probe runs at most once and only on the first call of the process.
     private val requiresMicUnmute: Boolean by lazy {
         VendorAudioPolicy.requiresExplicitMicUnmuteOnStart(
             Build.MANUFACTURER,
             Build.BRAND,
-            hwAecCreatable,
+            ::queryHardwareAecAvailability,
         )
     }
     // WEE-16: @Volatile so the periodic re-apply runnables observe a
@@ -402,9 +399,10 @@ class AudioRouter private constructor(private val context: Context) {
     }
 
     /**
-     * WEE-110: probe the device's hardware AEC capability once during
-     * construction so [VendorAudioPolicy] can make an informed decision
-     * about whether to fall back to software processing.
+     * WEE-110: probe the device's hardware AEC capability so
+     * [VendorAudioPolicy] can make an informed decision about whether to fall
+     * back to software processing. Called at most once per process, on the
+     * first call, and only for devices the vendor list does not already cover.
      *
      * Returns the result of [canCreateHardwareAec], which is:
      *   - true: HW AEC can be created and enabled
@@ -414,13 +412,15 @@ class AudioRouter private constructor(private val context: Context) {
      * When null, [VendorAudioPolicy] falls back to the vendor list.
      */
     private fun queryHardwareAecAvailability(): Boolean? {
-        // Use a dummy sessionId for the probe. The actual WebRTC session
-        // will use its own sessionId when audio routing starts, but this
-        // probe tells us whether HW AEC works in general on this device.
-        // SessionId 0 is a valid probe — it's the AudioRecord default when
-        // no session is specified. Some devices may require a live session,
-        // in which case this probe returns null and we fall back to the
-        // vendor list.
+        // Session 0 is AUDIO_SESSION_ID_GENERATE — no live capture is attached,
+        // because the WebRTC session does not exist yet. A HAL that will only
+        // engage AEC against a real stream can therefore answer "no control"
+        // here, which reads as false rather than null: this probe can say a
+        // healthy device has broken HW AEC, never the reverse. That direction
+        // is safe for the one thing it feeds — an explicit mic unmute only ever
+        // releases a stranded capture path, it cannot break a working one — so
+        // do NOT wire this value into the AEC engine choice without first
+        // probing against a live AudioRecord session.
         return canCreateHardwareAec(0)
     }
 
