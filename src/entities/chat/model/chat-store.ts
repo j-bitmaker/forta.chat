@@ -301,7 +301,7 @@ function matrixRoomToChatRoom(room: any, kit: MatrixKit, myUserId: string, nameH
           id: raw.event_id as string, roomId, senderId: sender,
           content: "", timestamp: (raw.origin_server_ts as number) ?? 0,
           status: MessageStatus.sent, type: MessageType.system,
-          callInfo: { callType: isVideo ? "video" : "voice", missed: reason === "invite_timeout", duration: Math.round(durationMs / 1000) },
+          callInfo: { callType: isVideo ? "video" : "voice", missed: reason === "invite_timeout", duration: Math.round(durationMs / 1000), callId: callContent.call_id as string | undefined },
           systemMeta: { template: callTemplateKey, senderAddr: sender },
         };
       }
@@ -5061,7 +5061,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         timestamp: (raw.origin_server_ts as number) ?? 0,
         status: MessageStatus.sent,
         type: MessageType.system,
-        callInfo: { callType: isVideo ? "video" : "voice", missed: reason === "invite_timeout", duration: Math.round(durationMs / 1000) },
+        callInfo: { callType: isVideo ? "video" : "voice", missed: reason === "invite_timeout", duration: Math.round(durationMs / 1000), callId: callContent.call_id as string | undefined },
         systemMeta: { template: callTemplateKey, senderAddr: sender },
       };
     }
@@ -6317,7 +6317,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           timestamp: (raw.origin_server_ts as number) ?? 0,
           status: MessageStatus.sent,
           type: MessageType.system,
-          callInfo: { callType: isVideo ? "video" : "voice", missed: reason === "invite_timeout", duration: Math.round(durationMs / 1000) },
+          callInfo: { callType: isVideo ? "video" : "voice", missed: reason === "invite_timeout", duration: Math.round(durationMs / 1000), callId: callContent.call_id as string | undefined },
           systemMeta: { template: callTemplateKey, senderAddr: sender },
         };
         addMessage(roomId, sysMsg);

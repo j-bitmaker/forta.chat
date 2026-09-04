@@ -9,6 +9,7 @@ import { formatDate } from "@/shared/lib/format";
 import { stripMentionAddresses } from "@/shared/lib/message-format";
 import { UserAvatar } from "@/entities/user";
 import { useMessages } from "../model/use-messages";
+import { dedupeCallEvents } from "@/entities/chat/lib/dedupe-call-events";
 import { useFileDownload } from "../model/use-file-download";
 import { useScrollToMessage, toMessage } from "../model/use-scroll-to-message";
 import { getChatDb, isChatDbReady } from "@/shared/lib/local-db";
@@ -321,7 +322,11 @@ interface VirtualItem {
 }
 
 const virtualItems = computed<VirtualItem[]>(() => {
-  const msgs = chatStore.activeMessages;
+  // Matrix stores one hangup event per participant who ends the call, so a call
+  // both sides hang up leaves two records of the same call. Collapse them here
+  // rather than in the store: the events are legitimate and stay in the
+  // database, only the timeline shows one entry per call.
+  const msgs = dedupeCallEvents(chatStore.activeMessages);
   const items: VirtualItem[] = [];
   const { frozenLastReadId, frozenUnreadCount } = bannerState.value;
   const myAddr = authStore.address;

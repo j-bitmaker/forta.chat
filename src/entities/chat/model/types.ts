@@ -125,6 +125,12 @@ export interface Message {
     missed: boolean;
     /** Call duration in seconds (0 or absent for missed/unanswered) */
     duration?: number;
+    /**
+     * Matrix call id. Both participants emit a hangup event, so one call can
+     * leave two records; the timeline groups on this to show it once. Absent
+     * on records written before it was stored.
+     */
+    callId?: string;
   };
   /** Poll metadata — present when type === poll */
   pollInfo?: PollInfo;
