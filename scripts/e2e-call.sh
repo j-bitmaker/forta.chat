@@ -14,6 +14,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# The callee flow is swappable so variants (e.g. the double-tap accept race)
+# reuse the same setup, login and sequencing instead of being driven by hand.
+CALLEE_FLOW="${CALLEE_FLOW:-e2e/maestro/flows/05-call-answer.yaml}"
 DEVICE_A="${DEVICE_A:-emulator-5554}"
 DEVICE_B="${DEVICE_B:-emulator-5556}"
 APK="android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk"
@@ -67,10 +70,20 @@ if [ "$SKIP_LOGIN" = "0" ]; then
     maestro --device "$DEVICE_B" test e2e/maestro/flows/03-login.yaml
 fi
 
+# Reset both apps to a known screen. A leftover call screen or an open sheet
+# makes the caller's "tap the contact" step fail for reasons that have nothing
+# to do with calling.
+for d in "$DEVICE_A" "$DEVICE_B"; do
+  adb -s "$d" shell am force-stop com.forta.chat >/dev/null 2>&1 || true
+  adb -s "$d" shell monkey -p com.forta.chat -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
+done
+echo "[call] both apps restarted; waiting for sync"
+sleep 60
+
 # The callee starts first and waits: an invite that lands before Maestro is
 # watching would be missed, and the ring times out in about a minute.
-echo "[call] arming callee on $DEVICE_B"
-maestro --device "$DEVICE_B" test e2e/maestro/flows/05-call-answer.yaml &
+echo "[call] arming callee on $DEVICE_B ($CALLEE_FLOW)"
+maestro --device "$DEVICE_B" test "$CALLEE_FLOW" &
 CALLEE_PID=$!
 
 # The callee's sync needs to be live before the invite is sent, otherwise the
