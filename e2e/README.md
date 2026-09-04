@@ -52,8 +52,32 @@ Learned the hard way on the first real runs; do not re-derive it:
 - The first Matrix sync after `clearState` takes minutes — chat-list waits
   need a timeout in the hundreds of seconds, far longer than login itself.
 
-## Not covered
+## Two-device call scenario
 
-Calls. A call needs a second participant, so the flows here cannot drive one;
-call regressions are covered by the Kotlin and Vitest suites plus manual runs
-on real OEM devices.
+`scripts/e2e-call.sh` signs both emulators in and runs the callee and caller
+flows in parallel against a live Matrix exchange. It proves signalling, the
+native ringing screen, answer and an established call — **not** that anyone can
+hear anything: emulator audio is synthetic, and the audio faults users report
+are vendor-firmware defects that need real hardware.
+
+```bash
+MAESTRO_E2E_PEER_NAME="<name device A sees for device B>" scripts/e2e-call.sh
+scripts/e2e-call.sh --skip-login    # devices already signed in
+```
+
+Four things this scenario taught us, all encoded in the flows:
+
+- **Keep the screens on.** A headless emulator with a dark screen lets Android
+  freeze the app process — logcat says "Sending oneway calls to frozen
+  process", the Matrix sync stops and the invite never arrives. It looks
+  exactly like the "incoming call never rings" bug. The runner issues
+  `svc power stayon true` for this reason.
+- **`launchApp` must not restart the app** (`stopApp: false`). Maestro kills
+  and relaunches by default, which tears down the Matrix session; the callee is
+  then resyncing when the invite lands and never rings.
+- **The ringing screen is a native Activity**, so its wording comes from
+  `android/app/src/main/res/values/strings.xml` ("Incoming audio call"), not
+  the JS locale ("Incoming voice call").
+- **"Connected" is on screen for a moment only** before the status line becomes
+  a running timer. Assert that "Connecting" disappeared instead — waiting for
+  the word itself is a race.

@@ -1,0 +1,36 @@
+appId: com.forta.chat
+name: Answer an incoming call (device B)
+tags:
+  - call
+---
+# Callee half of the two-device scenario. Started before the caller flow so it
+# is already waiting when the invite arrives.
+# `stopApp: false` matters: Maestro kills and restarts the app by default,
+# which tears down the Matrix session. The callee would then be resyncing when
+# the invite arrives and would never ring — indistinguishable from the bug we
+# are trying to observe.
+- launchApp:
+    stopApp: false
+- runFlow: ../subflows/dismiss-permissions.yaml
+
+# The ringing screen is a native Activity (IncomingCallActivity), not the
+# WebView modal, so its wording comes from android/app/src/main/res/values/
+# strings.xml — "Incoming audio call", not the JS locale's "voice call".
+- extendedWaitUntil:
+    visible: ".*Incoming (audio|video) call.*"
+    timeout: 120000
+
+- tapOn: "Accept"
+- runFlow:
+    when:
+      visible: "Allow"
+    commands:
+      - tapOn: "Allow"
+
+# Once the call connects the status line is replaced by a running timer, so
+# "Connected" is only briefly on screen. The in-call controls are the durable
+# proof that this side is in an established call.
+- extendedWaitUntil:
+    visible: "Mute"
+    timeout: 60000
+- assertVisible: "Earpiece"

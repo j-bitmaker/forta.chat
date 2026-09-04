@@ -1,0 +1,50 @@
+appId: com.forta.chat
+name: Place a voice call (device A)
+tags:
+  - call
+---
+# Half of the two-device call scenario: this runs on the caller. The callee
+# side is 05-call-answer.yaml, started in parallel by scripts/e2e-call.sh.
+# Neither half is meaningful alone.
+# Do not restart the app: a fresh sync on the caller delays the invite by
+# minutes and pushes the two devices out of step.
+- launchApp:
+    stopApp: false
+- runFlow: ../subflows/dismiss-permissions.yaml
+
+# Assumes an already signed-in device — the runner logs both in first, because
+# a fresh sync per flow would push the two sides minutes out of step.
+- extendedWaitUntil:
+    visible: ".*${MAESTRO_E2E_PEER_NAME}.*"
+    timeout: 120000
+- tapOn: ".*${MAESTRO_E2E_PEER_NAME}.*"
+- extendedWaitUntil:
+    visible: "Go back"
+    timeout: 30000
+
+- tapOn: "Voice call"
+
+# Microphone permission is requested on the first call, not at launch.
+- runFlow: ../subflows/dismiss-permissions.yaml
+- runFlow:
+    when:
+      visible: "Allow"
+    commands:
+      - tapOn: "Allow"
+
+# The in-call screen is the proof the invite left this device. Match on the
+# Mute control rather than the status line: the status text is localised and
+# uses a unicode ellipsis ("Connecting…"), which an ASCII "..." never matches.
+- extendedWaitUntil:
+    visible: "Mute"
+    timeout: 30000
+
+# Then wait for the callee to pick up. "Connected" flashes for a moment before
+# the status line turns into a running timer, so waiting for that word is a
+# race; waiting for "Connecting" to go away captures the same transition
+# reliably. Anything that fails after the invite — no answer, ICE failure, an
+# immediate drop — leaves the status stuck and trips this.
+- extendedWaitUntil:
+    notVisible: ".*Connecting.*"
+    timeout: 90000
+- assertVisible: "Mute"
