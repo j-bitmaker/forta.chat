@@ -14,6 +14,7 @@ import IncomingCallModal from "@/features/video-calls/ui/IncomingCallModal.vue";
 import CallWindow from "@/features/video-calls/ui/CallWindow.vue";
 import CallStatusBar from "@/features/video-calls/ui/CallStatusBar.vue";
 import CallFeedbackHost from "@/features/video-calls/ui/CallFeedbackHost.vue";
+import { BugReportModal } from "@/features/bug-report";
 import PermissionDeniedModal from "@/features/video-calls/ui/PermissionDeniedModal.vue";
 import QuickSearchModal from "@/features/search/ui/QuickSearchModal.vue";
 import { JoinRoomPreviewModal } from "@/features/join-room";
@@ -505,6 +506,7 @@ onUnmounted(() => {
     <CallWindow />
     <CallStatusBar />
     <CallFeedbackHost />
+    <BugReportModal />
     <PermissionDeniedModal />
     <QuickSearchModal
       v-if="showQuickSearch"
