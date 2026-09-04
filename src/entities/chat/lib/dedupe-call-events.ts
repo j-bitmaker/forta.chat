@@ -33,3 +33,38 @@ export function dedupeCallEvents<T extends { callInfo?: Message["callInfo"] }>(
 
   return out;
 }
+
+type CallRecord = Pick<Message, "id" | "_key" | "callInfo">;
+
+/**
+ * Maps every id {@link dedupeCallEvents} drops onto the id that survived it.
+ *
+ * Anything holding a message id across the collapse needs this. The read
+ * watermark is the case that bites: the second hangup is the newest event in
+ * the room, so it is exactly what "last read" tends to name — and once that
+ * record is collapsed away, a lookup for its id finds nothing at all.
+ */
+export function collapsedCallEventIds(
+  messages: readonly CallRecord[],
+): Map<string, string> {
+  const survivors = new Map<string, CallRecord>();
+  const collapsed = new Map<string, string>();
+
+  for (const message of messages) {
+    const callId = message.callInfo?.callId;
+    if (!callId) continue;
+
+    const survivor = survivors.get(callId);
+    if (!survivor) {
+      survivors.set(callId, message);
+      continue;
+    }
+
+    // Callers match on either id, so either one resolves the anchor.
+    const survivorId = survivor._key ?? survivor.id;
+    if (message.id) collapsed.set(message.id, survivorId);
+    if (message._key) collapsed.set(message._key, survivorId);
+  }
+
+  return collapsed;
+}

@@ -9,7 +9,7 @@ import { formatDate } from "@/shared/lib/format";
 import { stripMentionAddresses } from "@/shared/lib/message-format";
 import { UserAvatar } from "@/entities/user";
 import { useMessages } from "../model/use-messages";
-import { dedupeCallEvents } from "@/entities/chat/lib/dedupe-call-events";
+import { collapsedCallEventIds, dedupeCallEvents } from "@/entities/chat/lib/dedupe-call-events";
 import { useFileDownload } from "../model/use-file-download";
 import { useScrollToMessage, toMessage } from "../model/use-scroll-to-message";
 import { getChatDb, isChatDbReady } from "@/shared/lib/local-db";
@@ -326,9 +326,18 @@ const virtualItems = computed<VirtualItem[]>(() => {
   // both sides hang up leaves two records of the same call. Collapse them here
   // rather than in the store: the events are legitimate and stay in the
   // database, only the timeline shows one entry per call.
-  const msgs = dedupeCallEvents(chatStore.activeMessages);
+  const rawMsgs = chatStore.activeMessages;
+  const msgs = dedupeCallEvents(rawMsgs);
   const items: VirtualItem[] = [];
-  const { frozenLastReadId, frozenUnreadCount } = bannerState.value;
+  const { frozenLastReadId: watermarkId, frozenUnreadCount } = bannerState.value;
+  // The watermark can name a call record the collapse above removed — the
+  // second hangup is usually the newest event in the room. Point it at the
+  // record that survived, or the unread banner loses its anchor and never
+  // renders.
+  const frozenLastReadId =
+    watermarkId && frozenUnreadCount > 0
+      ? (collapsedCallEventIds(rawMsgs).get(watermarkId) ?? watermarkId)
+      : watermarkId;
   const myAddr = authStore.address;
 
   // Track whether we've found the last-read message and need to insert the banner.
