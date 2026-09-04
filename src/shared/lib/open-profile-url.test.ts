@@ -1,73 +1,79 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// Mock @/shared/lib/platform before importing the module under test
+// A mutable flag behind a getter, rather than `doMock` + `resetModules` +
+// dynamic import. The previous version depended on the module cache being
+// cleared between the parent and child `beforeEach`; when it was not, the
+// import returned the module bound to the earlier platform value and the
+// native cases failed intermittently in full runs while passing in isolation.
+let mockIsNative = false;
 vi.mock("@/shared/lib/platform", () => ({
-  isNative: false,
+  get isNative() {
+    return mockIsNative;
+  },
 }));
 
+import { openBastyonProfile } from "./open-profile-url";
+
 describe("openBastyonProfile", () => {
+  let windowOpenSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
-    vi.clearAllMocks();
-    vi.resetModules();
+    windowOpenSpy = vi.spyOn(window, "open").mockReturnValue(null);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   describe("on native platform", () => {
     beforeEach(() => {
-      vi.doMock("@/shared/lib/platform", () => ({ isNative: true }));
+      mockIsNative = true;
     });
 
-    it("calls window.open with bastyon:// URL", async () => {
-      const windowOpenSpy = vi.spyOn(window, "open").mockReturnValue(null);
-      const { openBastyonProfile } = await import("./open-profile-url");
+    it("calls window.open with bastyon:// URL", () => {
       openBastyonProfile("abc123");
+
       expect(windowOpenSpy).toHaveBeenCalledWith(
         "bastyon://user?address=abc123",
         "_blank",
-        "noopener"
+        "noopener",
       );
-      windowOpenSpy.mockRestore();
     });
 
-    it("encodes special characters in address", async () => {
-      const windowOpenSpy = vi.spyOn(window, "open").mockReturnValue(null);
-      const { openBastyonProfile } = await import("./open-profile-url");
+    it("encodes special characters in address", () => {
       openBastyonProfile("user@test+special");
+
       expect(windowOpenSpy).toHaveBeenCalledWith(
         `bastyon://user?address=${encodeURIComponent("user@test+special")}`,
         "_blank",
-        "noopener"
+        "noopener",
       );
-      windowOpenSpy.mockRestore();
     });
   });
 
   describe("on web platform", () => {
     beforeEach(() => {
-      vi.doMock("@/shared/lib/platform", () => ({ isNative: false }));
+      mockIsNative = false;
     });
 
-    it("calls window.open with https URL and noopener", async () => {
-      const windowOpenSpy = vi.spyOn(window, "open").mockReturnValue(null);
-      const { openBastyonProfile } = await import("./open-profile-url");
+    it("calls window.open with https URL and noopener", () => {
       openBastyonProfile("abc123");
+
       expect(windowOpenSpy).toHaveBeenCalledWith(
         "https://bastyon.com/user?address=abc123",
         "_blank",
-        "noopener"
+        "noopener",
       );
-      windowOpenSpy.mockRestore();
     });
 
-    it("encodes special characters in address for web URL", async () => {
-      const windowOpenSpy = vi.spyOn(window, "open").mockReturnValue(null);
-      const { openBastyonProfile } = await import("./open-profile-url");
+    it("encodes special characters in address for web URL", () => {
       openBastyonProfile("user@test+special");
+
       expect(windowOpenSpy).toHaveBeenCalledWith(
         `https://bastyon.com/user?address=${encodeURIComponent("user@test+special")}`,
         "_blank",
-        "noopener"
+        "noopener",
       );
-      windowOpenSpy.mockRestore();
     });
   });
 });
