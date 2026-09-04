@@ -72,10 +72,15 @@ command -v maestro >/dev/null || {
   exit 1
 }
 
-adb get-state >/dev/null 2>&1 || {
+# Pick a device explicitly. Bare `adb get-state`/`adb install` fail with "more
+# than one device" as soon as a second emulator is running, which is the normal
+# state here because the call scenario needs two.
+DEVICE="${DEVICE:-$(adb devices | awk '$2 == "device" { print $1; exit }')}"
+[ -n "$DEVICE" ] || {
   echo "[e2e] no device. Start one: emulator -avd callA" >&2
   exit 1
 }
+echo "[e2e] using $DEVICE"
 
 if [ "$BUILD" = "1" ]; then
   echo "[e2e] building debug APK"
@@ -89,7 +94,7 @@ fi
 }
 
 echo "[e2e] installing APK"
-adb install -r "$APK" >/dev/null
+adb -s "$DEVICE" install -r "$APK" >/dev/null
 
 echo "[e2e] running $TARGET"
-maestro test "$TARGET"
+maestro --device "$DEVICE" test "$TARGET"
