@@ -310,6 +310,8 @@ function syncRemoteVideoMuted(call: MatrixCall) {
 
 /** Stored handler refs so we can remove them with call.off() */
 let boundHandlers: {
+  /** Call these handlers belong to, so teardown releases the right dedup slot. */
+  callId: string;
   onState: CallEventHandlerMap[CallEvent.State];
   onFeeds: CallEventHandlerMap[CallEvent.FeedsChanged];
   onHangup: CallEventHandlerMap[CallEvent.Hangup];
@@ -331,11 +333,18 @@ function unwireCallEvents(call: MatrixCall) {
     diagnosticsWarningListener = null;
   }
   cleanupRemoteFeedListener();
+  if (!boundHandlers) return;
   // Session 31: release the dedup slot so a future invite with the same
   // callId (e.g. caller re-invited after the original was rejected) is
   // routed normally instead of being silently dropped.
-  if (call.callId) clearIncomingCallSeen(call.callId);
-  if (!boundHandlers) return;
+  //
+  // Keyed on the call whose handlers are actually being removed, and placed
+  // after the guard above. Both matter: wireCallEvents opens by calling this
+  // function on the call it is about to wire, so clearing `call.callId`
+  // unconditionally wiped the mark handleIncomingCall had set moments before —
+  // the 60 s dedup window never survived past the same tick, and a second
+  // delivery of the same invite rang again.
+  if (boundHandlers.callId) clearIncomingCallSeen(boundHandlers.callId);
   try {
     call.off(CallEvent.State, boundHandlers.onState);
     call.off(CallEvent.FeedsChanged, boundHandlers.onFeeds);
@@ -389,6 +398,10 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
   const onState = ((newState: SDKCallState, _oldState: SDKCallState) => {
     const status = mapSDKState(newState, direction);
     callStore.updateStatus(status);
+    // The SDK mutates `state` on the call object in place, which no ref sees.
+    // `hasLiveCall` reads that field, so without this nudge it would answer
+    // from cache and keep reporting a live call after this one ended.
+    callStore.touchMatrixCall();
 
     // WEE-54 / forta-bugs#866: start the outgoing ringback only once the
     // invite has actually been sent to the homeserver (InviteSent), not
@@ -538,7 +551,7 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
     callStore.scheduleClearCall(2000);
   }) as CallEventHandlerMap[CallEvent.Error];
 
-  boundHandlers = { onState, onFeeds, onHangup, onError };
+  boundHandlers = { callId: call.callId, onState, onFeeds, onHangup, onError };
   call.on(CallEvent.State, onState);
   call.on(CallEvent.FeedsChanged, onFeeds);
   call.on(CallEvent.Hangup, onHangup);
@@ -834,6 +847,20 @@ let toggleCameraLock = false;
 // `finally` guarantees we never leak the lock across calls.
 let answerInProgress = false;
 
+/**
+ * True when the SDK has already terminated this call.
+ *
+ * `CallState.Ended` is the state the SDK moves an expired invite into: its
+ * lifetime timer is armed with `lifetime - localAge`, which is negative for
+ * an invite the homeserver retained, so it fires on the tick right after
+ * `Call.incoming`. Read defensively — `state` is not in every SDK version's
+ * public surface and a missing one must not stop a legitimate call ringing.
+ */
+function isSdkCallEnded(call: MatrixCall): boolean {
+  const state = (call as unknown as { state?: string }).state;
+  return state === "ended";
+}
+
 // ---------------------------------------------------------------------------
 // Outgoing-call re-entry lock (WEE-49 / forta-bugs#460)
 // ---------------------------------------------------------------------------
@@ -859,7 +886,13 @@ export function useCallService() {
   const callStore = useCallStore();
 
   async function startCall(roomId: string, type: CallType) {
-    if (callStore.isInCall) {
+    // `hasLiveCall`, not `isInCall`: on Android an incoming call rings
+    // through Telecom with no CallInfo written yet, so `isInCall` is false
+    // for the whole ring and the call buttons stay live. Dialling from that
+    // screen used to overwrite the single MatrixCall slot, orphaning the
+    // call that was ringing — the user answered a call nothing was
+    // listening to any more (#1183).
+    if (callStore.hasLiveCall) {
       console.warn("[call-service] Already in a call");
       return;
     }
@@ -1128,7 +1161,7 @@ export function useCallService() {
       }
     }
 
-    if (callStore.isInCall) {
+    if (callStore.hasLiveCall) {
       console.log("[call-service] handleIncomingCall: already in call, rejecting");
       matrixCall.reject();
       // Release the dedup slot: when the current call ends the user is
@@ -1246,6 +1279,33 @@ export function useCallService() {
     // don't get a duplicate Vue ringer on top of the native one.
     //
     // On web: render the Vue incoming ringer and play our ringtone.
+    //
+    // Last check before any ringer: the SDK ends a call whose invite is
+    // already past its lifetime, and a homeserver that retained the invite
+    // while FCM was degraded delivers exactly that on the next /sync — the
+    // SDK's expiry timer runs a tick after Call.incoming, so by the time the
+    // awaits above have resolved it has usually already fired. Ringing for a
+    // call the SDK has ended is what "a call came in from that account seven
+    // minutes later, and there was no call" looks like from the outside
+    // (#958, #928).
+    if (isSdkCallEnded(matrixCall)) {
+      console.warn(
+        "[call-service] incoming call already ended by the SDK (expired invite) — not ringing:",
+        matrixCall.callId,
+      );
+      if (matrixCall.callId) clearIncomingCallSeen(matrixCall.callId);
+      // Through finalizeCall like every other termination path: the native
+      // side may already be ringing (FCM usually wins this race, which is how
+      // a retained invite gets here in the first place), and only finalizeCall
+      // releases the Telecom connection and dismisses that ringer. Nulling the
+      // Pinia slot alone is invisible to native — the phone would keep ringing
+      // for a call that is already over.
+      unwireCallEvents(matrixCall);
+      if (isNative) void finalizeCall("sdk-ended", matrixCall.callId);
+      callStore.setMatrixCall(null);
+      return;
+    }
+
     if (isNative) {
       // activeCall stays cleared so no Vue ringer. matrixCall is set
       // above so rejectCall()/answerCall() can find it.

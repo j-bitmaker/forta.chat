@@ -122,6 +122,12 @@ export interface NativeCallNativePlugin {
    */
   forceStopAudio(): Promise<void>;
   /**
+   * Release a self-managed Telecom connection left ringing past its
+   * deadline. Android only — see
+   * {@link NativeCallBridge.releaseStaleRingingCall}.
+   */
+  releaseStaleRingingCall(): Promise<{ released: boolean }>;
+  /**
    * Snapshot of the current AudioManager state. Used by the app-resume
    * watchdog to detect a stuck VoIP audio mode.
    */

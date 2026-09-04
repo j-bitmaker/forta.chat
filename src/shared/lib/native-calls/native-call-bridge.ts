@@ -743,6 +743,33 @@ class NativeCallBridge {
   }
 
   /**
+   * Ask native to release a Telecom connection that has been ringing past
+   * its deadline, and report whether it found one.
+   *
+   * The resume watchdog can recover a stranded MODE_IN_COMMUNICATION by
+   * resetting the audio mode, but MODE_RINGTONE — where most "the phone is
+   * stuck after a call" reports were filed from — is held by Telecom on
+   * behalf of our own connection, and a real cellular call ringing sets the
+   * same mode. Resetting it blindly would break the system ringer, so the
+   * recovery is to release our connection and let Telecom drop the mode.
+   * The staleness bar lives natively (StaleCallPolicy) so a call the user is
+   * about to answer is never touched.
+   *
+   * Android only, and safe on builds that predate the plugin method: a
+   * Capacitor "not implemented" rejection means there is nothing to release.
+   */
+  async releaseStaleRingingCall(): Promise<boolean> {
+    if (!isAndroid) return false;
+    try {
+      const result = await NativeCall.releaseStaleRingingCall();
+      return result?.released === true;
+    } catch (e) {
+      console.warn('[NativeCallBridge] releaseStaleRingingCall unavailable:', e);
+      return false;
+    }
+  }
+
+  /**
    * Read current AudioManager mode and routing flags from native.
    * Returns mode = "MODE_NORMAL" when no call active or
    * "MODE_IN_COMMUNICATION" while a VoIP call is in progress.

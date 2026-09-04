@@ -335,6 +335,14 @@ export function createIOSNativeCallAdapter(): NativeCallNativePlugin {
       }
     },
 
+    async releaseStaleRingingCall(): Promise<{ released: boolean }> {
+      // Telecom self-managed connections are an Android concept; on iOS
+      // CallKit owns the ring and ends it itself. The bridge short-circuits
+      // on `!isAndroid` before reaching here — present only to honor the
+      // NativeCallNativePlugin contract.
+      return { released: false };
+    },
+
     async getAudioStatus() {
       try {
         return await IOSCallAudio.getStatus();

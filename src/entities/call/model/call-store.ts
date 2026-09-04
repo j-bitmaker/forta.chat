@@ -34,6 +34,30 @@ export const useCallStore = defineStore(NAMESPACE, () => {
       activeCall.value.status !== CallStatus.failed,
   );
 
+  /**
+   * True while a call occupies the single call slot — including the window
+   * where the SDK has a MatrixCall but no CallInfo has been written yet.
+   *
+   * On Android an incoming call rings through Telecom and `setActiveCall`
+   * is deferred until the user actually answers, so `isInCall` stays false
+   * for the entire ring. Re-entry guards keyed on `isInCall` therefore let a
+   * second call take the slot mid-ring and orphan the first one: the call
+   * the user then answered had already been unwired (#1183).
+   *
+   * A MatrixCall the SDK has already ended does not count — but only if
+   * something told us: `state` is a plain field on the SDK object, not a
+   * reactive one, so mutating it in place triggers nothing and this computed
+   * keeps its cached answer. `touchMatrixCall` is what makes the check real;
+   * the call-service state handler calls it on every SDK transition. Without
+   * that, the ~1.5s between a call ending and `scheduleClearCall` nulling the
+   * slot would reject a new incoming call.
+   */
+  const hasLiveCall = computed(
+    () =>
+      isInCall.value ||
+      (matrixCall.value != null && matrixCall.value.state !== "ended"),
+  );
+
   const isRinging = computed(
     () =>
       activeCall.value?.status === CallStatus.ringing ||
@@ -93,6 +117,15 @@ export const useCallStore = defineStore(NAMESPACE, () => {
 
   function setMatrixCall(call: any) {
     matrixCall.value = call;
+  }
+
+  /**
+   * Re-notify readers of `matrixCall` after the SDK mutated the call object
+   * in place. `matrixCall` is a shallowRef, so a changed `state` on the same
+   * object is invisible to `hasLiveCall` until the ref itself is triggered.
+   */
+  function touchMatrixCall() {
+    triggerRef(matrixCall);
   }
 
   function setLocalStream(stream: MediaStream | null) {
@@ -159,6 +192,7 @@ export const useCallStore = defineStore(NAMESPACE, () => {
     history,
     audioOutputId,
     isInCall,
+    hasLiveCall,
     isRinging,
     setActiveCall,
     clearCall,
@@ -166,6 +200,7 @@ export const useCallStore = defineStore(NAMESPACE, () => {
     cancelScheduledClear,
     updateStatus,
     setMatrixCall,
+    touchMatrixCall,
     setLocalStream,
     setRemoteStream,
     setLocalScreenStream,

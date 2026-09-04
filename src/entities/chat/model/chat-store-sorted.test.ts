@@ -203,11 +203,27 @@ describe("large room list", () => {
     store = useChatStore();
   });
 
+  // Deterministic shuffle. The previous fixture used Math.random(), which
+  // made this test fail roughly once in 200 runs: with 500 draws over
+  // [0, 100000) a timestamp of exactly 0 shows up ~0.5% of the time, and
+  // getSortKey reads `lastMessage?.timestamp || updatedAt` — a falsy 0 falls
+  // back to updatedAt (Date.now() in makeRoom), sending that room to the top
+  // while the loop below still compares its raw timestamp of 0. The
+  // fallback is intended (see sortsZeroTimestamp test); the fixture was not.
+  const pseudoRandomTimestamps = (count: number): number[] => {
+    let seed = 0x2f6e2b1;
+    return Array.from({ length: count }, () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return 1 + (seed % 100000); // never 0 — 0 means "no message" to the store
+    });
+  };
+
   it("correctly sorts 500 rooms by timestamp", () => {
+    const timestamps = pseudoRandomTimestamps(500);
     const rooms = Array.from({ length: 500 }, (_, i) =>
       makeRoom({
         id: `!r${i}:s`,
-        lastMessage: makeMsgField({ timestamp: Math.floor(Math.random() * 100000) }),
+        lastMessage: makeMsgField({ timestamp: timestamps[i] }),
       })
     );
     store.rooms = rooms;
@@ -218,6 +234,25 @@ describe("large room list", () => {
       const currTs = sorted[i].lastMessage?.timestamp ?? 0;
       expect(prevTs).toBeGreaterThanOrEqual(currTs);
     }
+  });
+
+  it("treats a zero lastMessage timestamp as no message and sorts by updatedAt", () => {
+    // getSortKey uses `||`, so timestamp 0 is falsy and updatedAt wins. A room
+    // whose only message carries ts=0 therefore sorts by recency of the room
+    // record, not to the bottom. Pinned here so the 500-room fixture above
+    // cannot rediscover it as an intermittent failure.
+    const zeroTs = makeRoom({
+      id: "!zero:s",
+      updatedAt: 900000,
+      lastMessage: makeMsgField({ timestamp: 0 }),
+    });
+    const normal = makeRoom({
+      id: "!normal:s",
+      updatedAt: 1,
+      lastMessage: makeMsgField({ timestamp: 500 }),
+    });
+    store.rooms = [normal, zeroTs];
+    expect(store.sortedRooms.map(r => r.id)).toEqual(["!zero:s", "!normal:s"]);
   });
 
   it("pinned rooms stay at top with 500 rooms", () => {

@@ -20,6 +20,8 @@ import androidx.core.app.NotificationCompat
 import com.forta.chat.R
 import com.forta.chat.plugins.locale.LocaleHelper
 import com.forta.chat.plugins.webrtc.WebRTCPlugin
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 /**
  * Foreground service that keeps the call alive when the app is backgrounded.
@@ -94,6 +96,13 @@ class CallForegroundService : Service() {
         // readers are on the main thread (watchdog + CallActivity.onResume),
         // but the cost of @Volatile is a single memory barrier so the
         // safety win is free.
+        /**
+         * Single worker for the blocking WebRTC teardown. Static so the work
+         * survives the service instance that scheduled it.
+         */
+        private val mediaReleaseExecutor: ExecutorService =
+            Executors.newSingleThreadExecutor { r -> Thread(r, "forta-call-media-release") }
+
         @Volatile
         private var instance: CallForegroundService? = null
 
@@ -204,7 +213,50 @@ class CallForegroundService : Service() {
         return START_NOT_STICKY
     }
 
+    /**
+     * True when a *newer* service instance has already taken over.
+     *
+     * `stopSelf()` → `onDestroy()` is asynchronous, and OEM ROMs defer it
+     * further, so the OS can run a superseded instance's teardown long after
+     * the next call has created and started a fresh service. Everything in
+     * that teardown is process-wide — the audio mode and the WebRTC
+     * PeerConnections are global, not per-instance — so running it from a
+     * dead instance would mute or drop a call that is currently live. A
+     * superseded instance therefore releases only what it actually owns: its
+     * own wake-lock and its own audio-focus request.
+     */
+    private fun isSuperseded(): Boolean {
+        val live = instance
+        return live != null && live !== this
+    }
+
+    /**
+     * Close the WebRTC capture path on a worker thread.
+     *
+     * Static executor: the work has to outlive the service instance that
+     * scheduled it, and both teardown paths can schedule it in the same call
+     * cycle. closeAllPeerConnections is idempotent, so the second run is a
+     * no-op rather than a double teardown.
+     */
+    private fun releaseMediaAsync(from: String) {
+        runCatching {
+            mediaReleaseExecutor.execute {
+                runCatching { WebRTCPlugin.manager?.closeAllPeerConnections() }
+                    .onFailure { Log.w(TAG, "closeAllPeerConnections from $from threw", it) }
+            }
+        }.onFailure { Log.w(TAG, "could not schedule media release from $from", it) }
+    }
+
     override fun onTaskRemoved(rootIntent: Intent?) {
+        if (isSuperseded()) {
+            Log.w(TAG, "onTaskRemoved on a superseded instance - skipping global teardown")
+            hasStarted = false
+            releaseWakeLock()
+            abandonAudioFocus()
+            super.onTaskRemoved(rootIntent)
+            stopSelf()
+            return
+        }
         // WEE-54 / forta-bugs#839 (reopen): when the user swipes the app out of
         // Recents during or right after a call, Android delivers onTaskRemoved
         // but does NOT always call onDestroy promptly — the OS can keep the
@@ -216,6 +268,26 @@ class CallForegroundService : Service() {
         runCatching {
             AudioRouter.getSharedInstance(applicationContext).forceStop()
         }.onFailure { Log.w(TAG, "AudioRouter.forceStop in onTaskRemoved threw", it) }
+
+        // Nothing here used to close the WebRTC side at all, so a swipe-out
+        // left AudioRecord held by the app — "the mic keeps being used by
+        // forta" (#997). Worse, startLocalAudio early-returns while
+        // localAudioTrack is non-null, so the orphaned track (bound to a dead
+        // PeerConnection) poisoned the next call too. closeAllPeerConnections
+        // → stopLocalMedia disposes both.
+        //
+        // Off the main thread, unlike the audio-mode reset above: this path
+        // blocks on videoCapturer.stopCapture(), which waits for the capture
+        // thread to actually stop and can take a second on an old camera HAL —
+        // an ANR on a lifecycle callback that runs while the rest of the app is
+        // still on screen. Everywhere else in the app this method is reached
+        // from Capacitor's plugin thread, never the UI one.
+        //
+        // Async is safe *here specifically* because the microphone is
+        // process-local: if the process dies before this runs, the OS reclaims
+        // the capture anyway. The audio mode is the opposite — it is global and
+        // outlives the process — which is why forceStop above stays synchronous.
+        releaseMediaAsync("onTaskRemoved")
 
         runCatching {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -243,6 +315,14 @@ class CallForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        if (isSuperseded()) {
+            Log.w(TAG, "onDestroy on a superseded instance - skipping global teardown")
+            hasStarted = false
+            releaseWakeLock()
+            abandonAudioFocus()
+            super.onDestroy()
+            return
+        }
         // WEE-49: when the OS tears the service down without going through
         // ACTION_STOP (process killed by OEM Doze, swipe-app-out, low-mem
         // SIGKILL, system-initiated `stopWithReason`), the previous teardown
@@ -255,6 +335,26 @@ class CallForegroundService : Service() {
         runCatching {
             AudioRouter.getSharedInstance(applicationContext).forceStop()
         }.onFailure { Log.w(TAG, "AudioRouter.forceStop in onDestroy threw", it) }
+
+        // Nothing here used to close the WebRTC side at all, so a swipe-out
+        // left AudioRecord held by the app — "the mic keeps being used by
+        // forta" (#997). Worse, startLocalAudio early-returns while
+        // localAudioTrack is non-null, so the orphaned track (bound to a dead
+        // PeerConnection) poisoned the next call too. closeAllPeerConnections
+        // → stopLocalMedia disposes both.
+        //
+        // Off the main thread, unlike the audio-mode reset above: this path
+        // blocks on videoCapturer.stopCapture(), which waits for the capture
+        // thread to actually stop and can take a second on an old camera HAL —
+        // an ANR on a lifecycle callback that runs while the rest of the app is
+        // still on screen. Everywhere else in the app this method is reached
+        // from Capacitor's plugin thread, never the UI one.
+        //
+        // Async is safe *here specifically* because the microphone is
+        // process-local: if the process dies before this runs, the OS reclaims
+        // the capture anyway. The audio mode is the opposite — it is global and
+        // outlives the process — which is why forceStop above stays synchronous.
+        releaseMediaAsync("onDestroy")
 
         runCatching {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -463,8 +563,23 @@ class CallForegroundService : Service() {
     private fun requestAudioFocus() {
         val am = audioManager ?: return
 
-        // Save current volume for restore (D-09)
-        savedVoiceCallVolume = am.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
+        // Release the previous request before building another one. This is not
+        // a one-shot call: CallActivity.onResume re-requests on every return to
+        // the app — PiP exit, unlock, task switch — and each overwrite used to
+        // strand the earlier AUDIOFOCUS_GAIN request, which only the last one
+        // ever abandoned.
+        audioFocusRequest?.let {
+            runCatching { am.abandonAudioFocusRequest(it) }
+                .onFailure { e -> Log.w("WebRTCAudio", "abandon before re-request threw", e) }
+            audioFocusRequest = null
+        }
+
+        // Save current volume for restore (D-09). Only on the first request of
+        // the call: a re-request during a ducked window would otherwise capture
+        // the ducked level as the "original" and restore that on teardown.
+        if (savedVoiceCallVolume < 0) {
+            savedVoiceCallVolume = am.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
+        }
 
         val attrs = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)

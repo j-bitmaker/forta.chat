@@ -230,13 +230,29 @@ class CallPlugin : Plugin() {
 
     @PluginMethod
     fun reportCallEnded(call: PluginCall) {
+        // Unconditional, and before the connection work: when /sync beats FCM to
+        // the hangup this is the only path that runs, and the FCM branch that
+        // used to be the sole caller of dismissIfShowing never fires. A null
+        // connection must not swallow the dismiss either, or the ringer keeps
+        // playing for a call that is already over.
+        IncomingCallActivity.dismissIfShowing()
+        // onDisconnect vacates the slot itself, identity-guarded. Clearing it
+        // again here is not just redundant: this method runs on Capacitor's
+        // plugin thread while Telecom assigns a new connection on the main
+        // thread, so an unconditional null can land between the assignment for
+        // the *next* call and anything that reads it — leaving that call with
+        // no Connection to answer, and its own ring backstop hanging it up 45
+        // seconds after the user picked up.
         CallConnectionService.currentConnection?.onDisconnect()
-        CallConnectionService.currentConnection = null
         call.resolve()
     }
 
     @PluginMethod
     fun reportCallConnected(call: PluginCall) {
+        // setActive() here bypasses CallConnection.onAnswer(), so the silencing
+        // that lives there does not cover this route. JS reaches it whenever the
+        // call connects without Telecom having answered it itself.
+        IncomingCallActivity.stopRingerIfShowing()
         CallConnectionService.currentConnection?.setActive()
         call.resolve()
     }
@@ -530,6 +546,29 @@ class CallPlugin : Plugin() {
      * resume. Returns mode as a string identifier so JS does not have
      * to hardcode the Android numeric constants.
      */
+    /**
+     * Release a self-managed Telecom connection that has been ringing past its
+     * deadline, and report whether one was found.
+     *
+     * The JS app-resume watchdog already recovers a stranded
+     * MODE_IN_COMMUNICATION, but it never covered MODE_RINGTONE — which is
+     * where most of the "phone is stuck after a call" reports were submitted
+     * from. That mode is not ours to reset directly (a real cellular call
+     * ringing sets it too); the honest fix is to release *our* connection and
+     * let Telecom drop the mode on its own. [StaleCallPolicy] keeps this from
+     * touching a call the user is about to answer.
+     */
+    @PluginMethod
+    fun releaseStaleRingingCall(call: PluginCall) {
+        val released = try {
+            CallConnectionService.releaseStaleRingingConnection()
+        } catch (e: Throwable) {
+            Log.w(TAG, "releaseStaleRingingCall threw", e)
+            false
+        }
+        call.resolve(JSObject().put("released", released))
+    }
+
     @PluginMethod
     fun getAudioStatus(call: PluginCall) {
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager

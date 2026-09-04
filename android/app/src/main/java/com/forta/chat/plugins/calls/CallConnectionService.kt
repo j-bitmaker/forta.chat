@@ -9,9 +9,13 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.telecom.*
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import java.util.concurrent.atomic.AtomicBoolean
 import com.forta.chat.R
 
 class CallConnectionService : ConnectionService() {
@@ -36,6 +40,38 @@ class CallConnectionService : ConnectionService() {
                 .build()
             val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
             telecomManager.registerPhoneAccount(account)
+        }
+
+        /**
+         * Release a connection that has been RINGING past its deadline.
+         *
+         * Telecom holds `MODE_RINGTONE` — and with it the device's media
+         * volume — for as long as a self-managed connection rings. The
+         * per-connection timer is the primary backstop; this sweep is what
+         * catches the cases where that timer never got to run (Doze, a wedged
+         * main looper, a frozen process). Called when the app returns to the
+         * foreground, which is exactly when a user who is staring at a broken
+         * volume slider opens it.
+         *
+         * @return true when a connection was actually released.
+         */
+        fun releaseStaleRingingConnection(
+            nowMs: Long = SystemClock.elapsedRealtime(),
+        ): Boolean {
+            val connection = currentConnection ?: return false
+            val stale = StaleCallPolicy.isStaleRinging(
+                isRinging = connection.state == Connection.STATE_RINGING,
+                ringingSinceMs = connection.ringingSinceMs,
+                nowMs = nowMs,
+                timeoutMs = CallConnection.RING_TIMEOUT_MS,
+            )
+            if (!stale) return false
+            Log.w(TAG, "Releasing a connection stuck RINGING past its deadline: ${connection.callId}")
+            // onReject (not onDisconnect) so the caller is told we declined
+            // and stops ringing on their side too.
+            runCatching { connection.onReject() }
+                .onFailure { Log.w(TAG, "stale-ring release threw", it) }
+            return true
         }
 
         fun dismissIncomingCallNotification(context: Context) {
@@ -72,7 +108,18 @@ class CallConnectionService : ConnectionService() {
             connection.setInitializing()
             connection.setRinging()
 
+            // Releasing whatever sat here before is not optional: a connection
+            // displaced from this single slot is unreachable by onReject and
+            // onDisconnect forever, and Telecom keeps holding the device in a
+            // call audio mode on its behalf until reboot.
+            currentConnection?.let { previous ->
+                if (previous !== connection) {
+                    Log.w(TAG, "Displacing a live connection — disconnecting it first")
+                    runCatching { previous.onDisconnect() }
+                }
+            }
             currentConnection = connection
+            connection.armRingTimeout()
 
             // Session 41: Telecom is about to post its own FSI ringer notification
             // (CHANNEL_INCOMING_CALLS, id 9999). The FCM service already posted
@@ -295,11 +342,93 @@ class CallConnection(
          */
         var pendingRejectCallId: String? = null
         var pendingRejectRoomId: String? = null
+
+        /**
+         * Backstop for a connection nobody ever resolves. Longer than the 30 s
+         * countdown in [IncomingCallActivity] so that, when the activity does
+         * run, its own auto-reject still wins and the user keeps the UI they
+         * are looking at. Shorter than the SDK's 60 s invite lifetime, so the
+         * device is never left ringing for a call the caller has given up on.
+         */
+        const val RING_TIMEOUT_MS = 45_000L
+    }
+
+    /**
+     * When this connection started ringing, on the monotonic clock. Read by
+     * [StaleCallPolicy] on app resume as the second net behind
+     * [armRingTimeout] — see that method for why one timer is not enough.
+     */
+    @Volatile
+    var ringingSinceMs: Long = SystemClock.elapsedRealtime()
+        private set
+
+    private val ringTimeoutHandler = Handler(Looper.getMainLooper())
+    private val ringTimeoutRunnable = Runnable {
+        Log.w("CallConnection", "Ring timeout — no answer or decline reached us, rejecting $callId")
+        // Nothing catches a throw out of a main-looper Runnable: it kills the
+        // process. onReject is guarded against a double teardown, but Telecom
+        // can still throw from a state it did not expect, and this timer fires
+        // unattended — the user is not even holding the phone.
+        runCatching { onReject() }
+            .onFailure { Log.w("CallConnection", "ring timeout reject threw", it) }
+    }
+
+    /**
+     * Latched once the connection has been disconnected, so teardown runs once.
+     *
+     * Atomic because the writers are on different threads: the ring backstop
+     * fires on the main looper, while the stale-ring sweep reaches
+     * [releaseStaleRingingConnection] from Capacitor's plugin thread. Both are
+     * keyed to the same 45 s deadline, so them landing together is routine, not
+     * exotic — and a plain check-then-set would let both pass the guard and
+     * transition an already-destroyed connection, which Telecom answers with a
+     * throw.
+     */
+    private val released = AtomicBoolean(false)
+
+    /**
+     * Start the no-answer backstop.
+     *
+     * Telecom holds the device in MODE_RINGTONE for as long as this connection
+     * lives, and the only timer that used to end it lived inside
+     * [IncomingCallActivity]. That activity does not always run — a blocked
+     * full-screen intent never starts it — and when it does run, a back press
+     * or a swipe from Recents destroys it, and its cleanup *cancels* the
+     * auto-reject without replacing it. Either way the connection stayed
+     * RINGING and the phone's media volume stayed broken until reboot. This
+     * timer lives with the connection instead, so it survives both.
+     */
+    fun armRingTimeout() {
+        ringingSinceMs = SystemClock.elapsedRealtime()
+        ringTimeoutHandler.removeCallbacks(ringTimeoutRunnable)
+        ringTimeoutHandler.postDelayed(ringTimeoutRunnable, RING_TIMEOUT_MS)
+    }
+
+    private fun cancelRingTimeout() {
+        ringTimeoutHandler.removeCallbacks(ringTimeoutRunnable)
     }
 
     override fun onAnswer() {
         Log.d("CallConnection", "onAnswer: callId=$callId, roomId=$roomId")
+        cancelRingTimeout()
+        // Symmetric to onReject/onDisconnect: Telecom throws when a destroyed
+        // connection is transitioned again. The ring backstop makes that
+        // reachable by a hair's breadth — it fires on the same main looper the
+        // Accept button posts to, so a tap landing just after the deadline used
+        // to take the process down with it.
+        if (released.get()) {
+            Log.w("CallConnection", "onAnswer: connection already released, ignoring")
+            return
+        }
         setActive()
+        // Every answer route reaches this method — the activity's own Accept
+        // button calls it, and so does Telecom when it answers on its own from a
+        // Bluetooth headset, Android Auto or the system call UI. Silencing here
+        // is what covers the Telecom routes, which never touch the activity and
+        // used to leave its looping ringtone playing over the connected call
+        // until the 30 s auto-reject hung it up. Idempotent for the Accept path,
+        // which has already run cleanup().
+        IncomingCallActivity.stopRingerIfShowing()
         CallConnectionService.dismissIncomingCallNotification(context)
         // Populate accept-only markers here, never in onCreateIncoming-
         // Connection — otherwise Decline and a plain push delivery
@@ -318,6 +447,14 @@ class CallConnection(
 
     override fun onReject() {
         Log.d("CallConnection", "onReject: callId=$callId, roomId=$roomId")
+        cancelRingTimeout()
+        // Telecom throws if a destroyed connection is disconnected again, and
+        // there are now several routes here — the button, the shade action, the
+        // activity's countdown and this connection's own backstop.
+        if (!released.compareAndSet(false, true)) {
+            Log.d("CallConnection", "onReject: already released, skipping teardown")
+            return
+        }
         setDisconnected(DisconnectCause(DisconnectCause.REJECTED))
         destroy()
         CallConnectionService.dismissIncomingCallNotification(context)
@@ -327,6 +464,15 @@ class CallConnection(
         // Queue the reject so that when the JS app eventually boots
         // (or is already running) it can send m.call.reject to Matrix
         // and the caller stops ringing.
+        // Vacate the single global slot. Nothing used to clear it, so after
+        // any call ended `currentConnection` still pointed at a destroyed
+        // Connection — and every later reader (the stale-ring sweep, the
+        // displacement check above it) was inspecting a corpse. Identity-
+        // guarded so a connection that was already displaced by a newer one
+        // cannot blank its successor's slot.
+        if (CallConnectionService.currentConnection === this) {
+            CallConnectionService.currentConnection = null
+        }
         pendingRejectCallId = callId
         if (roomId.isNotEmpty()) pendingRejectRoomId = roomId
         onRejected?.invoke(callId)
@@ -334,9 +480,23 @@ class CallConnection(
 
     override fun onDisconnect() {
         Log.d("CallConnection", "onDisconnect: $callId")
+        cancelRingTimeout()
+        if (!released.compareAndSet(false, true)) {
+            Log.d("CallConnection", "onDisconnect: already released, skipping teardown")
+            return
+        }
         setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
         destroy()
         CallConnectionService.dismissIncomingCallNotification(context)
+        // Vacate the single global slot. Nothing used to clear it, so after
+        // any call ended `currentConnection` still pointed at a destroyed
+        // Connection — and every later reader (the stale-ring sweep, the
+        // displacement check above it) was inspecting a corpse. Identity-
+        // guarded so a connection that was already displaced by a newer one
+        // cannot blank its successor's slot.
+        if (CallConnectionService.currentConnection === this) {
+            CallConnectionService.currentConnection = null
+        }
         clearPendingFor(callId, roomId)
         onEnded?.invoke(callId)
     }

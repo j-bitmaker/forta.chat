@@ -173,9 +173,13 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
             // without an explicit cancel.
             dismissPushCallNotification(this, roomId)
             try {
+                // No unconditional `currentConnection = null` after this:
+                // onDisconnect clears the slot itself, identity-guarded, and
+                // this runs on Firebase's thread while Telecom assigns the next
+                // connection on the main one — blanking the slot here can
+                // orphan a call that is only just starting to ring.
                 com.forta.chat.plugins.calls.CallConnectionService.currentConnection
                     ?.onDisconnect()
-                com.forta.chat.plugins.calls.CallConnectionService.currentConnection = null
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to disconnect currentConnection", e)
             }

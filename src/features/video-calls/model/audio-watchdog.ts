@@ -46,6 +46,28 @@ export async function setupAudioWatchdog(): Promise<void> {
       // meant to prevent.
       if (callStore.activeCall || callStore.matrixCall) return;
 
+      // A connection nobody resolved is the single largest cause of the
+      // "stuck after a call" reports, and it does NOT show up as
+      // MODE_IN_COMMUNICATION: Telecom parks the device in MODE_RINGTONE for
+      // as long as our self-managed connection rings, and that mode breaks
+      // media volume until it is released. We cannot reset that mode from
+      // here — a real cellular call ringing sets the same one — so the
+      // recovery is to release our own connection and let Telecom drop it.
+      // Native applies the staleness bar (past the ring deadline, so no call
+      // the user could still answer qualifies), which is also why this runs
+      // before the mode check rather than inside it.
+      // Its own try/catch: the two recoveries are independent, and a broken
+      // sweep must not take the mode reset below down with it.
+      try {
+        if (await nativeCallBridge.releaseStaleRingingCall()) {
+          console.warn(
+            "[audio-watchdog] App resumed with a connection stuck ringing → released it",
+          );
+        }
+      } catch (e) {
+        console.warn("[audio-watchdog] stale-ring sweep failed:", e);
+      }
+
       const status = await nativeCallBridge.getAudioStatus();
       if (status.mode !== "MODE_IN_COMMUNICATION") return;
 

@@ -47,6 +47,33 @@ class IncomingCallActivity : Activity() {
                 it.handler.post { it.dismissByRemote() }
             }
         }
+
+        /**
+         * Silence the ringer because the call was answered.
+         *
+         * The ringtone loops and the vibration waveform repeats forever, and both
+         * live in this activity — so an answer that never passes through
+         * [accept] leaves them running. That happens whenever Telecom answers on
+         * its own: a Bluetooth headset button, Android Auto, a car kit, a watch,
+         * the system call UI. CallActivity then covers this one, and a covered
+         * activity gets onPause/onStop but *not* onDestroy, so [cleanup] never
+         * runs. The user hears the ringtone over a connected call — and 30
+         * seconds in, [autoRejectRunnable] hangs up the conversation they are
+         * having.
+         *
+         * Unlike [dismissIfShowing] this deliberately leaves the pending-answer
+         * markers alone: they are how the JS side learns to answer, and an
+         * answered call is exactly when they are needed.
+         */
+        fun stopRingerIfShowing() {
+            currentInstance?.let {
+                Log.d(TAG, "Call answered elsewhere — silencing ringer")
+                it.handler.post {
+                    it.cleanup()
+                    it.finish()
+                }
+            }
+        }
     }
 
     private var ringtone: android.media.Ringtone? = null
@@ -171,8 +198,12 @@ class IncomingCallActivity : Activity() {
                 findViewById<TextView>(R.id.avatar_text)?.text = initials
 
                 // Buttons
-                findViewById<ImageButton>(R.id.btn_accept)?.setOnClickListener { accept() }
-                findViewById<ImageButton>(R.id.btn_decline)?.setOnClickListener { decline() }
+                findViewById<ImageButton>(R.id.btn_accept)?.setOnClickListener {
+                    tryStep("accept") { accept() }
+                }
+                findViewById<ImageButton>(R.id.btn_decline)?.setOnClickListener {
+                    tryStep("decline") { decline() }
+                }
             }
 
             // Start ringtone + vibration (already internally catch'd, but
@@ -208,6 +239,27 @@ class IncomingCallActivity : Activity() {
      * rethrow. The outer onCreate try/catch then turns it into a graceful
      * finish; logcat still has the exact failing step (WEE-31).
      */
+    /**
+     * Swallowing counterpart of [safeStep], for work that runs *after*
+     * onCreate has returned.
+     *
+     * onCreate's steps are wrapped by a rethrowing guard because an outer
+     * catch there can still finish the activity gracefully. A click listener
+     * has no such outer frame: anything that escapes it reaches the looper
+     * and kills the process — with the user's finger still on the Accept
+     * button of a call that then never connects.
+     */
+    private inline fun tryStep(step: String, block: () -> Unit) {
+        CallCrashGuard.tryStep(
+            step = step,
+            fallback = Unit,
+            onFailure = { failedStep, error ->
+                Log.e(TAG, CallCrashGuard.marker(failedStep), error)
+            },
+            block = block,
+        )
+    }
+
     private inline fun safeStep(step: String, block: () -> Unit) {
         CallCrashGuard.safeStep(
             step = step,
@@ -268,7 +320,13 @@ class IncomingCallActivity : Activity() {
         //     we bypassed Telecom.
         val connection = CallConnectionService.currentConnection
         if (connection != null) {
-            connection.onAnswer()
+            // Telecom throws from a state transition on a connection it has
+            // already destroyed — which the ring backstop now makes reachable
+            // by racing the user's tap. Contained here rather than only at the
+            // listener so the pending-answer markers and the app launch below
+            // still run: the JS side can then answer the Matrix call even when
+            // the Telecom handoff is past saving.
+            tryStep("connection.onAnswer") { connection.onAnswer() }
         } else {
             Log.w(TAG, "No ConnectionService connection, notifying JS directly")
             CallConnection.onAnswered?.invoke(callId)
@@ -334,8 +392,12 @@ class IncomingCallActivity : Activity() {
         val callId = intent.getStringExtra("callId") ?: ""
         val roomIdForPending = intent.getStringExtra("roomId")
 
-        // Try ConnectionService — populates CallConnection.pendingReject*
-        CallConnectionService.currentConnection?.onReject()
+        // Try ConnectionService — populates CallConnection.pendingReject*.
+        // Same containment as accept(): the marker/boot work below is what
+        // actually gets the rejection to the caller.
+        tryStep("connection.onReject") {
+            CallConnectionService.currentConnection?.onReject()
+        }
 
         // Defence-in-depth: clear accept markers (we're declining, not
         // accepting) and set reject markers if Telecom path was bypassed.
@@ -484,7 +546,16 @@ class IncomingCallActivity : Activity() {
     override fun onDestroy() {
         cleanup()
         pulseAnimator?.cancel()
-        currentInstance = null
+        // Only clear the slot if it still points at us. launchMode=singleTop
+        // reuses this activity only while it is on top of the task, and accept()
+        // pushes MainActivity above it — so a second incoming call creates a
+        // second instance. Clearing unconditionally would let the first
+        // instance's onDestroy null out the pointer to the live one, turning
+        // dismissIfShowing/stopRingerIfShowing into permanent no-ops and
+        // orphaning a ringtone nothing can reach.
+        if (currentInstance === this) {
+            currentInstance = null
+        }
         super.onDestroy()
     }
 }

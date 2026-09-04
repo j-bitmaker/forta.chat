@@ -31,11 +31,13 @@ vi.mock("@capacitor/app", () => ({
 
 const mockGetAudioStatus: Mock = vi.fn();
 const mockForceStopAudio: Mock = vi.fn().mockResolvedValue(undefined);
+const mockReleaseStaleRingingCall: Mock = vi.fn().mockResolvedValue(false);
 
 vi.mock("@/shared/lib/native-calls", () => ({
   nativeCallBridge: {
     getAudioStatus: mockGetAudioStatus,
     forceStopAudio: mockForceStopAudio,
+    releaseStaleRingingCall: mockReleaseStaleRingingCall,
   },
 }));
 
@@ -95,6 +97,7 @@ describe("setupAudioWatchdog — app resume audio recovery", () => {
     mockIsIOS.value = false;
     mockGetAudioStatus.mockReset();
     mockForceStopAudio.mockReset().mockResolvedValue(undefined);
+    mockReleaseStaleRingingCall.mockReset().mockResolvedValue(false);
     mockIOSCallAudioAddListener.mockClear();
     mockCallServiceHangup.mockClear();
   });
@@ -197,6 +200,83 @@ describe("setupAudioWatchdog — app resume audio recovery", () => {
 
     expect(mockGetAudioStatus).not.toHaveBeenCalled();
     expect(mockForceStopAudio).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Stale ringing connection — the largest open cluster ("phone stuck after a
+  // call") is filed from MODE_RINGTONE, which the mode check below never
+  // covered. Telecom holds that mode on behalf of our own unresolved
+  // connection, so the recovery is to release the connection, not the mode.
+  // -------------------------------------------------------------------------
+
+  it("releases a connection left ringing past its deadline on resume", async () => {
+    mockReleaseStaleRingingCall.mockResolvedValue(true);
+    mockGetAudioStatus.mockResolvedValue({
+      mode: "MODE_NORMAL",
+      isSpeakerOn: false,
+      isBtScoOn: false,
+    });
+
+    const { setupAudioWatchdog } = await reload();
+    await setupAudioWatchdog();
+    await appStateChangeHandler!({ isActive: true });
+
+    expect(mockReleaseStaleRingingCall).toHaveBeenCalledOnce();
+    // MODE_NORMAL: the mode itself needs no reset, and forcing one would be
+    // a destructive no-op on a healthy device.
+    expect(mockForceStopAudio).not.toHaveBeenCalled();
+  });
+
+  it("still resets a stranded IN_COMM mode after releasing a stale ring", async () => {
+    mockReleaseStaleRingingCall.mockResolvedValue(true);
+    mockGetAudioStatus.mockResolvedValue({
+      mode: "MODE_IN_COMMUNICATION",
+      isSpeakerOn: false,
+      isBtScoOn: false,
+    });
+
+    const { setupAudioWatchdog } = await reload();
+    await setupAudioWatchdog();
+    await appStateChangeHandler!({ isActive: true });
+
+    expect(mockReleaseStaleRingingCall).toHaveBeenCalledOnce();
+    expect(mockForceStopAudio).toHaveBeenCalledOnce();
+  });
+
+  it("does NOT touch the Telecom connection while a call is live", async () => {
+    // The staleness bar lives natively, but the cheapest guarantee that a
+    // ringing call the user is about to answer survives is not to ask at all
+    // while JS knows about a call.
+    mockCallStore.matrixCall = { callId: "c1" };
+    mockGetAudioStatus.mockResolvedValue({
+      mode: "MODE_RINGTONE",
+      isSpeakerOn: false,
+      isBtScoOn: false,
+    });
+
+    const { setupAudioWatchdog } = await reload();
+    await setupAudioWatchdog();
+    await appStateChangeHandler!({ isActive: true });
+
+    expect(mockReleaseStaleRingingCall).not.toHaveBeenCalled();
+    expect(mockForceStopAudio).not.toHaveBeenCalled();
+  });
+
+  it("recovers a stranded IN_COMM mode even when the stale-ring sweep throws", async () => {
+    // The two recoveries are independent; a broken sweep must not take the
+    // one that worked before it down with it.
+    mockReleaseStaleRingingCall.mockRejectedValue(new Error("plugin gone"));
+    mockGetAudioStatus.mockResolvedValue({
+      mode: "MODE_IN_COMMUNICATION",
+      isSpeakerOn: false,
+      isBtScoOn: false,
+    });
+
+    const { setupAudioWatchdog } = await reload();
+    await setupAudioWatchdog();
+    await appStateChangeHandler!({ isActive: true });
+
+    expect(mockForceStopAudio).toHaveBeenCalledOnce();
   });
 
   it("swallows errors from getAudioStatus without throwing", async () => {

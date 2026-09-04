@@ -54,18 +54,20 @@ const mockRequestAudioPermission = vi.fn();
 const mockRequestCameraPermission = vi.fn();
 const mockStartAudioRouting = vi.fn().mockResolvedValue(undefined);
 const mockStopAudioRouting = vi.fn().mockResolvedValue(undefined);
+const mockEnsureIncomingCallVisible = vi.fn().mockResolvedValue(undefined);
+const mockReportCallEnded = vi.fn().mockResolvedValue(undefined);
 vi.mock('@/shared/lib/native-calls', () => ({
   nativeCallBridge: {
     requestAudioPermission: mockRequestAudioPermission,
     requestCameraPermission: mockRequestCameraPermission,
     reportOutgoingCall: vi.fn().mockResolvedValue(undefined),
     reportCallConnected: vi.fn().mockResolvedValue(undefined),
-    reportCallEnded: vi.fn().mockResolvedValue(undefined),
+    reportCallEnded: mockReportCallEnded,
     reportIncomingCall: vi.fn().mockResolvedValue(undefined),
     wire: vi.fn().mockResolvedValue(undefined),
     startAudioRouting: mockStartAudioRouting,
     stopAudioRouting: mockStopAudioRouting,
-    ensureIncomingCallVisible: vi.fn().mockResolvedValue(undefined),
+    ensureIncomingCallVisible: mockEnsureIncomingCallVisible,
   },
   consumePendingAnswerCallId: vi.fn().mockResolvedValue(false),
   consumePendingRejectCallId: vi.fn().mockResolvedValue(false),
@@ -102,6 +104,7 @@ const mockAddHistoryEntry = vi.fn();
 
 const mockCallStore: Record<string, unknown> = {
   isInCall: false,
+  hasLiveCall: false,
   activeCall: null,
   matrixCall: null,
   videoMuted: false,
@@ -115,6 +118,7 @@ const mockCallStore: Record<string, unknown> = {
   cancelScheduledClear: mockCancelScheduledClear,
   setActiveCall: mockSetActiveCall,
   setMatrixCall: mockSetMatrixCall,
+  touchMatrixCall: vi.fn(),
   addHistoryEntry: mockAddHistoryEntry,
   setLocalStream: vi.fn(),
   setLocalScreenStream: vi.fn(),
@@ -253,6 +257,7 @@ describe('call-service permission flow', () => {
     vi.clearAllMocks();
     // Reset shared mock store state
     mockCallStore.isInCall = false;
+    mockCallStore.hasLiveCall = false;
     mockCallStore.activeCall = null;
     mockCallStore.matrixCall = null;
     mockCallStore.videoMuted = false;
@@ -392,6 +397,53 @@ describe('call-service permission flow', () => {
   // off". The fix gates the ringback on the SDK's InviteSent state (invite
   // actually delivered to the server) inside wireCallEvents.
   // -------------------------------------------------------------------------
+  describe('single call slot during a native ring (#1183)', () => {
+    // On Android an incoming call rings through Telecom and the CallInfo is
+    // only written once the user answers, so `isInCall` is false for the
+    // whole ring while `matrixCall` already holds the SDK object. Guards
+    // keyed on `isInCall` let a second call overwrite that single slot, and
+    // the call the user then answered had already been unwired.
+
+    it('refuses to dial while a call is ringing but not yet answered', async () => {
+      mockCallStore.isInCall = false; // no CallInfo yet — the native ring window
+      mockCallStore.hasLiveCall = true;
+
+      const { useCallService } = await import('./call-service');
+      await useCallService().startCall('!room:matrix.org', 'voice');
+
+      expect(mockEnsureCallPermissions).not.toHaveBeenCalled();
+      expect(mockPlaceVoiceCall).not.toHaveBeenCalled();
+    });
+
+    it('rejects a second incoming call that arrives during that same window', async () => {
+      mockCallStore.isInCall = false;
+      mockCallStore.hasLiveCall = true;
+
+      const { useCallService } = await import('./call-service');
+      const second = {
+        callId: 'second-invite',
+        roomId: '!room:matrix.org',
+        type: 'voice',
+        on: mockOn,
+        off: mockOff,
+        answer: mockAnswer,
+        reject: mockReject,
+        getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+      };
+      await useCallService().handleIncomingCall(second as never);
+
+      expect(mockReject).toHaveBeenCalled();
+      expect(mockSetMatrixCall).not.toHaveBeenCalled();
+    });
+
+    it('still dials when nothing holds the slot', async () => {
+      const { useCallService } = await import('./call-service');
+      await useCallService().startCall('!room:matrix.org', 'voice');
+
+      expect(mockEnsureCallPermissions).toHaveBeenCalledWith(false);
+    });
+  });
+
   describe('outgoing ringback gating (#866 / WEE-54)', () => {
     function captureOnState() {
       const stateCall = mockOn.mock.calls.find((c: unknown[]) => c[0] === 'State');
@@ -478,6 +530,137 @@ describe('call-service permission flow', () => {
       const onState = captureOnState();
       onState?.('invite_sent', 'create_offer');
       expect(vi.mocked(playDialtone)).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('incoming-call dedup window (#644)', () => {
+    function incoming(callId: string) {
+      return {
+        callId,
+        roomId: '!room:matrix.org',
+        type: 'voice',
+        on: mockOn,
+        off: mockOff,
+        answer: mockAnswer,
+        reject: mockReject,
+        localUsermediaStream: null,
+        localScreensharingStream: null,
+        remoteUsermediaStream: null,
+        remoteScreensharingStream: null,
+        remoteUsermediaFeed: null,
+        getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+      };
+    }
+
+    it('keeps the call marked as seen once its handlers are wired', async () => {
+      const { isIncomingCallSeen, __resetIncomingCallDedupForTests } =
+        await import('./incoming-call-dedup');
+      const { useCallService } = await import('./call-service');
+      __resetIncomingCallDedupForTests();
+      const service = useCallService();
+
+      const call = incoming('dedup-call-a');
+      mockCallStore.matrixCall = call;
+      await service.handleIncomingCall(call as never);
+
+      // wireCallEvents opens by unwiring the very call it is about to wire.
+      // That teardown used to clear the mark set moments earlier, so the
+      // window never survived the same tick and a repeat invite rang twice.
+      expect(isIncomingCallSeen('dedup-call-a')).toBe(true);
+    });
+
+    it('releases the slot of the call it unwires, not of the new one', async () => {
+      const { isIncomingCallSeen, __resetIncomingCallDedupForTests } =
+        await import('./incoming-call-dedup');
+      const { useCallService } = await import('./call-service');
+      __resetIncomingCallDedupForTests();
+      const service = useCallService();
+
+      const first = incoming('dedup-call-a');
+      mockCallStore.matrixCall = first;
+      await service.handleIncomingCall(first as never);
+
+      const second = incoming('dedup-call-b');
+      mockCallStore.matrixCall = second;
+      await service.handleIncomingCall(second as never);
+
+      // Wiring the second call tears down the first: the first call's slot is
+      // the one that must be freed, so a genuine re-invite for it later still
+      // rings, while the call now on screen stays deduped.
+      expect(isIncomingCallSeen('dedup-call-a')).toBe(false);
+      expect(isIncomingCallSeen('dedup-call-b')).toBe(true);
+    });
+  });
+
+  describe('expired invite delivered late (#958 / #928)', () => {
+    // When FCM delivery degrades the homeserver retains the invite and
+    // flushes it on the next /sync, minutes later. The SDK arms its expiry
+    // timer with `lifetime - localAge` — negative for a retained invite — so
+    // it ends the call on the tick right after Call.incoming, while our
+    // handler is still awaiting profile lookups. Ringing after that point is
+    // the "a call came in seven minutes later and there was no call" report.
+
+    // Distinct callId per test: the module-scope dedup window survives between
+    // tests, so a shared id makes one test's outcome depend on whether the
+    // previous one released the slot.
+    function staleIncoming(state: string, callId: string) {
+      return {
+        callId,
+        roomId: '!room:matrix.org',
+        type: 'voice',
+        state,
+        on: mockOn,
+        off: mockOff,
+        answer: mockAnswer,
+        reject: mockReject,
+        getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+      };
+    }
+
+    it('does not ring for a call the SDK already ended', async () => {
+      const { useCallService } = await import('./call-service');
+      await useCallService().handleIncomingCall(
+        staleIncoming('ended', 'stale-invite-a') as never,
+      );
+
+      expect(mockEnsureIncomingCallVisible).not.toHaveBeenCalled();
+      expect(mockSetActiveCall).not.toHaveBeenCalled();
+    });
+
+    it('tells native the call is over so the ringer stops', async () => {
+      // FCM usually wins the race that delivers a retained invite, so the
+      // native ringer is already up by the time this handler runs. Only
+      // finalizeCall releases the Telecom connection and dismisses it —
+      // nulling the Pinia slot is invisible to native.
+      const { useCallService } = await import('./call-service');
+
+      await useCallService().handleIncomingCall(
+        staleIncoming('ended', 'stale-invite-d') as never,
+      );
+      await vi.waitFor(() =>
+        expect(mockReportCallEnded).toHaveBeenCalledWith('stale-invite-d'),
+      );
+    });
+
+    it('vacates the call slot it had already taken', async () => {
+      // setMatrixCall runs before this check (rejectCall/answerCall need the
+      // object), so bailing out has to hand the slot back or `hasLiveCall`
+      // would report a live call that nothing can ever end.
+      const { useCallService } = await import('./call-service');
+      await useCallService().handleIncomingCall(
+        staleIncoming('ended', 'stale-invite-b') as never,
+      );
+
+      expect(mockSetMatrixCall).toHaveBeenLastCalledWith(null);
+    });
+
+    it('still rings a call the SDK is holding in ringing state', async () => {
+      const { useCallService } = await import('./call-service');
+      await useCallService().handleIncomingCall(
+        staleIncoming('ringing', 'stale-invite-c') as never,
+      );
+
+      expect(mockEnsureIncomingCallVisible).toHaveBeenCalled();
     });
   });
 

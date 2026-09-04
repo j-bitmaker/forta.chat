@@ -298,10 +298,47 @@ export function classifyClusters(title, description, diagnostics) {
   // "неслышим", "неслыши", "не слышно друг друга" all mean the same thing.
   // Matching on the stem "слыш" plus a negation catches the family without
   // enumerating every typo.
+  // One-way audio is usually reported as a contrast rather than a plain
+  // negation — "собеседник меня слышит я его нет" (#1292). The negation sits
+  // on the other party, several words from the verb, so the stem+negation
+  // pattern above never sees it. Bounded to one sentence so an unrelated
+  // "нет" further down the report cannot pull a mention of hearing in.
+  // NB: no \b around "нет" — JavaScript word boundaries are ASCII-only, so
+  // \b never matches next to a Cyrillic letter. The character classes below
+  // are the portable equivalent.
+  //
+  // Two guards against proximity alone: the gap has to be short, and the
+  // window has to name the other party. "слышно нормально, а вот интернета у
+  // меня дома нет" clears a 40-character gap and even contains a pronoun —
+  // it is a report about the network. In the real one-way phrasings the two
+  // halves sit right next to each other ("меня слышит я его нет", "я его
+  // слышу, а он меня нет"), inside 20 characters. Anything longer than that
+  // has room for a change of subject, which is exactly the failure mode.
+  const NEAR_NEGATION = [
+    /слыш[а-яё]*([^.!?\n]{0,20}?)(^|[^а-яё])нет([^а-яё]|$)/,
+    /(^|[^а-яё])нет([^а-яё]|$)([^.!?\n]{0,20}?)слыш/,
+  ];
+  const OTHER_PARTY = /(меня|его|её|ее|их|вас|тебя|собеседник|абонент)/;
+  const oneWayHearing = NEAR_NEGATION.some((re) => {
+    const m = re.exec(text);
+    if (!m) return false;
+    // Everything the window spans, so the pronoun can sit on either side of
+    // the verb: "меня слышит, я его нет" and "его не слышно" both qualify.
+    return OTHER_PARTY.test(m[0]);
+  });
+
+  // Users put the adjective on either side of the noun: "тихий звук" and
+  // "звук тихий" (#1068) are the same complaint.
+  const quietAudio =
+    /тих[а-яё]*\s+(звук|голос)/.test(text) ||
+    /(звук|голос)\s+тих/.test(text);
+
   const negatedHearing =
     /(не|ни|бес)\s*слыш/.test(text) ||
     /неслыш/.test(text) ||
-    has("плохо слышно", "тихо", "тихий звук", "еле слышно");
+    oneWayHearing ||
+    quietAudio ||
+    has("плохо слышно", "тихо", "еле слышно");
 
   // Stuck after the call: the device is left in a call audio mode, which
   // breaks media volume until reboot. The diagnostics snapshot is the
@@ -326,6 +363,14 @@ export function classifyClusters(title, description, diagnostics) {
       "продолжается",
       "до перезагрузки",
       "before the next reboot",
+      // A microphone the app never let go of is the same leak as a stranded
+      // audio mode and has the same owner — the foreground service teardown
+      // (#997, #1088).
+      "микрофон продолжает",
+      "доступ к микрофону",
+      "микрофон используется",
+      "микрофон занят",
+      "microphone is still",
     )
   ) {
     clusters.add("stuck-after-call");
@@ -356,7 +401,11 @@ export function classifyClusters(title, description, diagnostics) {
       "не нажимается",
       "не работает кнопка",
     ) ||
-    (has("принять", "ответить", "отвечаю", "отвечая") &&
+    // "ответ" as a stem covers "при ответе" / "при ответах" (#1068), which
+    // the verb forms missed — minus "ответствен*", which is a different word
+    // that happens to start the same way and shows up in frustrated reports.
+    // Still gated on a drop word, so a plain mention of an answer is not enough.
+    ((has("принять", "отвечаю", "отвечая") || /ответ(?!ствен)/.test(text)) &&
       has("сброс", "сбрасывает", "обрывается", "закрывается", "не могу"))
   ) {
     clusters.add("accept-button");
@@ -371,6 +420,13 @@ export function classifyClusters(title, description, diagnostics) {
       "не работает дозвон",
       "невозможно произвести звонок",
       "вылезает ошибка",
+      // Reported from the caller's side, or as the absence of the handshake
+      // rather than of the call (#997, #1088).
+      "не могут дозвониться",
+      "не может дозвониться",
+      "не могу дозвониться",
+      "соединение не происходит",
+      "не происходит соединение",
       "connect",
       "failed",
       "timeout",
@@ -408,7 +464,21 @@ export function classifyClusters(title, description, diagnostics) {
 
   // Duplicate rings: two apps on one account, or a phantom re-ring.
   if (
-    has("дважды", "два раза", "дубл", "повторн", "4шт", "хотя на самом деле звонка не было") ||
+    has(
+      "дважды",
+      "два раза",
+      "дубл",
+      "повторн",
+      "4шт",
+      "хотя на самом деле звонка не было",
+      // Several ringers stacked on screen at once — the same phantom, seen
+      // as overlapping UI rather than as a repeat (#1088).
+      "звонков параллельно",
+      "параллельно от одного",
+    ) ||
+    // "наслоение" on its own is ordinary Russian for problems piling up, so
+    // it only counts when the sentence is about calls.
+    (has("наслоение") && has("звонк", "вызов", "звонок")) ||
     (has("bastyon", "бастион", "бастиона") && has("звон", "вызов"))
   ) {
     clusters.add("duplicate-ring");

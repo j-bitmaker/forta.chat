@@ -171,6 +171,29 @@ class AudioRouter private constructor(private val context: Context) {
         ): Boolean = isActive && currentMode != AudioManager.MODE_IN_COMMUNICATION
 
         /**
+         * Pure predicate for adopting a VoIP audio mode the router never set.
+         *
+         * `NativeWebRTCManager.startLocalAudio` writes
+         * `MODE_IN_COMMUNICATION` itself, before the router starts, because
+         * several OEM firmwares mute the microphone unless VoIP mode is
+         * established before the first capture. That write has no owner: if
+         * call setup fails afterwards, or the JS side never reaches
+         * `startAudioRouting`, the router never becomes active — and
+         * [stop] used to return on its `isActive` guard with the device still
+         * in VoIP mode, so media volume stayed broken until the next app
+         * resume. That is the "phone is stuck after a call" report.
+         *
+         * Restricted to `MODE_IN_COMMUNICATION` on purpose: `MODE_IN_CALL`
+         * belongs to a cellular call and `MODE_RINGTONE` to the system
+         * ringer, and resetting either would break something that is not ours.
+         */
+        @androidx.annotation.VisibleForTesting
+        internal fun shouldAdoptStrandedMode(
+            isActive: Boolean,
+            currentMode: Int,
+        ): Boolean = !isActive && currentMode == AudioManager.MODE_IN_COMMUNICATION
+
+        /**
          * WEE-16: schedule of re-apply ticks (in ms after `start()`).
          *
          * The original single 500 ms re-apply caught fast OEM resets
@@ -588,6 +611,19 @@ class AudioRouter private constructor(private val context: Context) {
         // unregisterAudioDeviceCallback on an already-unregistered callback
         // and log a spurious warning.
         if (!isActive) {
+            // Adopt a VoIP mode nobody else will reset — see
+            // [shouldAdoptStrandedMode]. The monitor is reentrant, so
+            // delegating to forceStop() inside the lock is safe.
+            val currentMode = runCatching { audioManager.mode }.getOrNull()
+            if (currentMode != null && shouldAdoptStrandedMode(isActive, currentMode)) {
+                Log.w(
+                    LIFECYCLE_TAG,
+                    "stop() — inactive but device left in MODE_IN_COMMUNICATION, brute-resetting",
+                )
+                timeline.record("stop_adopted_stranded_mode")
+                forceStop()
+                return@synchronized
+            }
             Log.w(LIFECYCLE_TAG, "stop() — already inactive, no-op")
             return@synchronized
         }

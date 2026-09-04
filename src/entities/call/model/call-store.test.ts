@@ -117,6 +117,57 @@ describe("call-store", () => {
     });
   });
 
+  describe("hasLiveCall", () => {
+    // On Android an incoming call rings through Telecom and the CallInfo is
+    // only written when the user answers, so `isInCall` is false for the
+    // whole ring. Re-entry guards need a signal that covers that window or a
+    // second call takes the single slot and orphans the one that is ringing
+    // (#1183).
+
+    it("returns false when nothing holds the slot", () => {
+      expect(store.hasLiveCall).toBe(false);
+    });
+
+    it("returns true while an SDK call exists with no CallInfo yet", () => {
+      store.setMatrixCall({ callId: "c1", state: "ringing" });
+      expect(store.isInCall).toBe(false);
+      expect(store.hasLiveCall).toBe(true);
+    });
+
+    it("returns true whenever isInCall is true", () => {
+      store.setActiveCall(makeCallInfo({ status: CallStatus.connected }));
+      expect(store.hasLiveCall).toBe(true);
+    });
+
+    it("keeps reporting a live call until told the SDK object changed", () => {
+      // `state` is a plain field on the SDK object, not a reactive one. This
+      // pins the consequence so nobody removes touchMatrixCall believing the
+      // `state` read is enough on its own.
+      const sdkCall = { callId: "c1", state: "ringing" };
+      store.setMatrixCall(sdkCall);
+      expect(store.hasLiveCall).toBe(true);
+
+      sdkCall.state = "ended"; // exactly what the SDK does on terminate()
+      expect(store.hasLiveCall).toBe(true); // cached — nothing triggered
+
+      store.touchMatrixCall();
+      expect(store.hasLiveCall).toBe(false);
+    });
+
+    it("ignores an SDK call the SDK has already ended", () => {
+      // clearCall nulls the slot on every normal path; a teardown that
+      // failed must not lock the user out of calling forever.
+      store.setMatrixCall({ callId: "c1", state: "ended" });
+      expect(store.hasLiveCall).toBe(false);
+    });
+
+    it("returns false again after clearCall", () => {
+      store.setMatrixCall({ callId: "c1", state: "ringing" });
+      store.clearCall();
+      expect(store.hasLiveCall).toBe(false);
+    });
+  });
+
   describe("isRinging", () => {
     it("returns true for ringing status", () => {
       store.setActiveCall(makeCallInfo({ status: CallStatus.ringing }));

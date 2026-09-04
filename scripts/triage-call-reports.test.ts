@@ -219,6 +219,116 @@ describe("classifyClusters", () => {
     expect(clusters).toContain("stuck-after-call");
   });
 
+  it("does NOT treat MODE_IN_CALL as a stuck audio mode", () => {
+    // MODE_IN_CALL belongs to the telephony stack, not to us — we only ever
+    // set MODE_IN_COMMUNICATION. The open reports filed from it are a video
+    // feature request (#955) and a localisation bug (#855), so counting it as
+    // stuck-after-call would inflate the largest cluster with noise.
+    const diag = { audioMode: "MODE_IN_CALL", recentInvites: 0, expiredInvites: 0 };
+    const clusters = classifyClusters("Нет перевода в списке чатов", "", diag);
+    expect(clusters).not.toContain("stuck-after-call");
+  });
+
+  it("identifies one-way audio phrased as a contrast (#1292)", () => {
+    // "he hears me, I don't hear him" — the negation is attached to the other
+    // party, several words away from the verb, so the negated-hearing stem
+    // pattern alone misses it and the report used to land in "other".
+    const clusters = classifyClusters(
+      "Проблема со звуком",
+      "При звонках собеседник меня слышит я его нет",
+      null,
+    );
+    expect(clusters).toContain("no-audio");
+  });
+
+  it("identifies quiet incoming audio with the adjective after the noun (#1068)", () => {
+    const clusters = classifyClusters(
+      "Проблема",
+      "На входящем звонке звук тихий, хотя на полную громкость стоит",
+      null,
+    );
+    expect(clusters).toContain("no-audio");
+  });
+
+  it("identifies a call dropped on answer phrased with the noun (#1068)", () => {
+    const clusters = classifyClusters("Проблема", "При ответе происходит сброс звонка", null);
+    expect(clusters).toContain("accept-button");
+  });
+
+  it("does not call every mention of an answer an accept-button failure", () => {
+    const clusters = classifyClusters("Вопрос", "Жду ответа от поддержки", null);
+    expect(clusters).not.toContain("accept-button");
+  });
+
+  it("identifies a microphone the app never released (#997, #1088)", () => {
+    // Same class of leak as a stranded audio mode, and the same fix: the
+    // foreground service teardown. Reports saying it used to land in "other".
+    const clusters = classifyClusters(
+      "Проблема",
+      "Входящие вызовы идут, но соединение не происходит. После этого микрофон продолжает использоваться приложением forta",
+      null,
+    );
+    expect(clusters).toContain("stuck-after-call");
+    expect(clusters).toContain("connect-fail");
+    expect(clusters).not.toContain("other");
+  });
+
+  it("identifies an unreachable callee phrased from the caller's side (#1088)", () => {
+    const clusters = classifyClusters("Проблема", "До меня не могут дозвониться", null);
+    expect(clusters).toContain("connect-fail");
+  });
+
+  it("identifies stacked parallel rings from one peer (#1088)", () => {
+    const clusters = classifyClusters(
+      "Проблема",
+      "Происходит наслоение интерфейса несколько звонков параллельно от одного и того же собеседника",
+      null,
+    );
+    expect(clusters).toContain("duplicate-ring");
+  });
+
+  it("leaves a report with no symptom in it as other (#1023)", () => {
+    // Not every report is classifiable, and inventing a cluster for pure
+    // frustration would put work in a bucket that has none.
+    const clusters = classifyClusters(
+      "Проблема",
+      "Хоть вы и пишете, что проблема решена, но она не решена",
+      null,
+    );
+    expect(clusters).toContain("other");
+  });
+
+  it("does not read an unrelated negation near a positive hearing report as no-audio", () => {
+    // "слышно" + a "нет" 40 characters later, about something else entirely.
+    // The one-way pattern needs the other party in it, not just any negation.
+    const clusters = classifyClusters(
+      "Отзыв",
+      "Слышно нормально, а вот интернета у меня дома нет",
+      null,
+    );
+    expect(clusters).not.toContain("no-audio");
+  });
+
+  it("does not read 'ответственно' as a mention of answering a call", () => {
+    const clusters = classifyClusters(
+      "Отзыв",
+      "Я ответственно заявляю, звонок сбрасывается, не могу понять почему",
+      null,
+    );
+    expect(clusters).not.toContain("accept-button");
+  });
+
+  it("does not read a pile-up of unrelated problems as duplicate rings", () => {
+    // "наслоение" is ordinary Russian for problems piling up; on its own it
+    // says nothing about two ringers on screen.
+    const clusters = classifyClusters(
+      "Отзыв",
+      "Странное наслоение проблем: то приложение виснет, то список не грузится",
+      null,
+    );
+    expect(clusters).not.toContain("duplicate-ring");
+  });
+
   it("identifies no-audio clusters", () => {
     const clusters = classifyClusters("No sound", "не слышу собеседника", null);
     expect(clusters).toContain("no-audio");
