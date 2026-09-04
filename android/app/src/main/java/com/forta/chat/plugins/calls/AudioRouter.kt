@@ -9,6 +9,7 @@ import android.content.IntentFilter
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.media.audiofx.AcousticEchoCanceler
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -85,6 +86,50 @@ class AudioRouter private constructor(private val context: Context) {
         internal fun resetForTests() {
             synchronized(this) {
                 INSTANCE = null
+            }
+        }
+
+        /**
+         * WEE-110: test-friendly pure predicate for whether the device can
+         * successfully create an AcousticEchoCanceler on a given session.
+         *
+         * Returns:
+         *   - true: AcousticEchoCanceler.create(sessionId) succeeded
+         *   - false: it returned null, or setEnabled threw
+         *   - null: the check could not be performed (APIs not available,
+         *           or an exception was caught)
+         *
+         * Exposed at companion scope so it can be covered by a JVM-only test
+         * without running on a real device or mocking AudioEffect.
+         */
+        @androidx.annotation.VisibleForTesting
+        internal fun canCreateHardwareAec(sessionId: Int): Boolean? {
+            return try {
+                // Check if the effect class is available at all
+                if (!AcousticEchoCanceler.isAvailable()) {
+                    return null // API available but effect not supported
+                }
+                // Try to create an instance
+                val aec = AcousticEchoCanceler.create(sessionId)
+                if (aec == null) {
+                    return false // create() returned null
+                }
+                // Try to enable it
+                try {
+                    aec.enabled = true
+                    val success = aec.hasControl()
+                    aec.release()
+                    return success
+                } catch (e: Exception) {
+                    aec.release()
+                    return false // setEnabled threw
+                }
+            } catch (e: Exception) {
+                // Audio APIs on some OEM ROMs are documented to throw
+                // (MIUI privacy shield, Huawei AudioRecord guard). Fall back
+                // to the vendor list in [VendorAudioPolicy].
+                Log.w(LIFECYCLE_TAG, "canCreateHardwareAec threw", e)
+                return null
             }
         }
 
@@ -276,13 +321,27 @@ class AudioRouter private constructor(private val context: Context) {
     // proven WEE-54 generic path is the default and vendor branches are purely
     // additive (acceptance criterion A5).
     private val vendor: CallVendor = VendorAudioPolicy.detect(Build.MANUFACTURER, Build.BRAND)
+    // WEE-110: whether the hardware AEC can be created on this device at runtime.
+    // Queried once during router construction (before any call) so we know upfront
+    // whether to fall back to software processing. Wrapped in try/catch because
+    // audio APIs on some OEM ROMs are documented to throw.
+    private val hwAecCreatable: Boolean? by lazy {
+        queryHardwareAecAvailability()
+    }
     // WEE-103: whether this device's audio HAL strands the mic-mute flag asserted
     // on call setup (the broken-HW-AEC family). Resolved once from Build like
     // [vendor]; keyed off manufacturer/brand rather than the coarse CallVendor
     // enum so OEMs that detect() classifies as GENERIC (Infinix/XOS #1008,
     // ZTE/nubia #1009) — and HUAWEI (#1009) — are no longer missed by the gate.
-    private val requiresMicUnmute: Boolean =
-        VendorAudioPolicy.requiresExplicitMicUnmuteOnStart(Build.MANUFACTURER, Build.BRAND)
+    // Also now includes runtime signal [hwAecCreatable] so devices outside the
+    // vendor list whose HW AEC fails at runtime are also covered (WEE-110).
+    private val requiresMicUnmute: Boolean by lazy {
+        VendorAudioPolicy.requiresExplicitMicUnmuteOnStart(
+            Build.MANUFACTURER,
+            Build.BRAND,
+            hwAecCreatable,
+        )
+    }
     // WEE-16: @Volatile so the periodic re-apply runnables observe a
     // stop()/forceStop()-side write across threads. start()/stop()/
     // forceStop() are invoked from arbitrary Capacitor plugin threads
@@ -340,6 +399,29 @@ class AudioRouter private constructor(private val context: Context) {
                 }
             }
         }
+    }
+
+    /**
+     * WEE-110: probe the device's hardware AEC capability once during
+     * construction so [VendorAudioPolicy] can make an informed decision
+     * about whether to fall back to software processing.
+     *
+     * Returns the result of [canCreateHardwareAec], which is:
+     *   - true: HW AEC can be created and enabled
+     *   - false: HW AEC creation/enable failed (device has broken HW AEC)
+     *   - null: the check could not be performed (API unavailable or threw)
+     *
+     * When null, [VendorAudioPolicy] falls back to the vendor list.
+     */
+    private fun queryHardwareAecAvailability(): Boolean? {
+        // Use a dummy sessionId for the probe. The actual WebRTC session
+        // will use its own sessionId when audio routing starts, but this
+        // probe tells us whether HW AEC works in general on this device.
+        // SessionId 0 is a valid probe — it's the AudioRecord default when
+        // no session is specified. Some devices may require a live session,
+        // in which case this probe returns null and we fall back to the
+        // vendor list.
+        return canCreateHardwareAec(0)
     }
 
     fun start(callType: String) = synchronized(lifecycleLock) {

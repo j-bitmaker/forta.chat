@@ -266,4 +266,134 @@ class VendorAudioPolicyTest {
         assertFalse(VendorAudioPolicy.prefersSoftwareAudioProcessing(null, null))
         assertFalse(VendorAudioPolicy.prefersSoftwareAudioProcessing("", ""))
     }
+
+    // -------------------------------------------------------------------------
+    // Runtime signal checking (WEE-110): hwAecCreatable parameter
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun vendorListDominates_evenWhenHwAecAvailable() {
+        // Constraint 1: never regress. A device in the vendor list must ALWAYS
+        // get software AEC, even if HW AEC reports as available at runtime.
+        // This prevents a device with intermittent HW AEC failures from
+        // occasionally falling back to broken HW AEC.
+        assertTrue(
+            "Xiaomi in vendor list must use software AEC even if HW AEC available",
+            VendorAudioPolicy.prefersSoftwareAudioProcessing("Xiaomi", "", hwAecCreatable = true),
+        )
+        assertTrue(
+            "HUAWEI in vendor list must use software AEC even if HW AEC available",
+            VendorAudioPolicy.prefersSoftwareAudioProcessing("HUAWEI", "", hwAecCreatable = true),
+        )
+    }
+
+    @Test
+    fun unlistedDeviceWithBrokenHwAec_needsSoftwareProcessing() {
+        // WEE-110: catch devices outside the vendor list whose HW AEC fails at
+        // runtime. OnePlus, Vivo, Samsung, Motorola etc. are not in the list,
+        // but if their HW AEC fails (hwAecCreatable = false), they get the
+        // software fallback just like a listed device.
+        assertFalse(
+            "OnePlus with working HW AEC stays on hardware",
+            VendorAudioPolicy.prefersSoftwareAudioProcessing("OnePlus", "", hwAecCreatable = true),
+        )
+        assertTrue(
+            "OnePlus with broken HW AEC (hwAecCreatable=false) falls back to software",
+            VendorAudioPolicy.prefersSoftwareAudioProcessing("OnePlus", "", hwAecCreatable = false),
+        )
+    }
+
+    @Test
+    fun unlistedDeviceWithBrokenHwAec_needsMicUnmute() {
+        // The mic-unmute gate must stay in lockstep with the software-AEC gate.
+        // If an unlisted device needs software AEC due to broken HW AEC,
+        // it also needs the explicit mic unmute.
+        assertFalse(
+            "OnePlus with working HW AEC stays on default (no forced unmute)",
+            VendorAudioPolicy.requiresExplicitMicUnmuteOnStart("OnePlus", "", hwAecCreatable = true),
+        )
+        assertTrue(
+            "OnePlus with broken HW AEC must force mic unmute",
+            VendorAudioPolicy.requiresExplicitMicUnmuteOnStart("OnePlus", "", hwAecCreatable = false),
+        )
+    }
+
+    @Test
+    fun unavailableHwAecSignal_fallsBackToVendorList() {
+        // When hwAecCreatable is null (signal unavailable, threw exception, or
+        // API not available), fall back entirely to the vendor list. This keeps
+        // the policy safe on ROMs whose audio APIs are documented to throw.
+
+        // Listed vendor with unavailable signal → still uses software AEC
+        assertTrue(
+            "Huawei (listed) with unavailable signal still uses software AEC",
+            VendorAudioPolicy.prefersSoftwareAudioProcessing("HUAWEI", "", hwAecCreatable = null),
+        )
+
+        // Unlisted vendor with unavailable signal → falls back to vendor list (false)
+        assertFalse(
+            "OnePlus (unlisted) with unavailable signal falls back to vendor list (hardware AEC)",
+            VendorAudioPolicy.prefersSoftwareAudioProcessing("OnePlus", "", hwAecCreatable = null),
+        )
+    }
+
+    @Test
+    fun allMicUnmuteBoundariesMatchSoftwareAecBoundaries() {
+        // Constraint 3: mic-unmute gate must ALWAYS match software-AEC gate.
+        // Test all combinations of hwAecCreatable and vendor classification.
+        // A four-field case does not fit a Triple, so it gets a name — which
+        // also makes the failure messages readable.
+        data class Case(
+            val manufacturer: String?,
+            val brand: String?,
+            val hwAecCreatable: Boolean?,
+            val expectedUnmute: Boolean,
+        )
+        val testCases = listOf(
+            Case("HUAWEI", "", true, true),      // listed → unmute (vendor list dominates)
+            Case("HUAWEI", "", false, true),     // listed → unmute
+            Case("HUAWEI", "", null, true),      // listed → unmute
+            Case("OnePlus", "", true, false),    // unlisted, good HW AEC → no unmute
+            Case("OnePlus", "", false, true),    // unlisted, broken HW AEC → unmute
+            Case("OnePlus", "", null, false),    // unlisted, no signal → fall back to list
+            Case("Samsung", "", true, false),    // unlisted, good → no unmute
+            Case("Samsung", "", false, true),    // unlisted, broken → unmute
+            Case(null, null, true, false),       // unknown vendor, good → no unmute
+            Case(null, null, false, true),       // unknown vendor, broken → unmute
+        )
+        for ((mfr, brand, hwAec, expectedUnmute) in testCases) {
+            val softwareAec = VendorAudioPolicy.prefersSoftwareAudioProcessing(mfr, brand, hwAec)
+            val micUnmute = VendorAudioPolicy.requiresExplicitMicUnmuteOnStart(mfr, brand, hwAec)
+            assertEquals(
+                "mic-unmute must match software-AEC for ($mfr, $brand, hwAecCreatable=$hwAec)",
+                softwareAec,
+                micUnmute,
+            )
+            assertEquals(
+                "expected result for ($mfr, $brand, hwAecCreatable=$hwAec)",
+                expectedUnmute,
+                micUnmute,
+            )
+        }
+    }
+
+    @Test
+    fun unlistedHealthyDevice_staysHealthy() {
+        // Constraint 2: never add false positives. A device outside the vendor
+        // list whose HW AEC works fine must NOT be forced to software processing.
+        // This ensures Samsung, Pixel, OnePlus, and unknown-working OEMs stay on
+        // the proven hardware AEC path and do not regress.
+        assertFalse(
+            "Samsung with working HW AEC stays on hardware",
+            VendorAudioPolicy.prefersSoftwareAudioProcessing("samsung", "", hwAecCreatable = true),
+        )
+        assertFalse(
+            "Pixel with working HW AEC stays on hardware",
+            VendorAudioPolicy.prefersSoftwareAudioProcessing("Google", "Pixel", hwAecCreatable = true),
+        )
+        assertFalse(
+            "Unknown vendor with working HW AEC stays on hardware",
+            VendorAudioPolicy.prefersSoftwareAudioProcessing("UnknownOem", "", hwAecCreatable = true),
+        )
+    }
 }
