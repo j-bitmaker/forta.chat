@@ -23,6 +23,11 @@ class CallConnectionService : ConnectionService() {
     companion object {
         private const val TAG = "CallConnectionService"
         const val INCOMING_CALL_NOTIFICATION_ID = 9999
+        // Written from the main thread (Telecom callbacks) and read from
+        // Capacitor's plugin thread (reportCallEnded / reportCallConnected) —
+        // and since the displacement check now reads `previous.state` through
+        // it, a stale reference could tear down the wrong call.
+        @Volatile
         var currentConnection: CallConnection? = null
 
         fun getPhoneAccountHandle(context: Context): PhoneAccountHandle {
@@ -92,6 +97,25 @@ class CallConnectionService : ConnectionService() {
 
         Log.d(TAG, "onCreateIncomingConnection: callId=$callId, caller=$callerName, roomId=$roomId")
 
+        // A conversation in progress keeps the single slot. Evicting it — what
+        // this did unconditionally — left it alive but unreachable: every
+        // consumer reads the slot with no callId check (reportCallEnded,
+        // reportCallConnected, the ringer's own decline), so that call could
+        // never be ended again and Telecom would hold the device in a call
+        // audio mode until reboot. While one slot is all there is, refusing the
+        // second call is the honest answer: the new caller gets BUSY rather
+        // than ringing into a void, and the live call stays endable.
+        currentConnection?.let { previous ->
+            if (!DisplacedConnectionPolicy.mayRelease(previous.state)) {
+                Log.w(TAG, "Incoming call while a call is established — reporting busy")
+                val busy = Connection.createFailedConnection(
+                    DisconnectCause(DisconnectCause.BUSY, "already-in-call")
+                )
+                runCatching { busy.destroy() }
+                return busy
+            }
+        }
+
         // WEE-31: Telecom contract requires us to return a Connection here.
         // Any throw used to bubble up into the system_server bound IPC and
         // crash the callee process. Catch anything that can throw inside
@@ -111,11 +135,13 @@ class CallConnectionService : ConnectionService() {
             // Releasing whatever sat here before is not optional: a connection
             // displaced from this single slot is unreachable by onReject and
             // onDisconnect forever, and Telecom keeps holding the device in a
-            // call audio mode on its behalf until reboot.
+            // call audio mode on its behalf until reboot. The established case
+            // never reaches here — it returned BUSY above.
             currentConnection?.let { previous ->
                 if (previous !== connection) {
-                    Log.w(TAG, "Displacing a live connection — disconnecting it first")
+                    Log.w(TAG, "Displacing a stale connection — disconnecting it first")
                     runCatching { previous.onDisconnect() }
+                        .onFailure { Log.w(TAG, "displaced connection teardown threw", it) }
                 }
             }
             currentConnection = connection
@@ -172,6 +198,26 @@ class CallConnectionService : ConnectionService() {
         )
         connection.setDialing()
 
+        // Same displacement rule as the incoming path: a connection pushed out
+        // of this single slot is unreachable by onReject and onDisconnect
+        // forever, and Telecom keeps holding the device in a call audio mode on
+        // its behalf. Placing a call while a previous one is still stuck in the
+        // slot used to orphan it — the incoming side was fixed and this one was
+        // not.
+        //
+        // Deliberately NOT gated on DisplacedConnectionPolicy, unlike the
+        // incoming path: `startCall` in JS already refuses to dial while
+        // `hasLiveCall`, so a connection still reading as established here is a
+        // previous call whose teardown has not landed yet — the back-to-back
+        // "hang up and immediately redial" race. Sparing it would restore
+        // exactly the orphan this guard exists to close.
+        currentConnection?.let { previous ->
+            if (previous !== connection) {
+                Log.w(TAG, "Displacing a connection on dial — disconnecting it first")
+                runCatching { previous.onDisconnect() }
+                    .onFailure { Log.w(TAG, "displaced connection teardown threw", it) }
+            }
+        }
         currentConnection = connection
         return connection
     }

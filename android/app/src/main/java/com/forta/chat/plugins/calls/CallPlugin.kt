@@ -223,6 +223,16 @@ class CallPlugin : Plugin() {
                 TelecomManager.PRESENTATION_ALLOWED
             )
             connection.setDialing()
+            // Same displacement rule as CallConnectionService's outgoing path,
+            // including why it is unconditional there: this is a dial, and JS
+            // will not dial while a call is live, so anything still in the slot
+            // is a leftover.
+            CallConnectionService.currentConnection?.let { previous ->
+                if (previous !== connection) {
+                    runCatching { previous.onDisconnect() }
+                        .onFailure { Log.w(TAG, "displaced connection teardown threw", it) }
+                }
+            }
             CallConnectionService.currentConnection = connection
             call.resolve()
         }

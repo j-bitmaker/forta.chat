@@ -81,7 +81,10 @@ class IncomingCallActivity : Activity() {
     private var pulseAnimator: AnimatorSet? = null
 
     private val handler = Handler(Looper.getMainLooper())
-    private var countdownSeconds = 30
+    private var countdownSeconds = (AUTO_REJECT_TIMEOUT_MS / 1000).toInt()
+
+    /** callId whose identity is currently painted on screen — see [onNewIntent]. */
+    private var shownCallId: String = ""
 
     private val countdownRunnable = object : Runnable {
         override fun run() {
@@ -188,14 +191,9 @@ class IncomingCallActivity : Activity() {
             // attribute resolution have historically nulled view bindings
             // here without throwing in setContentView).
             safeStep("bindViews") {
-                findViewById<TextView>(R.id.caller_name)?.text = callerName
-                findViewById<TextView>(R.id.call_type)?.text =
-                    if (hasVideo) getString(R.string.incoming_video_call) else getString(R.string.incoming_audio_call)
+                shownCallId = intent.getStringExtra("callId") ?: ""
+                bindCallerIdentity(callerName, hasVideo)
                 findViewById<TextView>(R.id.countdown_text)?.text = "${countdownSeconds}s"
-
-                // Avatar initials
-                val initials = callerName.take(2).uppercase()
-                findViewById<TextView>(R.id.avatar_text)?.text = initials
 
                 // Buttons
                 findViewById<ImageButton>(R.id.btn_accept)?.setOnClickListener {
@@ -223,7 +221,7 @@ class IncomingCallActivity : Activity() {
             // dismiss everything and finish. Without this the caller would
             // see "ringing" for ~30-60s until their own SDK timeout fires.
             runCatching {
-                CallConnectionService.currentConnection?.onReject()
+                rejectRingingConnection()
                 CallConnectionService.dismissIncomingCallNotification(this)
                 intent.getStringExtra("roomId")?.let { rId ->
                     FortaFirebaseMessagingService.dismissPushCallNotification(this, rId)
@@ -300,7 +298,65 @@ class IncomingCallActivity : Activity() {
                 Log.e(TAG, CallCrashGuard.marker("action=$action onNewIntent dispatch"), t)
                 runCatching { finish() }
             }
+            return
         }
+
+        // A *second* caller reaching a ringer that is already up. setIntent()
+        // above has already swapped what accept()/decline() will act on, so the
+        // visible identity has to follow — otherwise the user sees the first
+        // caller's name and answers the second one's call. The first call is
+        // not stranded by this: its Telecom connection was still RINGING, and
+        // onCreateIncomingConnection released it when the new one displaced it
+        // (DisplacedConnectionPolicy only spares established calls).
+        val newCallId = intent.getStringExtra("callId") ?: ""
+        if (newCallId.isEmpty() || newCallId == shownCallId) return
+
+        // Same reason as the action branch: a throw out of onNewIntent lands on
+        // the system Activity thread and process-kills the callee.
+        tryStep("rebind-second-call") {
+            Log.d(TAG, "onNewIntent: second call $newCallId displacing $shownCallId on screen")
+            shownCallId = newCallId
+            bindCallerIdentity(
+                intent.getStringExtra("callerName") ?: "Unknown",
+                intent.getBooleanExtra("hasVideo", false),
+            )
+
+            // Restart the deadline rather than letting the new call inherit
+            // whatever was left of the old one's — a call arriving at second 29
+            // would otherwise be auto-rejected almost on sight.
+            handler.removeCallbacks(autoRejectRunnable)
+            handler.removeCallbacks(countdownRunnable)
+            countdownSeconds = (AUTO_REJECT_TIMEOUT_MS / 1000).toInt()
+            findViewById<TextView>(R.id.countdown_text)?.text = "${countdownSeconds}s"
+            handler.postDelayed(autoRejectRunnable, AUTO_REJECT_TIMEOUT_MS)
+            handler.postDelayed(countdownRunnable, 1000)
+        }
+    }
+
+    /**
+     * Reject whatever Telecom connection this ringer is for — but never an
+     * established one.
+     *
+     * FCM launches this activity independently of Telecom, so a ringer can be
+     * on screen for a call that `onCreateIncomingConnection` refused as BUSY.
+     * Its decline button and its 30-second auto-reject both act on the single
+     * global slot with no callId check, so without this guard a stray ringer
+     * would hang up the conversation the user is actually having.
+     */
+    private fun rejectRingingConnection() {
+        val connection = CallConnectionService.currentConnection ?: return
+        if (!DisplacedConnectionPolicy.mayRelease(connection.state)) {
+            Log.w(TAG, "decline ignored: slot holds an established call, not this ringer")
+            return
+        }
+        connection.onReject()
+    }
+
+    private fun bindCallerIdentity(callerName: String, hasVideo: Boolean) {
+        findViewById<TextView>(R.id.caller_name)?.text = callerName
+        findViewById<TextView>(R.id.call_type)?.text =
+            if (hasVideo) getString(R.string.incoming_video_call) else getString(R.string.incoming_audio_call)
+        findViewById<TextView>(R.id.avatar_text)?.text = callerName.take(2).uppercase()
     }
 
     private fun accept() {
@@ -396,7 +452,7 @@ class IncomingCallActivity : Activity() {
         // Same containment as accept(): the marker/boot work below is what
         // actually gets the rejection to the caller.
         tryStep("connection.onReject") {
-            CallConnectionService.currentConnection?.onReject()
+            rejectRingingConnection()
         }
 
         // Defence-in-depth: clear accept markers (we're declining, not
