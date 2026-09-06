@@ -84,15 +84,40 @@ class NativeWebRTCManager(private val context: Context) {
     private var eglBase: EglBase? = null
 
     // Multiple peer connections keyed by peerId
-    private val peerConnections = mutableMapOf<String, PeerConnection>()
+    /**
+     * Every mutation used to arrive on Capacitor's single plugin thread, so a
+     * plain map was safe by construction. [CallForegroundService] now releases
+     * media from its own worker when the app is swiped away mid-call — a second
+     * thread — and a swipe-out during teardown of one call can overlap the
+     * setup of the next. A concurrent map keeps put/remove/clear from corrupting
+     * the structure itself; which call wins the slot is decided upstream by the
+     * single-call model, not here.
+     */
+    private val peerConnections = java.util.concurrent.ConcurrentHashMap<String, PeerConnection>()
+
+    /**
+     * Serialises creating and disposing the local capture objects.
+     *
+     * A concurrent map protects the map; the tracks and sources below are
+     * plain fields, and [stopLocalMedia] disposing them from the media-release
+     * worker while [startLocalAudio] is building them on the plugin thread
+     * would hand the next call a disposed track — or dispose one twice.
+     */
+    private val mediaLock = Any()
 
     // Local media (shared across PCs — one camera/mic for the device)
-    private var localAudioTrack: AudioTrack? = null
-    private var localVideoTrack: VideoTrack? = null
-    private var videoCapturer: CameraVideoCapturer? = null
-    private var surfaceTextureHelper: SurfaceTextureHelper? = null
-    private var localAudioSource: AudioSource? = null
-    private var localVideoSource: VideoSource? = null
+    // @Volatile, not @GuardedBy(mediaLock): CallActivity's mute/video/camera
+    // buttons and CallForegroundService's audio-focus listener all reach the
+    // accessors below from the MAIN thread, while `mediaLock` is held across
+    // startCapture/stopCapture (documented to block for up to a second). Taking
+    // the lock on those paths would trade a use-after-dispose for an ANR, so
+    // they snapshot a volatile reference and tolerate a dispose racing them.
+    @Volatile private var localAudioTrack: AudioTrack? = null
+    @Volatile private var localVideoTrack: VideoTrack? = null
+    @Volatile private var videoCapturer: CameraVideoCapturer? = null
+    @Volatile private var surfaceTextureHelper: SurfaceTextureHelper? = null
+    @Volatile private var localAudioSource: AudioSource? = null
+    @Volatile private var localVideoSource: VideoSource? = null
 
     // Screen capture
     private var screenCapturer: ScreenCapturerAndroid? = null
@@ -250,14 +275,20 @@ class NativeWebRTCManager(private val context: Context) {
         if (pc != null) {
             peerConnections[peerId] = pc
 
-            // Auto-attach existing local tracks (getUserMedia runs before createPC)
-            localAudioTrack?.let {
-                pc.addTrack(it, listOf("stream0"))
-                Log.d(TAG, "[$peerId] Auto-attached audio track")
-            }
-            localVideoTrack?.let {
-                pc.addTrack(it, listOf("stream0"))
-                Log.d(TAG, "[$peerId] Auto-attached video track")
+            // Auto-attach existing local tracks (getUserMedia runs before createPC).
+            // Under mediaLock: this runs on the plugin thread while the media
+            // release executor can be disposing those very tracks, and addTrack
+            // on a disposed native object throws. Short critical section — no
+            // blocking native call inside.
+            synchronized(mediaLock) {
+                localAudioTrack?.let {
+                    pc.addTrack(it, listOf("stream0"))
+                    Log.d(TAG, "[$peerId] Auto-attached audio track")
+                }
+                localVideoTrack?.let {
+                    pc.addTrack(it, listOf("stream0"))
+                    Log.d(TAG, "[$peerId] Auto-attached video track")
+                }
             }
 
             Log.d(TAG, "[$peerId] PeerConnection created (total: ${peerConnections.size})")
@@ -457,7 +488,11 @@ class NativeWebRTCManager(private val context: Context) {
     // Local Media
     // -----------------------------------------------------------------------
 
-    fun startLocalAudio(peerId: String) {
+    fun startLocalAudio(peerId: String) = synchronized(mediaLock) {
+        startLocalAudioLocked(peerId)
+    }
+
+    private fun startLocalAudioLocked(peerId: String) {
         Log.d("WebRTCAudio", "startLocalAudio: begin, peerId=$peerId")
 
         // === OEM audio fix (Xiaomi MIUI / Realme UI / INFINIX XOS) ===
@@ -609,25 +644,32 @@ class NativeWebRTCManager(private val context: Context) {
     }
 
     fun setVideoEnabled(enabled: Boolean) {
-        localVideoTrack?.setEnabled(enabled)
+        runCatching { localVideoTrack?.setEnabled(enabled) }
+            .onFailure { Log.w(TAG, "setVideoEnabled on a disposed track", it) }
         if (enabled && videoCapturer == null) {
             startLocalVideo("", localRenderer)
         }
     }
 
     fun setAudioEnabled(enabled: Boolean) {
-        localAudioTrack?.setEnabled(enabled)
+        // Reached from the audio-focus listener on the main thread while a call
+        // is being torn down on another; a disposed track must not take the UI
+        // thread with it.
+        runCatching { localAudioTrack?.setEnabled(enabled) }
+            .onFailure { Log.w(TAG, "setAudioEnabled on a disposed track", it) }
     }
 
     fun switchCamera() {
-        videoCapturer?.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
-            override fun onCameraSwitchDone(isFrontFacing: Boolean) {
-                Log.d(TAG, "Camera switched, front: $isFrontFacing")
-            }
-            override fun onCameraSwitchError(error: String) {
-                Log.e(TAG, "Camera switch error: $error")
-            }
-        })
+        runCatching {
+            videoCapturer?.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
+                override fun onCameraSwitchDone(isFrontFacing: Boolean) {
+                    Log.d(TAG, "Camera switched, front: $isFrontFacing")
+                }
+                override fun onCameraSwitchError(error: String) {
+                    Log.e(TAG, "Camera switch error: $error")
+                }
+            })
+        }.onFailure { Log.w(TAG, "switchCamera on a disposed capturer", it) }
     }
 
     // -----------------------------------------------------------------------
@@ -763,7 +805,11 @@ class NativeWebRTCManager(private val context: Context) {
         }
     }
 
-    private fun stopLocalMedia() {
+    private fun stopLocalMedia() = synchronized(mediaLock) {
+        stopLocalMediaLocked()
+    }
+
+    private fun stopLocalMediaLocked() {
         localVideoTrack?.let { track ->
             localRenderer?.let { track.removeSink(it) }
         }
@@ -784,13 +830,17 @@ class NativeWebRTCManager(private val context: Context) {
         localAudioSource = null
     }
 
-    fun closeAllPeerConnections() {
+    fun closeAllPeerConnections() = synchronized(mediaLock) {
+        closeAllPeerConnectionsLocked()
+    }
+
+    private fun closeAllPeerConnectionsLocked() {
         for ((peerId, pc) in peerConnections.toMap()) {
             try { pc.close() } catch (_: Exception) {}
             Log.d(TAG, "[$peerId] Closed")
         }
         peerConnections.clear()
-        stopLocalMedia()
+        stopLocalMediaLocked()
         listener = null
         Log.d(TAG, "All PeerConnections closed")
     }

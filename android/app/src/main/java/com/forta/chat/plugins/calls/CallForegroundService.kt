@@ -600,8 +600,12 @@ class CallForegroundService : Service() {
     }
 
     private fun abandonAudioFocus() {
+        // Reached from onDestroy and onTaskRemoved, where a throw propagates
+        // into the Service lifecycle callback and takes the process with it —
+        // and both of those run precisely when the call is already going wrong.
         audioFocusRequest?.let {
-            audioManager?.abandonAudioFocusRequest(it)
+            runCatching { audioManager?.abandonAudioFocusRequest(it) }
+                .onFailure { e -> Log.w("WebRTCAudio", "abandonAudioFocusRequest threw", e) }
             audioFocusRequest = null
         }
         // Session 23 / D-09: restore the user's previous voice-call
@@ -639,7 +643,13 @@ class CallForegroundService : Service() {
 
     private fun releaseWakeLock() {
         wakeLock?.let {
-            if (it.isHeld) it.release()
+            // `isHeld` is not a sufficient guard: the wakelock carries a 1-hour
+            // timeout that can expire between the check and the call, and
+            // release() on an already-released lock throws
+            // RuntimeException("WakeLock under-locked"). Same lifecycle-callback
+            // exposure as abandonAudioFocus above.
+            runCatching { if (it.isHeld) it.release() }
+                .onFailure { e -> Log.w(TAG, "wakelock release threw", e) }
             wakeLock = null
         }
     }
