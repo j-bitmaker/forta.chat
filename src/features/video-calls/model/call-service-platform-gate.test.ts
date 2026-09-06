@@ -255,6 +255,24 @@ describe('call-service module-load WebRTC gate', () => {
     expect(audioErrorRegistration).toBeUndefined();
   });
 
+  it('still registers WiFi↔cellular recovery when the engine is set to webview', async () => {
+    // The other half of the same gate, and the reason it was split: the ICE
+    // restart acts on `matrixCall.peerConn` — the SDK's own peer connection,
+    // which exists in both engine modes. Gating it on the native engine meant
+    // that switching a device to WebView (what support does when a device has
+    // audio trouble) also removed its handover recovery.
+    const { onConnectivityChange } = await import('@/shared/lib/connectivity');
+    window.localStorage.setItem(
+      `${APP_NAME}:${WEBRTC_ENGINE_LS_KEY}`,
+      JSON.stringify('webview'),
+    );
+
+    const { installSpy } = await loadCallServiceUnderPlatform(ANDROID);
+
+    expect(installSpy).not.toHaveBeenCalled();
+    expect(onConnectivityChange).toHaveBeenCalled();
+  });
+
   it('DOES install the native WebRTC proxy on Android (regression guard)', async () => {
     // Symmetric guard: if someone narrows the gate (e.g. accidentally
     // requires `isIOS` too) AND the iOS test above stays green, this
@@ -348,6 +366,25 @@ describe('call-service module-load WebRTC gate', () => {
       (call: unknown[]) => call[0] === 'onAudioError',
     );
     expect(audioErrorRegistration).toBeUndefined();
+  });
+
+  it('does NOT register connectivity-based ICE restart off Android', async () => {
+    // The proxy gate has a negative test per platform; this is the same guard
+    // for the other half of the split. `onConnectivityChange` subscribes to
+    // @capacitor/network, which has no counterpart on web or in Electron, and
+    // iOS WKWebView fires window.online/offline correctly on its own.
+    const { onConnectivityChange } = await import('@/shared/lib/connectivity');
+
+    for (const platform of [
+      { isNative: true, isAndroid: false, isIOS: true, isElectron: false, isWeb: false, currentPlatform: 'ios' },
+      { isNative: false, isAndroid: false, isIOS: false, isElectron: false, isWeb: true, currentPlatform: 'web' },
+      { isNative: false, isAndroid: false, isIOS: false, isElectron: true, isWeb: false, currentPlatform: 'electron' },
+    ] satisfies PlatformFlags[]) {
+      vi.clearAllMocks();
+      await loadCallServiceUnderPlatform(platform);
+      expect(onConnectivityChange, `registered on ${platform.currentPlatform}`)
+        .not.toHaveBeenCalled();
+    }
   });
 
   it('installs the proxy on Android when the stored engine is unreadable', async () => {

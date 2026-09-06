@@ -592,6 +592,58 @@ describe('call-service permission flow', () => {
     });
   });
 
+  describe('detaching handlers from the right call object', () => {
+    // MatrixCall extends TypedEventEmitter, so listener state lives on the
+    // instance. Teardown used to call `off` on whatever call it was handed,
+    // with the handlers of whichever call was wired last — a silent no-op
+    // when those differ, leaving the first call's handlers alive. Those
+    // handlers are not callId-scoped on the native side: when the abandoned
+    // call finally timed out, its onState ran finalizeCall and tore down the
+    // audio, UI and peer connections of the call actually in progress.
+
+    function callWithOwnSpies(callId: string) {
+      const on = vi.fn();
+      const off = vi.fn();
+      return {
+        spy: { on, off },
+        call: {
+          callId,
+          roomId: '!room:matrix.org',
+          type: 'voice',
+          state: 'ringing',
+          on,
+          off,
+          answer: mockAnswer,
+          reject: mockReject,
+          getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+        },
+      };
+    }
+
+    it('detaches from the call the handlers were attached to', async () => {
+      const { useCallService } = await import('./call-service');
+      const { __resetIncomingCallDedupForTests } = await import('./incoming-call-dedup');
+      __resetIncomingCallDedupForTests();
+      const service = useCallService();
+
+      const a = callWithOwnSpies('detach-a');
+      const b = callWithOwnSpies('detach-b');
+
+      mockCallStore.matrixCall = a.call;
+      await service.handleIncomingCall(a.call as never);
+      const offCountAfterFirst = a.spy.off.mock.calls.length;
+
+      // Wiring b tears down a. Every off() must land on a — b has nothing
+      // attached yet, so an off() there would be the silent no-op that leaves
+      // a's handlers alive.
+      mockCallStore.matrixCall = b.call;
+      await service.handleIncomingCall(b.call as never);
+
+      expect(a.spy.off.mock.calls.length).toBeGreaterThan(offCountAfterFirst);
+      expect(b.spy.off).not.toHaveBeenCalled();
+    });
+  });
+
   describe('expired invite delivered late (#958 / #928)', () => {
     // When FCM delivery degrades the homeserver retains the invite and
     // flushes it on the next /sync, minutes later. The SDK arms its expiry

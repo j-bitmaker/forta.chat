@@ -99,7 +99,11 @@ let _networkChangeUnsubscribe: (() => void) | null = null;
 // the media. See webrtc-engine-preference.ts.
 if (isAndroid && isNativeWebRTCEngineEnabled()) {
   installNativeWebRTCProxy();
-  // D-11: Listen for native audio errors
+
+  // D-11: Listen for native audio errors. Stays inside the engine gate:
+  // every emitter of this event (WebRTCPlugin.startLocalMedia and
+  // NativeWebRTCManager's AudioSource/AudioTrack failures) sits on the native
+  // media path, so with the proxy dormant nothing can raise it.
   NativeWebRTC.addListener("onAudioError", (data) => {
     console.warn(`[call-service] Native audio error: ${data.type} — ${data.message}`);
     const callStore = useCallStore();
@@ -108,7 +112,15 @@ if (isAndroid && isNativeWebRTCEngineEnabled()) {
       callStore.scheduleClearCall(1500);
     }
   });
+}
 
+// Outside the engine gate on purpose: this acts on `matrixCall.peerConn`, the
+// SDK's own RTCPeerConnection, which exists in both modes — the native engine
+// only supplies its media. Folding it into the engine condition meant that
+// switching to the WebView engine — which support does precisely when a device
+// has audio trouble — also silently disabled WiFi↔cellular recovery on exactly
+// the devices that needed it most.
+if (isAndroid) {
   // Session 03: WiFi↔cellular handover does not reliably fire
   // window.online/offline on Android WebView. We subscribe to
   // @capacitor/network instead so transport flips during a live call
@@ -312,6 +324,12 @@ function syncRemoteVideoMuted(call: MatrixCall) {
 let boundHandlers: {
   /** Call these handlers belong to, so teardown releases the right dedup slot. */
   callId: string;
+  /**
+   * The very object the handlers were attached to. Listener state on
+   * MatrixCall is per instance, so detaching has to target this and not
+   * whatever call the teardown happens to be called with.
+   */
+  call: MatrixCall;
   onState: CallEventHandlerMap[CallEvent.State];
   onFeeds: CallEventHandlerMap[CallEvent.FeedsChanged];
   onHangup: CallEventHandlerMap[CallEvent.Hangup];
@@ -323,7 +341,14 @@ let boundHandlers: {
 // reference inside boundHandlers (we only get a PC from the SDK).
 let diagnosticsWarningListener: EventListener | null = null;
 
-function unwireCallEvents(call: MatrixCall) {
+/**
+ * Detach the handlers wired by {@link wireCallEvents}.
+ *
+ * Takes no call on purpose: the handlers are always removed from the call they
+ * were attached to, which `boundHandlers` remembers. Passing one in used to
+ * imply a choice, and taking that choice detached from the wrong object.
+ */
+function unwireCallEvents() {
   webrtcDiagnostics.detach();
   if (diagnosticsWarningListener) {
     webrtcDiagnostics.removeEventListener(
@@ -345,11 +370,19 @@ function unwireCallEvents(call: MatrixCall) {
   // the 60 s dedup window never survived past the same tick, and a second
   // delivery of the same invite rang again.
   if (boundHandlers.callId) clearIncomingCallSeen(boundHandlers.callId);
+  // Detach from the call the handlers were attached to, not from whichever
+  // call was passed in. MatrixCall extends TypedEventEmitter, so listener
+  // state is per instance: calling `off` on a different object is a silent
+  // no-op that leaves the original call's handlers alive. Those handlers
+  // then act on the store and on native teardown — which is not callId
+  // scoped — so an old call reaching its timeout would tear down the live
+  // one's audio and UI.
+  const wired = boundHandlers.call;
   try {
-    call.off(CallEvent.State, boundHandlers.onState);
-    call.off(CallEvent.FeedsChanged, boundHandlers.onFeeds);
-    call.off(CallEvent.Hangup, boundHandlers.onHangup);
-    call.off(CallEvent.Error, boundHandlers.onError);
+    wired.off(CallEvent.State, boundHandlers.onState);
+    wired.off(CallEvent.FeedsChanged, boundHandlers.onFeeds);
+    wired.off(CallEvent.Hangup, boundHandlers.onHangup);
+    wired.off(CallEvent.Error, boundHandlers.onError);
   } catch { /* ignore */ }
   boundHandlers = null;
 }
@@ -382,7 +415,7 @@ function releaseLocalMedia(call: MatrixCall): void {
 
 function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
   // Defensive: remove any prior handlers first
-  unwireCallEvents(call);
+  unwireCallEvents();
 
   const callStore = useCallStore();
 
@@ -456,7 +489,7 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
       clearIncomingTimeout();
       playEndTone();
       callStore.stopTimer();
-      unwireCallEvents(call);
+      unwireCallEvents();
       // WEE-89: stop local camera/mic tracks on every platform. The SDK
       // doesn't reliably release getUserMedia on web, leaving the tab's
       // recording indicator lit after the call. Native finalizeCall below
@@ -526,7 +559,7 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
     stopAllSounds();
     clearIncomingTimeout();
     clearConnectingWatchdog();
-    unwireCallEvents(call);
+    unwireCallEvents();
     // WEE-89: a failed call may have already acquired local media; release
     // it so the camera/mic don't stay captured after the error.
     releaseLocalMedia(call);
@@ -551,7 +584,7 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
     callStore.scheduleClearCall(2000);
   }) as CallEventHandlerMap[CallEvent.Error];
 
-  boundHandlers = { callId: call.callId, onState, onFeeds, onHangup, onError };
+  boundHandlers = { callId: call.callId, call, onState, onFeeds, onHangup, onError };
   call.on(CallEvent.State, onState);
   call.on(CallEvent.FeedsChanged, onFeeds);
   call.on(CallEvent.Hangup, onHangup);
@@ -1078,7 +1111,7 @@ export function useCallService() {
       console.error("[call-service] Failed to place call:", e);
       useBugReport().open({ context: tRaw("bugReport.ctx.placeCall"), error: e });
       stopAllSounds();
-      unwireCallEvents(call);
+      unwireCallEvents();
       // WEE-89: placeCall may have run getUserMedia before throwing — release
       // any acquired camera/mic tracks so they aren't left captured.
       releaseLocalMedia(call);
@@ -1163,6 +1196,15 @@ export function useCallService() {
 
     if (callStore.hasLiveCall) {
       console.log("[call-service] handleIncomingCall: already in call, rejecting");
+      // Deliberately NOT finalizeCall() here, unlike the expired-invite
+      // ("sdk-ended") bail-out later in this function:
+      // finalize is global teardown (audio mode -> NORMAL, dismissCallUI,
+      // closeAllPeerConnections), so running it for the *incoming* call would
+      // hang up the conversation the user is currently having. FCM may already
+      // have put a native ringer on screen for this second caller; releasing
+      // just that one needs per-callId Telecom connections, which the single
+      // `currentConnection` slot cannot express today — see
+      // docs/call-bugs-needing-you.md, "Второй входящий во время разговора".
       matrixCall.reject();
       // Release the dedup slot: when the current call ends the user is
       // available again, and a legitimate re-invite from the same caller
@@ -1300,7 +1342,7 @@ export function useCallService() {
       // releases the Telecom connection and dismisses that ringer. Nulling the
       // Pinia slot alone is invisible to native — the phone would keep ringing
       // for a call that is already over.
-      unwireCallEvents(matrixCall);
+      unwireCallEvents();
       if (isNative) void finalizeCall("sdk-ended", matrixCall.callId);
       callStore.setMatrixCall(null);
       return;
@@ -1460,7 +1502,7 @@ export function useCallService() {
       // would fire our onState/onHangup handlers, double-triggering
       // scheduleClearCall + duplicate history entry + redundant
       // dismissCallUI. Mirrors rejectCall()'s ordering.
-      unwireCallEvents(call);
+      unwireCallEvents();
       try {
         call.reject();
       } catch (rejectErr) {
@@ -1502,7 +1544,7 @@ export function useCallService() {
       connectingWatchdogId = null;
       if (callStore.activeCall?.status !== CallStatus.connecting) return;
       console.warn("[call-service] answerCall: stuck in connecting for 30s, forcing failed");
-      unwireCallEvents(call);
+      unwireCallEvents();
       try {
         call.hangup(CallErrorCode.UserHangup, false);
       } catch { /* ignore */ }
@@ -1549,7 +1591,7 @@ export function useCallService() {
       console.error("[call-service] Failed to answer call:", e);
       useBugReport().open({ context: tRaw("bugReport.ctx.answerCall"), error: e });
       clearConnectingWatchdog();
-      unwireCallEvents(call);
+      unwireCallEvents();
       // WEE-89: call.answer may have run getUserMedia before throwing —
       // release any acquired camera/mic tracks so they aren't left captured.
       releaseLocalMedia(call);
@@ -1629,7 +1671,7 @@ export function useCallService() {
     // while still ringing (no local stream acquired yet).
     releaseLocalMedia(call);
 
-    unwireCallEvents(call);
+    unwireCallEvents();
 
     if (callStore.activeCall) {
       callStore.addHistoryEntry({
