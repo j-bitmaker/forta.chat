@@ -3,9 +3,14 @@
 # Run the Maestro flows against a connected device or emulator.
 #
 #   scripts/e2e-android.sh                 # smoke only — needs no credentials
-#   scripts/e2e-android.sh --all           # every flow (needs .env)
+#   scripts/e2e-android.sh --all           # every single-device flow (needs .env)
 #   scripts/e2e-android.sh --build         # rebuild + reinstall the debug APK first
 #   scripts/e2e-android.sh flows/02-send-text.yaml
+#
+# --all deliberately excludes the `call` tag. Those three flows are the two
+# halves of one scenario — the callee waits for a call the caller places from a
+# second device — so on a single device they can only ever time out. Run them
+# with scripts/e2e-call.sh, which drives both devices.
 #
 # Credentials come from .env, which is gitignored and never printed.
 set -euo pipefail
@@ -16,18 +21,20 @@ cd "$ROOT"
 APK="android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk"
 BUILD=0
 TARGET="e2e/maestro/flows/00-smoke-launch.yaml"
+EXCLUDE_TAGS=""
 
 for arg in "$@"; do
   case "$arg" in
     --build) BUILD=1 ;;
-    --all) TARGET="e2e/maestro/flows" ;;
+    --all) TARGET="e2e/maestro/flows"; EXCLUDE_TAGS="call" ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) TARGET="$arg" ;;
   esac
 done
 
-# `set -a` exports every assignment so Maestro sees them as ${VAR}. Values are
-# never echoed — the file holds a private key.
+# Maestro interpolates ${VAR} in a flow from its own process environment, so
+# exporting here is all that is needed — no -e passing. Values are never
+# echoed: the file holds a private key.
 if [ -f .env ]; then
   # Parsed line by line rather than sourced: a value may legitimately contain
   # spaces (a mnemonic phrase is twelve words), and `.` would try to run it as
@@ -96,5 +103,49 @@ fi
 echo "[e2e] installing APK"
 adb -s "$DEVICE" install -r "$APK" >/dev/null
 
-echo "[e2e] running $TARGET"
-maestro --device "$DEVICE" test "$TARGET"
+# Which flows will actually run — needed both for the tag filter and for the
+# preflight below.
+selected_flows() {
+  if [ -d "$TARGET" ]; then
+    for f in "$TARGET"/*.yaml; do
+      # An empty directory leaves the glob unexpanded; grepping that literal
+      # path would be a bogus miss rather than an empty result.
+      [ -e "$f" ] || continue
+      if [ -n "$EXCLUDE_TAGS" ] && grep -q "^[[:space:]]*-[[:space:]]*$EXCLUDE_TAGS\$" "$f"; then
+        continue
+      fi
+      printf '%s\n' "$f"
+    done
+  else
+    printf '%s\n' "$TARGET"
+  fi
+  # Every credentialed flow pulls these in via runFlow.
+  for f in e2e/maestro/subflows/*.yaml; do
+    [ -e "$f" ] && printf '%s\n' "$f"
+  done
+}
+
+# An unset ${VAR} does not fail a flow — Maestro substitutes the literal
+# "undefined" and the run dies later on an assertion that reads like an app
+# bug. Name the missing variables up front instead. Names only, never values.
+missing=""
+while IFS= read -r var; do
+  [ -n "$var" ] || continue
+  eval "val=\${$var:-}"
+  [ -n "$val" ] || missing="$missing $var"
+done <<EOF
+$(selected_flows | xargs grep -rho 'MAESTRO_E2E_[A-Z_]*' 2>/dev/null | sort -u)
+EOF
+
+if [ -n "$missing" ]; then
+  echo "[e2e] WARNING: unset in .env, flows using them will assert on the literal 'undefined':"
+  for var in $missing; do echo "[e2e]   - $var"; done
+  echo "[e2e] see .env.example for what each one holds"
+fi
+
+echo "[e2e] running $TARGET${EXCLUDE_TAGS:+ (excluding tag: $EXCLUDE_TAGS)}"
+if [ -n "$EXCLUDE_TAGS" ]; then
+  maestro --device "$DEVICE" test --exclude-tags "$EXCLUDE_TAGS" "$TARGET"
+else
+  maestro --device "$DEVICE" test "$TARGET"
+fi
