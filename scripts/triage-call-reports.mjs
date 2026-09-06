@@ -242,44 +242,56 @@ export function isBrokenAecVendor(device) {
 export function isCallRelated(title, description) {
   const text = `${title} ${description}`.toLowerCase();
 
-  // Russian call keywords
-  const ruCallKeywords = [
+  // A named call. These also outrank the voice-message exclusion below: a
+  // report that says "звонок" is about a call even when it also complains
+  // about voice messages.
+  const CALL_NOUNS = [
     "звонок",
     "звонк",
     "вызов",
     "дозвон",
     "гудок",
     "гудо",
-    "видеозвонок",
+    "созвон",
+    "видеозвон",
+    "call",
+    "ringtone",
   ];
 
-  // English call keywords
-  const enCallKeywords = [
-    "call",
+  // Symptoms and verbs. "слыш" is the important one: it is how essentially
+  // every Russian report describes a call audio failure ("не слышу
+  // собеседника", "меня не слышат", "неслышит"), and the list used to carry
+  // the English "hear" with no Russian counterpart — so the single most common
+  // complaint in the corpus scored zero and never reached the clusterer.
+  // "микрофон" is here for the same reason: it shares no ASCII substring with
+  // "mic", so that keyword never matched a Russian report either.
+  const CALL_SYMPTOMS = [
+    "слыш",
+    "слышн",
+    "звони",
+    "микрофон",
+    "динамик",
     "hear",
-    "speaker",
-    "ringtone",
     "microphone",
     "mic",
+    "speaker",
   ];
 
-  // Combine all keywords
-  const allKeywords = [...ruCallKeywords, ...enCallKeywords];
+  const hasCallNoun = CALL_NOUNS.some((kw) => text.includes(kw));
+  const hasSymptom = CALL_SYMPTOMS.some((kw) => text.includes(kw));
+  if (!hasCallNoun && !hasSymptom) return false;
 
-  // Check for call keyword presence
-  const hasCallKeyword = allKeywords.some((kw) => text.includes(kw));
+  // Voice messages are a separate feature that shares the vocabulary — they
+  // are recorded with the microphone and people say they cannot hear them.
+  // Excluded unless the report also names an actual call.
+  //
+  // The previous guard here was dead code: it ran only after an early return
+  // had already established that a call keyword was present, so
+  // `!hasVoiceMessage || hasCallKeyword` evaluated to true every time.
+  const mentionsVoiceMessage = /голосов/.test(text) || /voice\s+message/.test(text);
+  if (mentionsVoiceMessage && !hasCallNoun) return false;
 
-  if (!hasCallKeyword) {
-    return false;
-  }
-
-  // Check for voice-message-only complaint (without call keywords)
-  const voiceMessagePattern = /голосовое\s+сообщение/i;
-  const hasVoiceMessage = voiceMessagePattern.test(text);
-
-  // Only consider it a pure voice-message complaint if it has voice-message but no call keywords
-  // Since we already checked for call keywords, we return true (is call-related)
-  return !hasVoiceMessage || hasCallKeyword;
+  return true;
 }
 
 /**

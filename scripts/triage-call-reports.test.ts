@@ -201,6 +201,76 @@ describe("isCallRelated", () => {
   });
 });
 
+  it("counts the most common Russian call complaint: not hearing the other person", () => {
+    // The keyword list carried English "hear"/"microphone"/"mic"/"speaker" but
+    // no Russian equivalent, so "Не слышу собеседника" — the single most common
+    // phrasing in the reports — scored zero and was dropped before it could be
+    // clustered at all.
+    expect(isCallRelated("[android] Не слышу собеседника", "")).toBe(true);
+    expect(isCallRelated("[android] Меня не слышат. А я слышу", "")).toBe(true);
+  });
+
+  it("does not treat one-way messaging as a call report", () => {
+    // "односторонняя" describes a one-way conversation just as often as
+    // one-way audio; the call reports that use it also say созвон or слышу.
+    expect(
+      isCallRelated(
+        "[android] Переписка стала односторонняя",
+        "Я пишу — ответов не вижу",
+      ),
+    ).toBe(false);
+  });
+
+  it("counts a one-way-audio report phrased around созвон", () => {
+    expect(
+      isCallRelated(
+        "[android] При созвоне только односторонняя связь",
+        "Я слышу абонента, а он меня нет.",
+      ),
+    ).toBe(true);
+  });
+
+  it("counts a report about the microphone written in Russian", () => {
+    // "микрофон" shares no ASCII substring with "mic", so the English keyword
+    // never matched it.
+    expect(
+      isCallRelated("[android] Теряет доступ к микрофону", "одну сторону не слышно"),
+    ).toBe(true);
+  });
+
+  it("counts a complaint that calling is impossible at all", () => {
+    expect(isCallRelated("[android] Почему не получается звонить?", "")).toBe(true);
+  });
+
+  it("still excludes a voice-message complaint that never mentions a call", () => {
+    // The old voice-message guard was dead code: by the time it ran, the
+    // function had already returned for anything without a call keyword, so
+    // `!hasVoiceMessage || hasCallKeyword` was always true.
+    expect(
+      isCallRelated(
+        "[android] Плохое качество голосовых сообщений",
+        "За окном звонил в колокола храм — так в голосовом это слышно как треск",
+      ),
+    ).toBe(false);
+    expect(
+      isCallRelated(
+        "[android] Записываю голосовое сообщение, получатель слышит не сразу",
+        "",
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps a call report that also mentions voice messages", () => {
+    // A named call noun outranks the voice-message signal — this one is about
+    // both, and the call half is what needs triaging.
+    expect(
+      isCallRelated(
+        "[android] При звонке не слышно, и голосовые сообщения тоже",
+        "",
+      ),
+    ).toBe(true);
+  });
+
 describe("classifyClusters", () => {
   it("identifies stuck-after-call when audioMode is MODE_RINGTONE", () => {
     const diag = { audioMode: "MODE_RINGTONE", recentInvites: 0, expiredInvites: 0 };
