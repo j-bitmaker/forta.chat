@@ -1742,3 +1742,74 @@ describe('local media release on call teardown (WEE-89)', () => {
     }
   });
 });
+
+describe('ICE candidates held until the remote description (O15)', () => {
+  /**
+   * The SDK adds the candidates it buffered while ringing before it sets the
+   * answer; the buffer attached in onPeerConnectionCreated is what keeps
+   * them. The mocked SDK never emits PeerConnectionCreated, so this goes
+   * through the 300 ms fallback that watches `call.peerConn`.
+   */
+  it('attaches the candidate buffer to the peer connection the SDK creates', async () => {
+    const pc = {
+      remoteDescription: null as RTCSessionDescriptionInit | null,
+      signalingState: 'have-local-offer',
+      iceConnectionState: 'new',
+      iceGatheringState: 'new',
+      connectionState: 'new',
+      oniceconnectionstatechange: null,
+      onsignalingstatechange: null,
+      onconnectionstatechange: null,
+      onicecandidate: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      getStats: vi.fn(async () => new Map()),
+      restartIce: vi.fn(),
+      close: vi.fn(),
+      addIceCandidate: vi.fn(async (_candidate?: RTCIceCandidateInit) => {}),
+      setRemoteDescription: vi.fn(async (d: RTCSessionDescriptionInit) => {
+        pc.remoteDescription = d;
+      }),
+    };
+    const originalAdd = pc.addIceCandidate;
+    const fakeCall = {
+      callId: 'ice-call-id',
+      roomId: 'test-room-id',
+      type: 'voice',
+      on: mockOn,
+      off: mockOff,
+      placeVoiceCall: mockPlaceVoiceCall,
+      placeVideoCall: mockPlaceVideoCall,
+      answer: mockAnswer,
+      reject: mockReject,
+      hangup: mockHangup,
+      isMicrophoneMuted: vi.fn(() => false),
+      localUsermediaStream: null,
+      localScreensharingStream: null,
+      remoteUsermediaStream: null,
+      remoteScreensharingStream: null,
+      remoteUsermediaFeed: null,
+      getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+      peerConn: pc,
+    };
+    const { createNewMatrixCall } = await import('matrix-js-sdk-bastyon/lib/webrtc/call');
+    vi.mocked(createNewMatrixCall).mockReturnValueOnce(fakeCall as never);
+
+    vi.useFakeTimers();
+    try {
+      const { useCallService } = await import('./call-service');
+      void useCallService().startCall('!room:matrix.org', 'voice');
+      await vi.advanceTimersByTimeAsync(0);
+      // The fallback poll runs every 300 ms.
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect((pc as unknown as Record<string, unknown>).__iceCandidateBufferAttached).toBe(true);
+      await pc.addIceCandidate({ candidate: 'candidate:1', sdpMid: '0', sdpMLineIndex: 0 });
+      expect(originalAdd).not.toHaveBeenCalled();
+      await pc.setRemoteDescription({ type: 'answer', sdp: 'v=0' });
+      expect(originalAdd).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

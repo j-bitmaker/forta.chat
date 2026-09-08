@@ -9,6 +9,7 @@ import type { CallFeed } from "matrix-js-sdk-bastyon/lib/webrtc/callFeed";
 import { playRingtone, playDialtone, playEndTone, stopAllSounds } from "./call-sounds";
 import { checkOtherTabHasCall } from "./call-tab-lock";
 import { webrtcDiagnostics } from "./webrtc-diagnostics";
+import { attachIceCandidateBuffer } from "./ice-candidate-buffer";
 import type { DiagnosticsWarningDetail } from "./webrtc-diagnostics";
 import { isNative, isAndroid } from "@/shared/lib/platform";
 import { useBugReport } from "@/features/bug-report";
@@ -599,6 +600,10 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
   const onPeerConnectionCreated = (pc: RTCPeerConnection) => {
     if ((pc as unknown as Record<string, unknown>).__callServiceDiagAttached) return;
     (pc as unknown as Record<string, unknown>).__callServiceDiagAttached = true;
+    // Before the diagnostics wrapper: the SDK adds the candidates it buffered
+    // during ringing *before* it sets the answer, and both engines reject
+    // them without a remote description (see ice-candidate-buffer.ts).
+    attachIceCandidateBuffer(pc);
     webrtcDiagnostics.attach(pc);
 
     // Session 03: the proxy fires "connectiondead" when ICE has been

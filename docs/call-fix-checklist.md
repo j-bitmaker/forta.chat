@@ -742,6 +742,30 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
   - Автотесты: `IncomingRingerLedgerTest.kt`, `IncomingIntentMergeTest.kt`, `IncomingRingerContractTest.kt` (владелец один; флаги и roomId у интентов; onAnswer/reportCallConnected гасят ринг и push; decline gated; MainActivity.onNewIntent), `CallTeardownPolicyTest.kt` (STOP_RINGER по ключу). Maestro `05-call-answer.yaml` теперь ждёт 35 с после ответа и повторно проверяет `Mute`.
   - Запись в `docs/manual-verification.md`: «Ответ из шторки и с экрана блокировки переживает 30-ю секунду».
 
+- [ ] **F27. ICE-кандидаты, пришедшие до answer, больше не теряются (O15)**
+  - Коммиты: `<этот>` · Кластер: connect-fail · Отчёты: O15 (код), вероятный вклад в O02/O05 («Соединение…» без relay)
+  - Где: Samsung и Pixel · Можно ли: можно проверить · Нужно: обе сборки, две сети (Samsung на сотовой, Pixel на Wi-Fi)
+  - Ограничения: на эмуляторах прогон до ICE-пути не дошёл (звонок заканчивался в пределах 10 с после ринга, экран ринга исчезал до ответа) — подтверждение только тестами; на эмуляторе сценарий тот же, что на стенде. Слышимость не проверяется — только факт соединения и логи.
+  - Симптом: звонящий видит «Соединение…» до таймаута, хотя вызываемый ответил; повторный звонок иногда проходит.
+  - Причина: `onAnswerReceived` в matrix-js-sdk добавляет кандидаты, накопленные за время ринга, **до** `setRemoteDescription(answer)` и глотает отказ на уровне info; и браузер, и нативный движок отвергают кандидата без remote description. Всё, что вызываемый отправил до обработки answer, терялось; если он уже закончил сбор кандидатов, второго шанса не было.
+  - Что изменилось: `ice-candidate-buffer.ts` — `attachIceCandidateBuffer(pc)` оборачивает `addIceCandidate`/`setRemoteDescription` на экземпляре: пока `remoteDescription == null`, кандидаты копятся по порядку и добавляются сразу после установки remote description; при `signalingState == "closed"` очередь сбрасывается; неудача одного кандидата не роняет остальные и не проваливает `setRemoteDescription`. Подключается в `call-service.ts` в `onPeerConnectionCreated` (до диагностики), работает для обоих движков.
+  - Воспроизвести на старой сборке:
+    1. Установить `forta-old.apk` на оба аппарата; Samsung на сотовой, Pixel на Wi-Fi.
+    2. На Pixel (вызываемый) заранее открыть чат со звонящим, чтобы ответ был мгновенным.
+    3. Samsung звонит, Pixel отвечает сразу по появлению экрана.
+    4. В логе Samsung: `adb logcat | grep -iE "addIceCandidate|failed to add remote ICE"`.
+    Признак бага: строки `addIceCandidates() failed to add remote ICE candidate` сразу после `onAnswerReceived`, звонок в «Соединение…» 20–30 с и обрыв (или соединение только со второй попытки).
+  - Проверить на новой сборке:
+    1. Установить `forta-new.apk` поверх старой на оба.
+    2. Повторить 5 звонков Samsung→Pixel с мгновенным ответом и 5 Pixel→Samsung.
+    3. В логе звонящего: `adb logcat -v time | grep -E "ice-buffer|failed to add remote ICE|ICE connection"`.
+    Ожидаемо: строки `[ice-buffer] holding candidate #N …` и затем `[ice-buffer] remote description set, adding N held candidate(s)`; нет `failed to add remote ICE candidate`; `ICE connection: connected` в пределах 5 с после ответа; 10 из 10 звонков соединяются.
+    Лог: `adb logcat -v time | grep -E "ice-buffer|addIceCandidate|ICE connection|Signaling"`
+    adb: `adb logcat -s WebRTCPlugin | grep -i addIceCandidate` — на нативном движке нет reject
+  - Если не исправлен, приложить: логкат звонящего за минуту вокруг ответа + отчёт из приложения (после коммита 6 в нём будут relay/host/srflx и selected pair).
+  - Автотесты: `ice-candidate-buffer.test.ts` (порядок, сквозной проход после SRD, closed, end-of-candidates, ошибка SRD сохраняет очередь, ошибка одного кандидата, двойной attach); `call-service.test.ts` → «attaches the candidate buffer to the peer connection the SDK creates».
+  - Запись в `docs/manual-verification.md`: «ICE-кандидаты до answer доходят до соединения».
+
 ### Диагностика: инструменты, которые понадобятся для остальных пунктов
 
 
@@ -1006,7 +1030,7 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
 - [ ] **O15. Кандидаты ICE до remoteDescription в SDK** · кластер: connect-fail · отчётов: 0
   - Факты: node_modules/matrix-js-sdk-bastyon/src/webrtc/call.ts: буферизованные кандидаты добавляются до setRemoteDescription, ошибки глотаются.
   - Причина: Медленное или неудачное соединение при плохой сети.
-  - Статус после ветки: Не закрыт; правится только патчем форка SDK.
+  - Статус после ветки: Не закрыт; правится только патчем форка SDK. Буфер кандидатов до remote description — F27.
   - Стенд: нет на стенде
 
 - [ ] **O16. Другие поверхности: веб и iOS** · кластер: other · отчётов: 3 · примеры: [#936](https://github.com/greenShirtMystery/forta-bugs/issues/936), [#538](https://github.com/greenShirtMystery/forta-bugs/issues/538), [#1276](https://github.com/greenShirtMystery/forta-bugs/issues/1276)
