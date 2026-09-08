@@ -127,8 +127,10 @@ class NativeWebRTCManager(private val context: Context) {
     private var screenSurfaceHelper: SurfaceTextureHelper? = null
     private var isScreenSharing = false
 
-    // Renderers
-    private var localRenderer: SurfaceViewRenderer? = null
+    // Renderers. localRenderer is written by CallActivity on the main thread
+    // (attachLocalRenderer) and read by the plugin thread when it creates the
+    // video track; volatile so each side sees the other's write.
+    @Volatile private var localRenderer: SurfaceViewRenderer? = null
     private var remoteRenderer: SurfaceViewRenderer? = null
 
     private var listener: Listener? = null
@@ -282,14 +284,8 @@ class NativeWebRTCManager(private val context: Context) {
             // on a disposed native object throws. Short critical section — no
             // blocking native call inside.
             synchronized(mediaLock) {
-                localAudioTrack?.let {
-                    pc.addTrack(it, listOf("stream0"))
-                    Log.d(TAG, "[$peerId] Auto-attached audio track")
-                }
-                localVideoTrack?.let {
-                    pc.addTrack(it, listOf("stream0"))
-                    Log.d(TAG, "[$peerId] Auto-attached video track")
-                }
+                localAudioTrack?.let { attachLocalTrackLocked(it, "audio", peerId, "createPeerConnection") }
+                localVideoTrack?.let { attachLocalTrackLocked(it, "video", peerId, "createPeerConnection") }
             }
 
             Log.d(TAG, "[$peerId] PeerConnection created (total: ${peerConnections.size})")
@@ -525,17 +521,9 @@ class NativeWebRTCManager(private val context: Context) {
             Log.w("WebRTCAudio", "startLocalAudio: failed to set audio mode", e)
         }
 
-        if (localAudioTrack != null) {
+        localAudioTrack?.let { track ->
             Log.d("WebRTCAudio", "startLocalAudio: track already exists, reusing for peerId=$peerId")
-            if (peerId.isNotEmpty()) {
-                val pc = peerConnections[peerId]
-                if (pc != null) {
-                    pc.addTrack(localAudioTrack, listOf("stream0"))
-                    Log.d("WebRTCAudio", "startLocalAudio: existing track added to PC peerId=$peerId")
-                } else {
-                    Log.w("WebRTCAudio", "startLocalAudio: no PeerConnection for peerId=$peerId — track not added")
-                }
-            }
+            attachLocalTrackLocked(track, "audio", peerId, "startLocalAudio(reuse)")
             return
         }
 
@@ -582,35 +570,41 @@ class NativeWebRTCManager(private val context: Context) {
         localAudioTrack?.setEnabled(true)
         Log.d("WebRTCAudio", "startLocalAudio: AudioTrack created and enabled")
 
-        // Add to specific PC or all active PCs
-        if (peerId.isNotEmpty()) {
-            val pc = peerConnections[peerId]
-            if (pc != null) {
-                pc.addTrack(localAudioTrack, listOf("stream0"))
-                Log.d("WebRTCAudio", "startLocalAudio: track added to PC peerId=$peerId")
-            } else {
-                Log.w("WebRTCAudio", "startLocalAudio: no PeerConnection for peerId=$peerId — track not added")
-            }
-        } else {
-            for ((id, pc) in peerConnections) {
-                pc.addTrack(localAudioTrack, listOf("stream0"))
-                Log.d("WebRTCAudio", "startLocalAudio: track added to PC id=$id")
-            }
-        }
+        localAudioTrack?.let { attachLocalTrackLocked(it, "audio", peerId, "startLocalAudio") }
         Log.d("WebRTCAudio", "startLocalAudio: complete, pcs=${peerConnections.size}")
     }
 
-    fun startLocalVideo(peerId: String, renderer: SurfaceViewRenderer? = null) {
-        if (localVideoTrack != null) {
+    /**
+     * Under [mediaLock] like [startLocalAudio]. Two threads used to reach this
+     * for one outgoing video call: the plugin thread from `startLocalMedia`,
+     * and the main thread from `CallActivity.initVideoRenderers` —
+     * `launchCallUI` is sent before `placeVideoCall`, and the Activity comes
+     * up while the SDK is still acquiring media. Unlocked, both passed the
+     * `localVideoTrack == null` check and each opened the camera: the second
+     * capturer never got frames, the first leaked with the camera held, and
+     * the peer connection carried whichever track was assigned last — a local
+     * preview that works and a black picture on the far side.
+     *
+     * The Activity now binds its preview through [attachLocalRenderer] and
+     * leaves the camera to the plugin thread. The main thread still lands
+     * here from the camera-permission result and the in-call video toggle,
+     * both mid-setup or mid-call, never while the media-release worker is
+     * tearing a call down — so the lock is contended only by the plugin
+     * thread's own startLocalMedia, and the wait is one camera open.
+     */
+    fun startLocalVideo(peerId: String, renderer: SurfaceViewRenderer? = null) = synchronized(mediaLock) {
+        startLocalVideoLocked(peerId, renderer)
+    }
+
+    private fun startLocalVideoLocked(peerId: String, renderer: SurfaceViewRenderer?) {
+        localVideoTrack?.let { track ->
             // Already started — attach renderer if provided (e.g. CallActivity opened after track creation)
             if (renderer != null && renderer != localRenderer) {
-                localRenderer?.let { localVideoTrack?.removeSink(it) }
+                localRenderer?.let { track.removeSink(it) }
                 localRenderer = renderer
-                localVideoTrack?.addSink(renderer)
+                track.addSink(renderer)
             }
-            if (peerId.isNotEmpty()) {
-                peerConnections[peerId]?.addTrack(localVideoTrack, listOf("stream0"))
-            }
+            attachLocalTrackLocked(track, "video", peerId, "startLocalVideo(reuse)")
             return
         }
 
@@ -628,23 +622,80 @@ class NativeWebRTCManager(private val context: Context) {
         videoCapturer?.initialize(surfaceTextureHelper, context, localVideoSource?.capturerObserver)
         videoCapturer?.startCapture(VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS)
 
-        localVideoTrack = factory?.createVideoTrack("video0", localVideoSource)
-        localVideoTrack?.setEnabled(true)
+        val track = factory?.createVideoTrack("video0", localVideoSource)
+        localVideoTrack = track
+        track?.setEnabled(true)
 
-        if (renderer != null) {
-            localRenderer = renderer
-            localVideoTrack?.addSink(renderer)
+        // The preview bound by CallActivity before the track existed is picked
+        // up here. Order matters for the race with attachLocalRenderer: the
+        // track is published above, the renderer read below (see there).
+        (renderer ?: localRenderer)?.let { sink ->
+            localRenderer = sink
+            track?.addSink(sink)
         }
 
-        // Add to specific PC or all active PCs
-        if (peerId.isNotEmpty()) {
-            peerConnections[peerId]?.addTrack(localVideoTrack, listOf("stream0"))
-        } else {
-            for ((_, pc) in peerConnections) {
-                pc.addTrack(localVideoTrack, listOf("stream0"))
-            }
-        }
+        track?.let { attachLocalTrackLocked(it, "video", peerId, "startLocalVideo") }
         Log.d(TAG, "Local video started with camera: $cameraName (peerId=$peerId, pcs=${peerConnections.size})")
+    }
+
+    /**
+     * The one place a local track is added to a peer connection. Snapshots
+     * what every connection's senders already carry and lets
+     * [TrackAttachPolicy] pick the targets, so a surviving track reaches the
+     * connections that lack it and is never added twice to one that has it
+     * (libwebrtc throws on the second addTrack). A connection whose senders
+     * cannot be read is mid-teardown and is left alone. addTrack failures
+     * propagate as before — a call that cannot carry its track must fail
+     * where the caller can see it, not go silent.
+     */
+    private fun attachLocalTrackLocked(track: MediaStreamTrack, kind: String, peerId: String, from: String) {
+        val sendersByPc = LinkedHashMap<String, Set<String>>()
+        for ((id, pc) in peerConnections) {
+            val held = runCatching { pc.senders.mapNotNull { it.track()?.id() }.toSet() }
+                .onFailure { Log.w(TAG, "[$id] $from: senders unreadable, skipping this connection", it) }
+                .getOrNull() ?: continue
+            sendersByPc[id] = held
+        }
+        if (peerId.isNotEmpty() && peerId !in sendersByPc) {
+            Log.w(TAG, "$from: no PeerConnection for peerId=$peerId — $kind track not added")
+            return
+        }
+        val targets = TrackAttachPolicy.targets(peerId, track.id(), sendersByPc)
+        if (targets.isEmpty()) {
+            if (sendersByPc.isEmpty()) {
+                Log.d(TAG, "$from: no PeerConnection yet, $kind track will be attached at createPeerConnection")
+            } else {
+                Log.d(TAG, "$from: $kind track already on every connection (peerId=$peerId, pcs=${sendersByPc.size})")
+            }
+            return
+        }
+        for (id in targets) {
+            val pc = peerConnections[id] ?: continue
+            pc.addTrack(track, listOf("stream0"))
+            Log.d(TAG, "[$id] $from: attached $kind track")
+        }
+    }
+
+    /**
+     * CallActivity's entry point for the self-view: binds the renderer without
+     * touching the camera or [mediaLock]. Creating the capturer is
+     * `startLocalMedia`'s job on the plugin thread for every video call;
+     * doing it here as well was the second camera open behind the black
+     * far-side picture (O11). Lock-free on purpose — the main thread must not
+     * wait behind the media-release worker's teardown. The race with the
+     * fresh path in [startLocalVideoLocked] is closed by order: this writes
+     * the renderer, then reads the track; the fresh path publishes the track,
+     * then reads the renderer. Both fields are volatile, so at least one side
+     * attaches, and `VideoTrack.addSink` is idempotent when both do.
+     */
+    fun attachLocalRenderer(renderer: SurfaceViewRenderer) {
+        val previous = localRenderer
+        localRenderer = renderer
+        val track = localVideoTrack ?: return
+        runCatching {
+            if (previous != null && previous !== renderer) track.removeSink(previous)
+            track.addSink(renderer)
+        }.onFailure { Log.w(TAG, "attachLocalRenderer on a disposed track", it) }
     }
 
     fun setVideoEnabled(enabled: Boolean) {

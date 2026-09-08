@@ -437,10 +437,13 @@ class CallActivity : Activity(), SensorEventListener {
             Log.d(TAG, "initVideoRenderers: renderers initialized, remote renderer attached")
         }
 
-        // Attach local video only for video calls with camera permission
+        // Bind the self-view only; the camera itself is opened by the plugin
+        // thread's startLocalMedia for every video call. Opening it here as
+        // well raced that path on outgoing calls (launchCallUI precedes
+        // placeVideoCall) and left the far side with a black picture.
         if (isVideoEnabled && checkSelfPermission(android.Manifest.permission.CAMERA)
             == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            mgr.startLocalVideo("", localVideoView)
+            mgr.attachLocalRenderer(localVideoView)
             setupLocalVideoDrag()
         } else if (!isVideoEnabled) {
             localVideoView.visibility = View.GONE

@@ -766,6 +766,28 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
   - Автотесты: `ice-candidate-buffer.test.ts` (порядок, сквозной проход после SRD, closed, end-of-candidates, ошибка SRD сохраняет очередь, ошибка одного кандидата, двойной attach); `call-service.test.ts` → «attaches the candidate buffer to the peer connection the SDK creates».
   - Запись в `docs/manual-verification.md`: «ICE-кандидаты до answer доходят до соединения».
 
+- [ ] **F28. Исходящий видеозвонок открывает камеру один раз; живой трек попадает в каждое соединение (O11)**
+  - Коммиты: `<этот>` · Кластер: video · Отчёты: O11 (#1222 «одна сторона видит, другая нет», #1226 «в видео меня не слышно»)
+  - Где: Samsung и Pixel · Можно ли: можно проверить · Нужно: обе сборки, реальная камера на обоих
+  - Ограничения: на эмуляторе камера виртуальная — проверяется только факт одного захвата (одна строка `Local video started with camera` на звонок) и по одному `attached video track` на соединение; качество картинки и OEM-энкодеры — только стенд. Прогон на эмуляторах 2026-09-08 не завершён (хост дважды зависал и перезагрузился) — эмуляторного подтверждения у F28 нет.
+  - Симптом: в исходящем видеозвонке своё превью есть, у собеседника чёрный квадрат (или наоборот); после такого звонка камера «занята» до перезапуска приложения; иногда собеседника не слышно в видеозвонке.
+  - Причина: `launchCallUI` уходит до `placeVideoCall`, и `CallActivity` с главного потока зовёт `startLocalVideo("")`, пока plugin-поток выполняет `startLocalMedia` — а `startLocalVideo` (в отличие от `startLocalAudio`) не был под `mediaLock`. Оба прохода видели `localVideoTrack == null` и открывали камеру: второй захват не получал кадров, первый утекал вместе с камерой, а в соединение уходил тот трек, что был присвоен последним. Плюс ветки «трек уже есть»: при пустом `peerId` не прикрепляли трек ни к одному соединению, при заданном — прикрепляли без проверки (повторный `addTrack` в libwebrtc бросает исключение).
+  - Что изменилось: `CallActivity.initVideoRenderers` больше не открывает камеру — только привязывает превью (`attachLocalRenderer`, без блокировки; свежий трек на plugin-потоке сам подхватывает уже привязанное превью, поля volatile, `addSink` идемпотентен); `startLocalVideo` под `mediaLock` (`startLocalVideoLocked`) — с главного потока туда теперь попадают только ответ на разрешение камеры и переключатель видео в разговоре, оба вне teardown'а; новый чистый `TrackAttachPolicy.targets(peerId, trackId, sendersByPc)` — пустой `peerId` = «все соединения без этого трека», заданный = «оно, если ещё нет»; единственная точка `addTrack` для локальных треков — `attachLocalTrackLocked`, через неё идут `createPeerConnection`, свежие и уцелевшие ветки аудио и видео. `peerId` из прокси не пробрасывается: `getUserMedia` там — модульная функция без соединения, а правило для пустого `peerId` покрывает все соединения.
+  - Воспроизвести на старой сборке:
+    1. `forta-old.apk` на оба; на Pixel (звонящий) `adb logcat -c`.
+    2. Pixel → Samsung видеозвонок, Samsung отвечает; 20 с разговора.
+    3. На Pixel: `adb logcat -d | grep -E "Local video started|Auto-attached|track added to PC|Camera"`.
+    Признак бага: две строки `Local video started with camera` за один звонок (и/или ошибка камеры `in use`/`CameraAccessException`); у Samsung чёрный квадрат вместо картинки Pixel при живом превью на Pixel.
+  - Проверить на новой сборке:
+    1. `forta-new.apk` поверх старой на оба.
+    2. 3 видеозвонка Pixel→Samsung и 3 Samsung→Pixel, по 20 с; в каждом: обе картинки, звук в обе стороны, переключение камеры.
+    3. На звонящем: `adb logcat -d | grep -E "Local video started|attached (audio|video) track|already on every connection|senders unreadable|Camera"`.
+    Ожидаемо: ровно одна строка `Local video started with camera` на звонок; по одной `attached audio track` и `attached video track` на соединение (`[pc_…]`); повторный заход (`startLocalVideo(reuse)`) даёт `already on every connection`; нет ошибок камеры; 6 из 6 звонков с картинкой и звуком в обе стороны.
+    Лог: `adb logcat -v time -s NativeWebRTCManager WebRTCAudio CallActivity`
+  - Если не исправлен, приложить: логкат звонящего от нажатия «Видеозвонок» до 30-й секунды разговора + отчёт из приложения.
+  - Автотесты: `TrackAttachPolicyTest` (8 строк таблицы), `TrackAttachContractTest` (единственная точка `addTrack`, обе reuse-ветки через правило, `startLocalVideo` под `mediaLock`, `initVideoRenderers` без `startLocalVideo`, `attachLocalRenderer` без блокировки и порядок записи/чтения полей в обеих ветках гонки). Соединение, чьи senders не читаются (идёт teardown), пропускается с warning; ошибки `addTrack` по-прежнему всплывают наверх.
+  - Запись в `docs/manual-verification.md`: «Одна камера на исходящий видеозвонок».
+
 ### Диагностика: инструменты, которые понадобятся для остальных пунктов
 
 
@@ -997,7 +1019,7 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
 - [ ] **O11. Видеозвонок: односторонняя картинка, нет звука в видео** · кластер: video · отчётов: 11 · примеры: [#1222](https://github.com/greenShirtMystery/forta-bugs/issues/1222), [#1226](https://github.com/greenShirtMystery/forta-bugs/issues/1226), [#716](https://github.com/greenShirtMystery/forta-bugs/issues/716), [#936](https://github.com/greenShirtMystery/forta-bugs/issues/936)
   - Факты: 11 отчётов; #939 (зеркало) закрыт F16, #936 веб-версия. #1222 Xiaomi 12X↔14T: одна сторона видит, другая нет; #1226 OnePlus: в видео меня не слышно.
   - Причина: Смесь: кодеки/аппаратные энкодеры на OEM, тот же no-audio в видеорежиме, старый WebView.
-  - Статус после ветки: Не закрыт, кроме F16.
+  - Статус после ветки: Не закрыт, кроме F16. Одна камера на исходящий видеозвонок и одно правило прикрепления треков — F28.
   - Стенд: Samsung и Pixel
   - Как проверить на стенде:
     1. Видеозвонок Samsung↔Pixel в обе стороны: обе картинки, звук, переключение камеры, сворачивание в PiP, поворот экрана, 3 минуты разговора.
