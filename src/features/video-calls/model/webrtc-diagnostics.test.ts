@@ -177,3 +177,89 @@ describe("webrtcDiagnostics — event emitter (Session 03)", () => {
     expect(warningHandler).toHaveBeenCalled();
   });
 });
+
+describe("webrtcDiagnostics — ICE summary and the no-relay warning (O05)", () => {
+  let warningHandler: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    warningHandler = vi.fn();
+    webrtcDiagnostics.addEventListener("warning", warningHandler as unknown as EventListener);
+  });
+
+  afterEach(() => {
+    webrtcDiagnostics.detach();
+    webrtcDiagnostics.removeEventListener("warning", warningHandler as unknown as EventListener);
+    vi.useRealTimers();
+  });
+
+  function candidate(type: string): RTCPeerConnectionIceEvent {
+    return { candidate: { type, protocol: "udp", address: "10.0.0.1", port: 1 } } as unknown as RTCPeerConnectionIceEvent;
+  }
+
+  function warningTypes(): string[] {
+    return warningHandler.mock.calls.map((c) => (c[0] as CustomEvent).detail.type);
+  }
+
+  it("counts gathered candidates by type and reads TURN servers from the configuration", () => {
+    const pc = makeMockPc([]) as unknown as RTCPeerConnection & { getConfiguration: () => RTCConfiguration };
+    pc.getConfiguration = () => ({
+      iceServers: [
+        { urls: "stun:stun.example.org" },
+        { urls: ["turn:relay.example.org:3478", "turns:relay.example.org:443?transport=tcp"] },
+      ],
+    });
+    webrtcDiagnostics.attach(pc);
+    pc.onicecandidate?.(candidate("host"));
+    pc.onicecandidate?.(candidate("srflx"));
+    pc.onicecandidate?.(candidate("relay"));
+    pc.onicecandidate?.({ candidate: null } as unknown as RTCPeerConnectionIceEvent);
+
+    expect(webrtcDiagnostics.getIceSummary()).toEqual({
+      total: 3,
+      relay: 1,
+      host: 1,
+      srflx: 1,
+      selectedPairType: null,
+      lastIceState: null,
+      turnServers: 2,
+    });
+  });
+
+  it("reports turnServers=null when the engine exposes no configuration", () => {
+    const pc = makeMockPc([]);
+    webrtcDiagnostics.attach(pc);
+    expect(webrtcDiagnostics.getIceSummary().turnServers).toBeNull();
+  });
+
+  it("emits ice_failed_no_relay once when ICE fails with no relay candidate", () => {
+    const pc = makeMockPc([]) as RTCPeerConnection & { iceConnectionState: string };
+    webrtcDiagnostics.attach(pc);
+    pc.onicecandidate?.(candidate("host"));
+    pc.iceConnectionState = "failed";
+    pc.oniceconnectionstatechange?.(new Event("iceconnectionstatechange"));
+    pc.oniceconnectionstatechange?.(new Event("iceconnectionstatechange"));
+
+    expect(warningTypes()).toEqual(["ice_failed_no_relay"]);
+  });
+
+  it("stays quiet on failure when a relay candidate was gathered", () => {
+    const pc = makeMockPc([]) as RTCPeerConnection & { iceConnectionState: string };
+    webrtcDiagnostics.attach(pc);
+    pc.onicecandidate?.(candidate("relay"));
+    pc.iceConnectionState = "failed";
+    pc.oniceconnectionstatechange?.(new Event("iceconnectionstatechange"));
+
+    expect(warningTypes()).toEqual([]);
+  });
+
+  it("still forwards the state change to the SDK's own handler", () => {
+    const pc = makeMockPc([]);
+    const sdkHandler = vi.fn();
+    pc.oniceconnectionstatechange = sdkHandler;
+    webrtcDiagnostics.attach(pc);
+    const ev = new Event("iceconnectionstatechange");
+    pc.oniceconnectionstatechange?.(ev);
+    expect(sdkHandler).toHaveBeenCalledWith(ev);
+  });
+});

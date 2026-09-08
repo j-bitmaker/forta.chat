@@ -10,7 +10,8 @@ import { playRingtone, playDialtone, playEndTone, stopAllSounds } from "./call-s
 import { checkOtherTabHasCall } from "./call-tab-lock";
 import { webrtcDiagnostics } from "./webrtc-diagnostics";
 import { attachIceCandidateBuffer } from "./ice-candidate-buffer";
-import type { DiagnosticsWarningDetail } from "./webrtc-diagnostics";
+import type { DiagnosticsWarningDetail, DiagnosticsWarningType } from "./webrtc-diagnostics";
+import { registerCallDiagnosticsExtras, type CallTorDiagnostics } from "@/shared/lib/bug-report";
 import { isNative, isAndroid } from "@/shared/lib/platform";
 import { useBugReport } from "@/features/bug-report";
 import { tRaw } from "@/shared/lib/i18n";
@@ -634,10 +635,7 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
     diagnosticsWarningListener = ((ev: Event) => {
       const detail = (ev as CustomEvent<DiagnosticsWarningDetail>).detail;
       if (!detail) return;
-      const key =
-        detail.type === "no_inbound_audio"
-          ? "call.warning.noInboundAudio"
-          : "call.warning.noOutboundAudio";
+      const key = DIAGNOSTICS_WARNING_KEYS[detail.type];
       try {
         useToast().toast(tRaw(key), "info", 5000);
       } catch (e) {
@@ -920,6 +918,49 @@ let outgoingCallInProgress = false;
 // Public API
 // ---------------------------------------------------------------------------
 
+const DIAGNOSTICS_WARNING_KEYS: Record<DiagnosticsWarningType, Parameters<typeof tRaw>[0]> = {
+  no_inbound_audio: "call.warning.noInboundAudio",
+  no_outbound_audio: "call.warning.noOutboundAudio",
+  ice_failed_no_relay: "call.warning.noRelay",
+};
+
+/**
+ * Tor state for the bug report and the call-start hint. Lazy import: the
+ * Tor store drags the transport graph in, and this module is loaded on
+ * every platform. Null when the store is unavailable (no Pinia yet).
+ */
+async function torFacts(): Promise<CallTorDiagnostics | null> {
+  try {
+    const { useTorStore } = await import("@/entities/tor");
+    const tor = useTorStore();
+    return { enabled: tor.isEnabled, connected: tor.isConnected };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * O14: WebRTC media goes straight to the peer (UDP, no proxy), so a user
+ * who turned Tor on is not covered by it during a call. Say so once per
+ * call, at the moment the call is placed or answered.
+ */
+async function warnIfCallBypassesTor(): Promise<void> {
+  const tor = await torFacts();
+  if (!tor?.enabled) return;
+  try {
+    useToast().toast(tRaw("call.warning.torBypassed"), "info", 6000);
+  } catch (e) {
+    console.warn("[call-service] tor hint toast failed:", e);
+  }
+}
+
+// O05/O14: the bug report's call section gets the last connection's ICE
+// facts and the Tor state from here; shared/ cannot import this feature.
+registerCallDiagnosticsExtras(async () => ({
+  ice: webrtcDiagnostics.getIceSummary(),
+  tor: await torFacts(),
+}));
+
 export function useCallService() {
   const callStore = useCallStore();
 
@@ -1024,6 +1065,7 @@ export function useCallService() {
       console.error("[call-service] createNewMatrixCall returned null — WebRTC not available (secure context + RTCPeerConnection required)");
       return;
     }
+    void warnIfCallBypassesTor();
     if (!supportsVoip) {
       console.warn("[call-service] VoIP not supported by client but call created — attempting anyway");
     }
@@ -1421,6 +1463,7 @@ export function useCallService() {
     }
 
     answerInProgress = true;
+    void warnIfCallBypassesTor();
 
     // forta-bugs#497 / WEE-53: same proactive legacy-WebView hint on the
     // answer path — an outdated callee should be told why the call may drop

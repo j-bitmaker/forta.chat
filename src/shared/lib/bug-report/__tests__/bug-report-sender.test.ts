@@ -105,3 +105,64 @@ describe('sendBugReport', () => {
     ).rejects.toThrow(/Failed to create issue/);
   });
 });
+
+describe('sendBugReport — ICE and Tor rows (O05/O14)', () => {
+  beforeEach(() => {
+    vi.stubEnv('VITE_BUG_REPORT_TOKEN', 'test-token');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it('renders the relay counts, the selected pair and the Tor state', async () => {
+    const fetchMock = mockIssueCreate(11);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await sendBugReport({
+      description: 'no audio',
+      environment: fakeEnv,
+      callDiagnostics: {
+        audioMode: 'MODE_IN_COMMUNICATION',
+        isSpeakerOn: false,
+        isBtScoOn: false,
+        inviteHistory: [],
+        expiredInviteCount: 0,
+        webrtcEngine: 'native',
+        audioTimeline: [],
+        ice: { total: 3, relay: 0, host: 2, srflx: 1, selectedPairType: null, lastIceState: 'failed', turnServers: 0 },
+        tor: { enabled: true, connected: true },
+      },
+    });
+
+    const body = JSON.parse(fetchMock.mock.calls.at(-1)![1].body as string).body as string;
+    expect(body).toContain('| ICE candidates | relay=0 host=2 srflx=1 (TURN servers: 0) |');
+    expect(body).toContain('| ICE result | failed via no pair |');
+    expect(body).toContain('| Tor during calls | on — calls bypass Tor |');
+  });
+
+  it('omits the rows when the facts are unknown', async () => {
+    const fetchMock = mockIssueCreate(12);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await sendBugReport({
+      description: 'no audio',
+      environment: fakeEnv,
+      callDiagnostics: {
+        audioMode: 'MODE_NORMAL',
+        isSpeakerOn: false,
+        isBtScoOn: false,
+        inviteHistory: [],
+        expiredInviteCount: 0,
+        webrtcEngine: 'native',
+        audioTimeline: [],
+        ice: null,
+        tor: null,
+      },
+    });
+
+    const body = JSON.parse(fetchMock.mock.calls.at(-1)![1].body as string).body as string;
+    expect(body).not.toContain('| ICE candidates |');
+    expect(body).not.toContain('| Tor during calls |');
+  });
+});

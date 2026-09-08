@@ -28,6 +28,52 @@ import type {
   InviteThrottleSnapshot,
 } from "@/shared/lib/native-calls";
 
+/** Mirror of the call feature's IceSummary; kept here so shared/ owns the envelope shape. */
+export interface CallIceDiagnostics {
+  total: number;
+  relay: number;
+  host: number;
+  srflx: number;
+  selectedPairType: string | null;
+  lastIceState: string | null;
+  turnServers: number | null;
+}
+
+export interface CallTorDiagnostics {
+  enabled: boolean;
+  connected: boolean;
+}
+
+export interface CallDiagnosticsExtras {
+  ice: CallIceDiagnostics | null;
+  tor: CallTorDiagnostics | null;
+}
+
+/**
+ * The call feature knows the last connection's ICE facts and the Tor
+ * state; this module must not import it (shared → features). The feature
+ * registers a provider instead, at wiring time. Null until it does.
+ */
+type ExtrasProvider = () => Promise<CallDiagnosticsExtras> | CallDiagnosticsExtras;
+let extrasProvider: ExtrasProvider | null = null;
+
+export function registerCallDiagnosticsExtras(provider: ExtrasProvider | null): void {
+  extrasProvider = provider;
+}
+
+const NO_EXTRAS: CallDiagnosticsExtras = { ice: null, tor: null };
+
+async function collectExtras(): Promise<CallDiagnosticsExtras> {
+  if (!extrasProvider) return { ...NO_EXTRAS };
+  try {
+    const extras = await extrasProvider();
+    return { ice: extras.ice ?? null, tor: extras.tor ?? null };
+  } catch (e) {
+    console.warn("[bug-report] call diagnostics extras failed:", e);
+    return { ...NO_EXTRAS };
+  }
+}
+
 export interface BugReportCallDiagnostics {
   /** AudioManager.mode as a string ("MODE_NORMAL", "MODE_IN_COMMUNICATION", ...). */
   audioMode: string;
@@ -52,6 +98,14 @@ export interface BugReportCallDiagnostics {
    * the first entry. Android only; empty elsewhere and on older native builds.
    */
   audioTimeline: AudioTimelineEntry[];
+  /**
+   * Relay/host/srflx candidates and the selected pair of the last call on
+   * this device, from the call feature's diagnostics. Null when no call
+   * has run in this process. Every platform.
+   */
+  ice: CallIceDiagnostics | null;
+  /** Tor mode at report time — calls bypass Tor, so a report should say whether it was on. */
+  tor: CallTorDiagnostics | null;
 }
 
 export const EMPTY_CALL_DIAGNOSTICS: BugReportCallDiagnostics = {
@@ -62,10 +116,14 @@ export const EMPTY_CALL_DIAGNOSTICS: BugReportCallDiagnostics = {
   expiredInviteCount: 0,
   webrtcEngine: "native",
   audioTimeline: [],
+  ice: null,
+  tor: null,
 };
 
 export async function collectCallDiagnostics(): Promise<BugReportCallDiagnostics> {
-  if (!isNative) return { ...EMPTY_CALL_DIAGNOSTICS };
+  // ICE and Tor facts are platform-independent; a web report carries them too.
+  const extras = await collectExtras();
+  if (!isNative) return { ...EMPTY_CALL_DIAGNOSTICS, ...extras };
 
   // Read before the awaits below: it is a synchronous localStorage lookup and
   // must be reported even if the native queries that follow all fail.
@@ -107,5 +165,6 @@ export async function collectCallDiagnostics(): Promise<BugReportCallDiagnostics
     expiredInviteCount: inviteHistory.filter((r) => r.expired).length,
     webrtcEngine,
     audioTimeline,
+    ...extras,
   };
 }

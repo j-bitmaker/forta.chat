@@ -809,6 +809,24 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
   - Автотесты: `AudioRoutePolicyTest` (8 строк таблицы), `AudioRoutePinContractTest` (отказ без старта роутера, reject в плагине, политика в `handleDevicesChanged`, сброс пина в `start()`), `call-controls-speaker.test.ts` (откат + тост при `false`, тишина при `true`), `native-call-bridge.set-audio-device.test.ts` (`false` при reject).
   - Запись в `docs/manual-verification.md`: «Громкая связь: отказ и пин ручного выбора».
 
+- [ ] **F30. Отчёт об ошибке показывает relay/host/srflx, выбранную пару и Tor; предупреждения «нет relay» и «звонок мимо Tor» (O05, O14)**
+  - Коммиты: `<этот>` · Кластер: connect-fail · Отчёты: O05 (8 «Соединение…»), O14 (код)
+  - Где: Samsung и Pixel · Можно ли: можно проверить · Нужно: CI-сборка (отчёты уходят только с `VITE_BUG_REPORT_TOKEN`), Samsung на сотовой сети
+  - Ограничения: клиент только показывает факты. Есть ли TURN на сервере — это `curl` к homeserver (ниже) и coturn на сервере; на эмуляторе сеть без NAT-симметрии, relay=0 там норма и ничего не значит.
+  - Симптом: «Соединение…» до таймаута; в отчёте нет ни слова о том, дошёл ли клиент до relay-кандидата; пользователь с включённым Tor не знает, что звонок идёт мимо него.
+  - Причина: `webrtcDiagnostics` считал relay/host/srflx только в текстовый summary, в конверт отчёта они не попадали; предупреждения о «нет relay» не было; Tor-режим на звонок не влияет (`routing.ts` проксирует только HTTP) и никак не сообщается.
+  - Что изменилось: `webrtcDiagnostics.getIceSummary()` (счётчики, пара last local/remote, `lastIceState`, число turn/turns в конфигурации PC) и предупреждение `ice_failed_no_relay` (ICE failed при relay=0, один раз на attach); `collectCallDiagnostics` получает `ice` и `tor` через провайдера, который регистрирует `call-service` (shared не импортирует features); строки `ICE candidates`, `ICE result`, `Tor` в теле отчёта; тосты `call.warning.noRelay` и `call.warning.torBypassed` (при `placeCall`/`answer`, если Tor включён).
+  - Воспроизвести на старой сборке:
+    1. `forta-old.apk`; отчёт из приложения после любого звонка: в разделе «Call diagnostics» нет строк ICE/Tor.
+  - Проверить на новой сборке:
+    1. `forta-new.apk`; Samsung на сотовой ↔ Pixel на Wi-Fi, 30 с разговора, отчёт из приложения с Samsung: строки `| ICE candidates | relay=… host=… srflx=… (TURN servers: N) |` и `| ICE result | connected via … |`. `relay=0` при `TURN servers: 0` — сервер не отдал TURN (см. п. 3); `relay=0` при `TURN servers: >0` — relay недостижим из этой сети.
+    2. Включить Tor в настройках, позвонить: тост «Звонки идут мимо Tor…» при наборе и при ответе; в отчёте `| Tor during calls | on — calls bypass Tor |`.
+    3. Сервер (владелец): `curl -s -H "Authorization: Bearer $TOKEN" https://<homeserver>/_matrix/client/v3/voip/turnServer` — есть ли `uris` с `turns:…:443?transport=tcp`. Пустой ответ = O05-сервер открыт (класс C).
+    Лог: `adb logcat -v time | grep "WebRTC-Diag"` — строки `ICE candidate: relay …`.
+  - Если не исправлен, приложить: отчёт из приложения (раздел Call diagnostics целиком).
+  - Автотесты: `webrtc-diagnostics.test.ts` (summary, TURN из конфигурации, предупреждение один раз и только при relay=0, проброс в обработчик SDK), `collect-call-diagnostics.test.ts` (провайдер, web, отказ провайдера), `bug-report-sender.test.ts` (строки/их отсутствие), `call-service.test.ts` (тост Tor один раз, тост no-relay).
+  - Запись в `docs/manual-verification.md`: «Факты ICE и Tor в отчёте».
+
 ### Диагностика: инструменты, которые понадобятся для остальных пунктов
 
 
@@ -984,7 +1002,7 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
 - [ ] **O05. TURN не подтверждён: возможно, звонки идут только по прямым кандидатам** · кластер: connect-fail / no-audio · отчётов: 8 · примеры: [#1210](https://github.com/greenShirtMystery/forta-bugs/issues/1210), [#1144](https://github.com/greenShirtMystery/forta-bugs/issues/1144), [#1056](https://github.com/greenShirtMystery/forta-bugs/issues/1056), [#1057](https://github.com/greenShirtMystery/forta-bugs/issues/1057)
   - Факты: Собственный блок iceServers в matrix-client.ts закомментирован, SDK берёт только ответ homeserver `/turnServer`, а прокси подкладывает Google STUN, если список пуст. Что возвращает сервер, не проверено. Симптом «звонок проходит, а связи нет» (#1210) и односторонний звук типичны для отсутствия relay.
   - Причина: Без TURN звонок между двумя аппаратами за симметричным NAT или CGNAT сотового оператора не соединяется либо проходит в одну сторону.
-  - Статус после ветки: Не закрыт, требует проверки на сервере. Дешевле всего из всего списка.
+  - Статус после ветки: Не закрыт, требует проверки на сервере. Дешевле всего из всего списка. Клиентская сторона (relay/host/srflx, TURN в конфигурации PC, тост «нет relay», строки в отчёте) — F30; сервер — по-прежнему открыт.
   - Стенд: Samsung и Pixel · нужно: Samsung на сотовой, Pixel на Wi-Fi; доступ к homeserver
   - Как проверить на стенде:
     1. Samsung только на сотовой (Wi-Fi выключен), Pixel на домашнем Wi-Fi: звонок в обе стороны. Не соединился или односторонний = нет relay.
@@ -1065,7 +1083,7 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
 - [ ] **O14. Звонки при включённом Tor** · кластер: connect-fail · отчётов: 0
   - Факты: UDP через Tor не идёт; в коде нет TCP-only политики ICE для Tor.
   - Причина: Медиа не может пройти через SOCKS; нужен либо TURN по TCP/TLS, либо честное предупреждение.
-  - Статус после ветки: Не закрыт, поведение не задокументировано.
+  - Статус после ветки: Не закрыт, поведение не задокументировано. Предупреждение при наборе и ответе плюс строка `Tor during calls` в отчёте — F30; маршрут медиа через Tor — продуктовое решение.
   - Стенд: Samsung и Pixel
   - Как проверить на стенде:
     1. Включить Tor в настройках на Pixel, дождаться статуса «работает», позвонить на Samsung: зафиксировать, соединяется ли и есть ли звук.

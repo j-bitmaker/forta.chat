@@ -213,3 +213,51 @@ describe("collectCallDiagnostics", () => {
     expect(out.audioMode).toBe("MODE_IN_COMMUNICATION");
   });
 });
+
+describe("collectCallDiagnostics — ICE and Tor extras (O05/O14)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.resetModules();
+    mockGetAudioTimeline.mockResolvedValue([]);
+    mockGetAudioStatus.mockResolvedValue({ mode: "MODE_NORMAL", isSpeakerOn: false, isBtScoOn: false });
+    mockGetInviteThrottleSnapshot.mockResolvedValue({ records: [] });
+  });
+
+  const ice = { total: 4, relay: 1, host: 2, srflx: 1, selectedPairType: "relay/srflx", lastIceState: "connected", turnServers: 1 };
+
+  it("merges what the registered provider reports, on native", async () => {
+    vi.doMock("@/shared/lib/platform", () => ({ isNative: true, isAndroid: true, isIOS: false }));
+    const mod = await import("../collect-call-diagnostics");
+    mod.registerCallDiagnosticsExtras(async () => ({ ice, tor: { enabled: true, connected: false } }));
+
+    const out = await mod.collectCallDiagnostics();
+    expect(out.ice).toEqual(ice);
+    expect(out.tor).toEqual({ enabled: true, connected: false });
+    expect(out.audioMode).toBe("MODE_NORMAL");
+  });
+
+  it("carries the extras on web too — the envelope is not native-only", async () => {
+    vi.doMock("@/shared/lib/platform", () => ({ isNative: false, isAndroid: false, isIOS: false }));
+    const mod = await import("../collect-call-diagnostics");
+    mod.registerCallDiagnosticsExtras(() => ({ ice, tor: null }));
+
+    const out = await mod.collectCallDiagnostics();
+    expect(out.ice).toEqual(ice);
+    expect(out.tor).toBeNull();
+    expect(mockGetAudioStatus).not.toHaveBeenCalled();
+  });
+
+  it("reports nulls when no provider is registered or the provider throws", async () => {
+    vi.doMock("@/shared/lib/platform", () => ({ isNative: true, isAndroid: true, isIOS: false }));
+    const mod = await import("../collect-call-diagnostics");
+    expect((await mod.collectCallDiagnostics()).ice).toBeNull();
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mod.registerCallDiagnosticsExtras(() => { throw new Error("no call yet"); });
+    const out = await mod.collectCallDiagnostics();
+    warn.mockRestore();
+    expect(out.ice).toBeNull();
+    expect(out.tor).toBeNull();
+    expect(out.audioMode).toBe("MODE_NORMAL");
+  });
+});

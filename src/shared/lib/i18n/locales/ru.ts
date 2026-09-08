@@ -583,6 +583,8 @@ export const ru: Record<TranslationKey, string> = {
   "call.permissionDenied.close": "Закрыть",
   "call.warning.noInboundAudio": "Нет входящего звука — возможно, проблема с микрофоном собеседника.",
   "call.warning.noOutboundAudio": "Нет исходящего звука — проверьте микрофон.",
+  "call.warning.noRelay": "Соединение не установлено, relay-сервер недоступен — эта сеть может блокировать прямые звонки.",
+  "call.warning.torBypassed": "Звонки идут мимо Tor: собеседник может видеть ваш IP-адрес.",
   "call.error.connectionLost": "Соединение со звонком потеряно.",
   "call.error.legacyWebView": "Браузерный движок устройства слишком старый для стабильных звонков. Обновите «Android System WebView» в Play Store.",
 

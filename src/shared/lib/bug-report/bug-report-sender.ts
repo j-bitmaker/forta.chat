@@ -207,6 +207,22 @@ async function formatBody(
       `| Recent invites | ${diag.inviteHistory.length} |`,
       `| Expired invites | ${diag.expiredInviteCount} |`,
     );
+    // O05/O14: relay=0 with a failed ICE state is the "no TURN reachable"
+    // signature; the Tor row explains a peer that saw the reporter's IP.
+    if (diag.ice) {
+      lines.push(
+        `| ICE candidates | relay=${diag.ice.relay} host=${diag.ice.host} srflx=${diag.ice.srflx} (TURN servers: ${diag.ice.turnServers ?? '?'}) |`,
+        `| ICE result | ${diag.ice.lastIceState ?? '?'} via ${diag.ice.selectedPairType ?? 'no pair'} |`,
+      );
+    }
+    if (diag.tor) {
+      const torState = !diag.tor.enabled
+        ? 'off'
+        : diag.tor.connected
+          ? 'on — calls bypass Tor'
+          : 'enabled, not connected';
+      lines.push(`| Tor during calls | ${torState} |`);
+    }
     if (diag.inviteHistory.length > 0) {
       lines.push(
         '',

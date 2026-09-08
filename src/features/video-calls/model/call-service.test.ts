@@ -236,6 +236,18 @@ vi.mock('@/entities/chat/lib/chat-helpers', () => ({
   matrixIdToAddress: vi.fn((id: string) => id),
 }));
 
+// O14: the Tor store is imported lazily by call-service; the mock is
+// mutable so a test can turn Tor on. The toast is spied so the Tor hint and
+// the diagnostics warnings can be asserted.
+const torState = { isEnabled: false, isConnected: false };
+vi.mock('@/entities/tor', () => ({
+  useTorStore: () => torState,
+}));
+const toastSpy = vi.fn();
+vi.mock('@/shared/lib/use-toast', () => ({
+  useToast: () => ({ toast: toastSpy }),
+}));
+
 vi.mock('./call-sounds', () => ({
   playRingtone: vi.fn(),
   playDialtone: vi.fn(),
@@ -1809,6 +1821,96 @@ describe('ICE candidates held until the remote description (O15)', () => {
       await pc.setRemoteDescription({ type: 'answer', sdp: 'v=0' });
       expect(originalAdd).toHaveBeenCalledTimes(1);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('Tor hint and the no-relay warning (O05/O14)', () => {
+  beforeEach(() => {
+    torState.isEnabled = false;
+    torState.isConnected = false;
+    toastSpy.mockClear();
+  });
+
+  it('says that the call bypasses Tor when Tor is enabled, once per placed call', async () => {
+    torState.isEnabled = true;
+    const { useCallService } = await import('./call-service');
+    await useCallService().startCall('!room:matrix.org', 'voice');
+    await new Promise((r) => setTimeout(r, 0));
+
+    const torHints = toastSpy.mock.calls.filter((c) => /Tor/.test(String(c[0])));
+    expect(torHints).toHaveLength(1);
+    expect(torHints[0][1]).toBe('info');
+  });
+
+  it('stays quiet about Tor when it is off', async () => {
+    const { useCallService } = await import('./call-service');
+    await useCallService().startCall('!room:matrix.org', 'voice');
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(toastSpy.mock.calls.filter((c) => /Tor/.test(String(c[0])))).toHaveLength(0);
+  });
+
+  it('turns the diagnostics no-relay warning into a toast', async () => {
+    const pc = {
+      remoteDescription: null as RTCSessionDescriptionInit | null,
+      signalingState: 'have-local-offer',
+      iceConnectionState: 'new',
+      iceGatheringState: 'new',
+      connectionState: 'new',
+      oniceconnectionstatechange: null,
+      onsignalingstatechange: null,
+      onconnectionstatechange: null,
+      onicecandidate: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      getStats: vi.fn(async () => new Map()),
+      restartIce: vi.fn(),
+      close: vi.fn(),
+      addIceCandidate: vi.fn(async (_candidate?: RTCIceCandidateInit) => {}),
+      setRemoteDescription: vi.fn(async (d: RTCSessionDescriptionInit) => {
+        pc.remoteDescription = d;
+      }),
+    };
+    const fakeCall = {
+      callId: 'relay-call-id',
+      roomId: 'test-room-id',
+      type: 'voice',
+      on: mockOn,
+      off: mockOff,
+      placeVoiceCall: mockPlaceVoiceCall,
+      placeVideoCall: mockPlaceVideoCall,
+      answer: mockAnswer,
+      reject: mockReject,
+      hangup: mockHangup,
+      isMicrophoneMuted: vi.fn(() => false),
+      localUsermediaStream: null,
+      localScreensharingStream: null,
+      remoteUsermediaStream: null,
+      remoteScreensharingStream: null,
+      remoteUsermediaFeed: null,
+      getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+      peerConn: pc,
+    };
+    const { createNewMatrixCall } = await import('matrix-js-sdk-bastyon/lib/webrtc/call');
+    vi.mocked(createNewMatrixCall).mockReturnValueOnce(fakeCall as never);
+    const { webrtcDiagnostics } = await import('./webrtc-diagnostics');
+
+    vi.useFakeTimers();
+    try {
+      const { useCallService } = await import('./call-service');
+      void useCallService().startCall('!room:matrix.org', 'voice');
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(300);
+
+      webrtcDiagnostics.dispatchEvent(
+        new CustomEvent('warning', { detail: { type: 'ice_failed_no_relay' } }),
+      );
+      const relayToasts = toastSpy.mock.calls.filter((c) => /relay/i.test(String(c[0])));
+      expect(relayToasts).toHaveLength(1);
+    } finally {
+      webrtcDiagnostics.detach();
       vi.useRealTimers();
     }
   });
