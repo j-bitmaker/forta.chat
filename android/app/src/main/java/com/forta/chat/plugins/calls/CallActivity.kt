@@ -304,9 +304,12 @@ class CallActivity : Activity(), SensorEventListener {
         // device's volume controls stuck on VoIP-only until reboot (#708).
         val hasActiveCall = WebRTCPlugin.manager != null && CallForegroundService.isRunning
         if (hasActiveCall) {
-            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            am.mode = AudioManager.MODE_IN_COMMUNICATION
-            Log.d("WebRTCAudio", "onResume: restored MODE_IN_COMMUNICATION, re-requesting audio focus")
+            // Through the router, not a direct AudioManager write: it re-applies
+            // the mode only when the OS actually reset it, records the event in
+            // the call's audio timeline, and keeps the reset owned by the same
+            // watchdog that owns start().
+            AudioRouter.getSharedInstance(applicationContext).ensureCommunicationMode("resume")
+            Log.d("WebRTCAudio", "onResume: ensured MODE_IN_COMMUNICATION, re-requesting audio focus")
             CallForegroundService.reRequestAudioFocus(this)
         }
     }

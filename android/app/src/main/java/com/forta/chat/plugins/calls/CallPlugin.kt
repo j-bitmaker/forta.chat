@@ -56,6 +56,16 @@ class CallPlugin : Plugin() {
             Log.e(TAG, "Failed to register phone account", e)
         }
 
+        // Cold-start sweep. The JS audio watchdog only runs on a resume
+        // transition, so a process that died mid-call and comes back fresh
+        // never checks the mode it left behind. The policy acts only on our
+        // own persisted session marker — never on another app's live call —
+        // and never touches MODE_RINGTONE, which Telecom releases itself when
+        // the dead process's connections go with it.
+        runCatching {
+            CallTeardown.endCall(context, CallTeardownPolicy.Reason.COLD_START, null)
+        }.onFailure { Log.w(TAG, "cold-start teardown sweep threw", it) }
+
         CallConnection.onAnswered = { callId ->
             notifyListeners("callAnswered", JSObject().apply {
                 put("callId", callId)

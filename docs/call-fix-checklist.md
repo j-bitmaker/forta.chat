@@ -687,6 +687,34 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
   - Запись в `docs/manual-verification.md`: «Tor работает после удаления libconjure.so»
 
 
+- [ ] **F25. Единый владелец завершения звонка: аудиорежим сбрасывается и без JS-финализации (O01, хвосты O02/O08)**
+  - Коммиты: `<этот>` · Кластер: stuck-after-call · Отчёты: O01 (37 отчётов), примеры в O01
+  - Где: Samsung и Pixel · Можно ли: можно проверить · Нужно: обе сборки; для FCM-hangup при убитом процессе — CI-сборка (push)
+  - Ограничения: на эмуляторе доказаны два пути — штатное завершение (политика ничего не трогает, `actions=[]`) и смерть процесса во время набора (новый процесс на cold-start увидел `audioMode=3` и открытый маркер сессии, сделал `forceStop(teardown COLD_START)` через 1,1 с после смерти). Смерть процесса во время ринга на эмуляторе API 35 режим не подвешивает: MODE_RINGTONE (маркер закрыт — рингер не сессия роутера) стал MODE_NORMAL через 3 с после `kill -9`, Telecom снял RINGING сам; система перезапустила только `CallConnectionService`, активити не пересоздала, поэтому sweep отработает при следующем открытии приложения. Значит 22 отчёта в MODE_RINGTONE — либо процесс не умирал, либо OEM-AudioService не сбрасывает режим по смерти клиента: это проверяется только на аппарате. FCM-hangup и OEM-переустановка режима (Samsung) на эмуляторе не воспроизводятся. Факт для диагностики: пока self-managed Connection в DIALING/ACTIVE, режим MODE_IN_COMMUNICATION держит сам Telecom и переустанавливает его после нашего `stop()`; отпускает через ~30 мс после `onDisconnect`. Значит `reportCallEnded`, не дошедший до Telecom, = висящий режим, который наш сброс не победит — это семейство слота (O06), а не роутера.
+  - Симптом: после звонка телефон остаётся в MODE_IN_COMMUNICATION или MODE_RINGTONE: громкая связь не переключается, медиа играет «как в звонке», следующий звонок без звука — до перезагрузки.
+  - Причина: «звонок кончился» решали девять мест, и ни одно не обязано было сбросить всё. ACTION_STOP foreground-сервиса не сбрасывал роутер и не обнулял `instance` (вотчдог роутера считал сервис живым); FCM-hangup только дёргал `currentConnection?.onDisconnect()`, а при пустом слоте не делал ничего; `NativeWebRTCManager.startLocalAudio` и `CallActivity.onResume` писали MODE_IN_COMMUNICATION мимо роутера, без владельца сброса; после смерти процесса режим при холодном старте никто не проверял.
+  - Что изменилось: `CallTeardownPolicy` (pure) + `CallTeardown.endCall(reason, callId)` из `CallConnection.onReject/onDisconnect`, FCM-hangup (`REMOTE_HANGUP`, когда соединения уже нет) и `CallPlugin.load()` (`COLD_START`). Роутер помечает свою сессию в `shared_prefs/forta_audio_router.xml` (`session_open`); чужой MODE_IN_COMMUNICATION (звонок другого приложения) не трогается. Прямые записи режима заменены на `AudioRouter.ensureCommunicationMode()` с 5-минутным вотчдогом. `ACTION_STOP` делает `forceStop("fgs_stop")` и обнуляет `instance`; STOP от предыдущего звонка, пришедший после старта следующего, игнорируется по счётчику поколений (иначе он глушил бы новый звонок).
+  - Воспроизвести на старой сборке:
+    1. Установить `forta-old.apk`.
+    2. Серия из 10 звонков Samsung↔Pixel с чередованием: положил я / положил собеседник / не ответил 45 с / отклонил / смахнул из недавних во время разговора.
+    3. После каждого звонка через 30 с: `adb shell dumpsys audio | grep -A3 "Audio mode"`.
+    4. CI-сборка: на Pixel во время ринга смахнуть приложение из недавних, на Samsung положить трубку; через 30 с снять режим на Pixel.
+    Признак бага: `Actual mode = MODE_IN_COMMUNICATION` или `MODE_RINGTONE` без идущего звонка. Проявляется не каждый раз (37 отчётов на 13 вендорах) — серия нужна целиком.
+  - Проверить на новой сборке:
+    1. Установить `forta-new.apk` поверх старой.
+    2. Повторить серию из 10 звонков; после каждого через 30 с `adb shell dumpsys audio | grep -A3 "Audio mode"` → `MODE_NORMAL`.
+    3. FCM-hangup (CI-сборка): Pixel убит во время ринга (смахнуть из недавних), Samsung кладёт трубку → в логе Pixel `CallTeardown: endCall reason=REMOTE_HANGUP …`; через 30 с `MODE_NORMAL`.
+    4. Cold-start: убить процесс Pixel во время разговора (`adb shell run-as com.forta.chat kill -9 $(adb shell pidof com.forta.chat)` на debug-сборке или смахнуть из недавних), открыть приложение → `CallTeardown: endCall reason=COLD_START … sessionMarkerOpen=true actions=[FORCE_STOP_ROUTER]` и `AudioLifecycle: forceStop(teardown COLD_START)`; если система уже сбросила режим сама — `actions=[]`, это тоже норма.
+    5. Redial: сразу после завершения звонка позвонить снова — у второго звонка есть звук в обе стороны (устаревший ACTION_STOP первого звонка не глушит второй).
+    Ожидаемо: ни одного `MODE_RINGTONE`/`MODE_IN_COMMUNICATION` без идущего звонка; на каждое завершение ровно одна строка `CallTeardown: endCall`; маркер `session_open` вне звонка `false`.
+    Лог: `adb logcat -s CallTeardown AudioLifecycle CallForegroundService CallConnectionService`
+    adb: `adb shell dumpsys audio | grep -A3 "Audio mode"` — строки `Actual mode` и `Mode owner`
+    adb: `adb shell run-as com.forta.chat cat shared_prefs/forta_audio_router.xml` (debug-сборка) — `session_open` вне звонка `false`
+    adb: `adb shell dumpsys telecom | grep -E "Call id=TC@"` — после завершения пусто
+  - Если не исправлен, приложить: `adb logcat -s CallTeardown AudioLifecycle CallForegroundService CallConnectionService AudioRouter` за минуту вокруг завершения, `dumpsys audio`, `dumpsys telecom` и отчёт из приложения (таймлайн аудио: события `force_stop`, `mode_ensure`, `mode_reapply`).
+  - Автотесты: `CallTeardownPolicyTest.kt` (таблица reason×state), `CallTeardownContractTest.kt` (все хуки зовут `endCall`; только роутер пишет MODE_IN_COMMUNICATION; stale STOP; маркер закрывается на обоих путях), `AudioRouterEnsureModeTest.kt`, `CallServiceStopPolicyTest.kt`; androidTest `CallTeardownInstrumentedTest.kt` — реальный AudioManager на эмуляторе (`./gradlew :app:connectedSideloadDebugAndroidTest`).
+  - Запись в `docs/manual-verification.md`: «Аудиорежим сбрасывается без JS-финализации: убитый процесс, FCM-hangup, серия звонков».
+
 ### Диагностика: инструменты, которые понадобятся для остальных пунктов
 
 
@@ -822,7 +850,7 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
 - [ ] **O01. Телефон застревает в режиме звонка после его окончания** · кластер: stuck-after-call · отчётов: 37 · примеры: [#1337](https://github.com/greenShirtMystery/forta-bugs/issues/1337), [#1238](https://github.com/greenShirtMystery/forta-bugs/issues/1238), [#1204](https://github.com/greenShirtMystery/forta-bugs/issues/1204), [#1286](https://github.com/greenShirtMystery/forta-bugs/issues/1286), [#1327](https://github.com/greenShirtMystery/forta-bugs/issues/1327), [#1328](https://github.com/greenShirtMystery/forta-bugs/issues/1328)
   - Факты: 29 из 88 отчётов с диагностикой сняты в режиме, который ставит приложение: 22 в MODE_RINGTONE, 7 в MODE_IN_COMMUNICATION, 13 вендоров, включая Samsung SM-A075F (#1238) и OnePlus от сегодняшнего дня (#1337).
   - Причина: Аудиорежим принадлежит трём слоям (NativeWebRTCManager ставит, AudioRouter переприменяет, foreground-сервис сбрасывает), и любой нестандартный выход из звонка обходит сброс. F01–F06 закрывают известные пути; остаются SIGKILL/Doze без onDestroy (вотчдог срабатывает только на возврате в приложение) и путь FCM-ринга.
-  - Статус после ветки: Частично закрыт F01–F06 (00ddc636), финальный ответ даст только серия на реальных аппаратах.
+  - Статус после ветки: Частично закрыт F01–F06 (00ddc636); единый владелец завершения и cold-start sweep — F25. Финальный ответ даст только серия на реальных аппаратах.
   - Стенд: Samsung и Pixel · нужно: обе сборки; для FCM-ринга CI-сборка
   - Как проверить на стенде:
     1. После каждого сценария из F01–F07 и после обычного завершения выждать 30 с и снять `adb shell dumpsys audio | grep -i mode`.

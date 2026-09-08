@@ -519,6 +519,12 @@ class CallConnection(
         if (CallConnectionService.currentConnection === this) {
             CallConnectionService.currentConnection = null
         }
+        // Backstop for the paths that never reach the JS finalize (ring timeout
+        // with a frozen WebView, a Telecom-side reject); a no-op when JS has
+        // already torn the audio session down. Wrapped so it can never keep the
+        // reject from reaching JS.
+        runCatching { CallTeardown.endCall(context, CallTeardownPolicy.Reason.REJECT, callId) }
+            .onFailure { Log.w("CallConnection", "teardown after reject threw", it) }
         pendingRejectCallId = callId
         if (roomId.isNotEmpty()) pendingRejectRoomId = roomId
         onRejected?.invoke(callId)
@@ -544,6 +550,13 @@ class CallConnection(
             CallConnectionService.currentConnection = null
         }
         clearPendingFor(callId, roomId)
+        // Backstop for the disconnects JS never drives: a headset or the
+        // system call UI ending the call, a push-delivered hangup while the
+        // WebView is frozen in the background. The policy skips the global
+        // teardown when a newer call already owns the slot (displacement) and
+        // when JS has already stopped the router (the normal hangup).
+        runCatching { CallTeardown.endCall(context, CallTeardownPolicy.Reason.DISCONNECT, callId) }
+            .onFailure { Log.w("CallConnection", "teardown after disconnect threw", it) }
         onEnded?.invoke(callId)
     }
 

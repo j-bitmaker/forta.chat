@@ -54,11 +54,27 @@ class CallForegroundService : Service() {
         const val EXTRA_STATUS = "status"
         const val EXTRA_DURATION = "duration"
 
+        /**
+         * Start generation carried by ACTION_START and ACTION_STOP. A stop is
+         * honoured only for the generation it was issued against: a hangup
+         * followed by an immediate redial sends the old call's stop after the
+         * new call's start (JS drops `hasLiveCall` the moment the SDK call
+         * ends, before its finalize reaches the native steps), and an unkeyed
+         * stop then tore down the new call — its notification, its wake-lock
+         * and, through forceStop, its audio. Bumped synchronously in [start],
+         * so a stop captured before the next start is already stale when it
+         * is delivered. See [CallServiceStopPolicy].
+         */
+        const val EXTRA_GENERATION = "startGeneration"
+        private val startGeneration = java.util.concurrent.atomic.AtomicLong(0L)
+
         fun start(context: Context, callerName: String, callType: String) {
+            val generation = startGeneration.incrementAndGet()
             val intent = Intent(context, CallForegroundService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_CALLER_NAME, callerName)
                 putExtra(EXTRA_CALL_TYPE, callType)
+                putExtra(EXTRA_GENERATION, generation)
             }
             try {
                 context.startForegroundService(intent)
@@ -86,6 +102,9 @@ class CallForegroundService : Service() {
         fun stop(context: Context) {
             val intent = Intent(context, CallForegroundService::class.java).apply {
                 action = ACTION_STOP
+                // The generation this stop is issued against; a start that
+                // lands in between makes it stale.
+                putExtra(EXTRA_GENERATION, startGeneration.get())
             }
             context.startService(intent)
         }
@@ -173,6 +192,12 @@ class CallForegroundService : Service() {
                 callerName = if (incomingName.isNullOrBlank()) "Unknown" else incomingName
                 callType = intent.getStringExtra(EXTRA_CALL_TYPE) ?: "voice"
                 hasStarted = true
+                // Re-assert liveness: a stop that ran on this same instance
+                // cleared `instance`, and Android reuses the instance for a
+                // start that arrives before the deferred destroy. Without this
+                // the new call reads as not running, and the router's orphan
+                // watchdog would take its audio down as an orphan.
+                instance = this
                 startForegroundWithNotification(getString(R.string.call_connecting))
                 acquireWakeLock()
                 requestAudioFocus()
@@ -202,10 +227,30 @@ class CallForegroundService : Service() {
                 stopSelf()
             }
             ACTION_STOP -> {
+                val stopGeneration = intent.getLongExtra(EXTRA_GENERATION, -1L)
+                if (CallServiceStopPolicy.isStale(stopGeneration, startGeneration.get())) {
+                    Log.w(
+                        TAG,
+                        "ACTION_STOP for start generation $stopGeneration ignored — " +
+                            "a newer call started (generation ${startGeneration.get()})",
+                    )
+                    return START_NOT_STICKY
+                }
                 hasStarted = false
                 releaseWakeLock()
                 abandonAudioFocus()
                 stopForeground(STOP_FOREGROUND_REMOVE)
+                // Same reasoning as onTaskRemoved: stopSelf() reaches onDestroy
+                // eventually, but OEM ROMs defer it, and until then `isRunning`
+                // still reads true and the router's orphan watchdog treats the
+                // call as alive. Release the audio session and clear liveness
+                // now; onDestroy's own pass is idempotent.
+                if (!isSuperseded()) {
+                    runCatching {
+                        AudioRouter.getSharedInstance(applicationContext).forceStop("fgs_stop")
+                    }.onFailure { Log.w(TAG, "AudioRouter.forceStop in ACTION_STOP threw", it) }
+                    instance = null
+                }
                 stopSelf()
                 Log.d(TAG, "Service stopped")
             }

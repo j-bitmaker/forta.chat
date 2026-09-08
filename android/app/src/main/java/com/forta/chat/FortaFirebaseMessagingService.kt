@@ -172,20 +172,39 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
             // (setOngoing=true blocks swipe-dismiss) until process death
             // without an explicit cancel.
             dismissPushCallNotification(this, roomId)
+            // Resolved before the slot is touched: the id of the call that ended
+            // is what the teardown below is keyed on.
+            val endedCallId = data["call_id"] ?: data["event_id"]
+            var disconnectedConnection = false
             try {
                 // No unconditional `currentConnection = null` after this:
                 // onDisconnect clears the slot itself, identity-guarded, and
                 // this runs on Firebase's thread while Telecom assigns the next
                 // connection on the main one — blanking the slot here can
                 // orphan a call that is only just starting to ring.
-                com.forta.chat.plugins.calls.CallConnectionService.currentConnection
-                    ?.onDisconnect()
+                val connection = com.forta.chat.plugins.calls.CallConnectionService.currentConnection
+                if (connection != null) {
+                    connection.onDisconnect()
+                    disconnectedConnection = true
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to disconnect currentConnection", e)
             }
+            // onDisconnect already ran the teardown for the connection it ended.
+            // With no connection to end, nothing else on this path releases the
+            // audio session and the foreground service when the WebView is
+            // frozen in the background and never sees the hangup itself.
+            if (!disconnectedConnection) {
+                runCatching {
+                    com.forta.chat.plugins.calls.CallTeardown.endCall(
+                        this,
+                        com.forta.chat.plugins.calls.CallTeardownPolicy.Reason.REMOTE_HANGUP,
+                        endedCallId,
+                    )
+                }.onFailure { Log.w(TAG, "teardown after remote hangup threw", it) }
+            }
             // End-of-call signal also clears the dedup marker so a
             // genuinely new invite (new call_id) can ring again.
-            val endedCallId = data["call_id"] ?: data["event_id"]
             if (endedCallId != null && lastRingingCallId == endedCallId) {
                 lastRingingCallId = null
             }

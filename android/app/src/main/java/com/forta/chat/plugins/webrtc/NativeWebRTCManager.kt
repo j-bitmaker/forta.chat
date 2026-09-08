@@ -6,6 +6,7 @@ import android.media.AudioManager
 import android.media.projection.MediaProjection
 import android.os.Build
 import android.util.Log
+import com.forta.chat.plugins.calls.AudioRouter
 import com.forta.chat.plugins.calls.VendorAudioPolicy
 import org.webrtc.*
 import org.webrtc.audio.JavaAudioDeviceModule
@@ -502,8 +503,11 @@ class NativeWebRTCManager(private val context: Context) {
         try {
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
-            // 1. Force VoIP mode — must happen before AudioTrack creation
-            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            // 1. Force VoIP mode — must happen before AudioTrack creation.
+            // Through the router so the write has an owner: a timeline entry,
+            // the persisted session marker and a watchdog that resets it when
+            // the call never reaches AudioRouter.start().
+            AudioRouter.getSharedInstance(context).ensureCommunicationMode("startLocalAudio")
 
             // 2. Ensure mic is not muted at system level (some ROMs persist mute)
             if (audioManager.isMicrophoneMute) {
