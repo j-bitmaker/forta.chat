@@ -132,6 +132,7 @@ describe('sendBugReport — ICE and Tor rows (O05/O14)', () => {
         audioTimeline: [],
         ice: { total: 3, relay: 0, host: 2, srflx: 1, selectedPairType: null, lastIceState: 'failed', turnServers: 0 },
         tor: { enabled: true, connected: true },
+        fullScreenIntentAllowed: false,
       },
     });
 
@@ -139,6 +140,7 @@ describe('sendBugReport — ICE and Tor rows (O05/O14)', () => {
     expect(body).toContain('| ICE candidates | relay=0 host=2 srflx=1 (TURN servers: 0) |');
     expect(body).toContain('| ICE result | failed via no pair |');
     expect(body).toContain('| Tor during calls | on — calls bypass Tor |');
+    expect(body).toContain('| Full-screen intent | REVOKED |');
   });
 
   it('omits the rows when the facts are unknown', async () => {
@@ -158,11 +160,13 @@ describe('sendBugReport — ICE and Tor rows (O05/O14)', () => {
         audioTimeline: [],
         ice: null,
         tor: null,
+        fullScreenIntentAllowed: null,
       },
     });
 
     const body = JSON.parse(fetchMock.mock.calls.at(-1)![1].body as string).body as string;
     expect(body).not.toContain('| ICE candidates |');
     expect(body).not.toContain('| Tor during calls |');
+    expect(body).not.toContain('| Full-screen intent |');
   });
 });

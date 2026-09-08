@@ -1,6 +1,11 @@
 package com.forta.chat.plugins.push
 
+import android.app.NotificationManager
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import com.forta.chat.FortaFirebaseMessagingService
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
@@ -368,5 +373,46 @@ class PushDataPlugin : Plugin() {
             }
         }
         call.reject("No settings activity could be opened")
+    }
+
+    /**
+     * O10: whether Android still lets this app raise the full-screen
+     * incoming-call surface. Android 14 revokes USE_FULL_SCREEN_INTENT for
+     * apps installed from outside the store, and the ringer silently degrades
+     * to a heads-up card. `manageable` says a system screen exists to grant
+     * it (API 34+); before that the permission is a plain manifest grant.
+     */
+    @PluginMethod
+    fun getFullScreenIntentStatus(call: PluginCall) {
+        val manageable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+        val allowed = if (manageable) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.canUseFullScreenIntent()
+        } else {
+            true
+        }
+        call.resolve(JSObject().apply {
+            put("allowed", allowed)
+            put("manageable", manageable)
+        })
+    }
+
+    /** Deep-link into the system screen that grants the full-screen intent (API 34+). */
+    @PluginMethod
+    fun openFullScreenIntentSettings(call: PluginCall) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            call.reject("Full-screen intent settings exist from Android 14", "unsupported")
+            return
+        }
+        try {
+            val intent = Intent(
+                Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                Uri.parse("package:${context.packageName}"),
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            call.resolve()
+        } catch (e: Exception) {
+            call.reject("Could not open the full-screen intent settings: ${e.message}", "unavailable", e)
+        }
     }
 }

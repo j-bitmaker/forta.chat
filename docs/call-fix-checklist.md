@@ -827,6 +827,25 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
   - Автотесты: `webrtc-diagnostics.test.ts` (summary, TURN из конфигурации, предупреждение один раз и только при relay=0, проброс в обработчик SDK), `collect-call-diagnostics.test.ts` (провайдер, web, отказ провайдера), `bug-report-sender.test.ts` (строки/их отсутствие), `call-service.test.ts` (тост Tor один раз, тост no-relay).
   - Запись в `docs/manual-verification.md`: «Факты ICE и Tor в отчёте».
 
+- [ ] **F31. Отозванный full-screen intent виден в настройках и в отчёте; качелька громкости на экране входящего крутит рингер (O10, O13)**
+  - Коммиты: `<этот>` · Кластер: incoming-missed / ring · Отчёты: O10 (2), O13 (3)
+  - Где: Samsung и Pixel · Можно ли: можно проверить · Нужно: Android 14+ для баннера, обе сборки
+  - Ограничения: баннер и поле отчёта существуют только с Android 14 (до него разрешение даётся манифестом). Doze и MIUI-автозапуск фиксом не трогаются. Эмулятор: без прогона (после двух зависаний хоста эмуляторы не поднимались).
+  - Симптом: входящий при закрытом приложении приходит маленькой плашкой или не замечается; на экране входящего качелька громкости меняет громкость медиа, а рингтон продолжает орать.
+  - Причина: Android 14 отзывает `USE_FULL_SCREEN_INTENT` у приложений не из магазина; нативная сторона это логировала (`canUseFullScreenIntent()` в FCM-сервисе и `CallConnectionService`), но пользователю и в отчёт не сообщала. `IncomingCallActivity` не ставил `volumeControlStream`, и качелька шла в `STREAM_MUSIC`.
+  - Что изменилось: `PushData.getFullScreenIntentStatus()` (`allowed`, `manageable`) и `openFullScreenIntentSettings()` (`ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT` для пакета); в настройках уведомлений баннер «Входящий звонок может не подняться на экран» с кнопкой в системный экран, только при `allowed=false`; поле `fullScreenIntentAllowed` в отчёте и строка `| Full-screen intent | REVOKED |`; `volumeControlStream = STREAM_RING` в `IncomingCallActivity.onCreate`.
+  - Воспроизвести на старой сборке:
+    1. Android 14+: Настройки → Приложения → Forta Chat → «Полноэкранные уведомления» выключить. Убить приложение, позвонить с другого аппарата: только плашка, экран не поднимается; в настройках приложения об этом ни слова.
+    2. Во время ринга нажать «громкость −»: индикатор показывает «Медиа», рингтон не тише.
+  - Проверить на новой сборке:
+    1. То же выключение разрешения; открыть Настройки → Уведомления в Forta Chat: баннер с кнопкой; кнопка открывает системный экран «Полноэкранные уведомления»; после включения и повторного входа баннер исчезает.
+    2. Отчёт из приложения при выключенном разрешении: `| Full-screen intent | REVOKED |`.
+    3. Во время ринга «громкость −»: индикатор «Звонок/Рингтон», рингтон тише.
+    4. Doze 30 мин → входящий: без изменений ожиданий (O10 п. 1), фикс на это не претендует.
+  - Если не исправлен, приложить: скриншот экрана настроек уведомлений + отчёт из приложения.
+  - Автотесты: `IncomingCallSurfaceContractTest` (STREAM_RING в onCreate, гейт API 34, deep-link для пакета, разрешение в манифесте), `use-notification-settings.test.ts` (false/null/reject, открытие экрана), `notification-settings-fsi.test.ts` (баннер только при `false`, кнопка), `collect-call-diagnostics.test.ts` (Android 14 / до 14 / iOS), `bug-report-sender.test.ts` (строка).
+  - Запись в `docs/manual-verification.md`: «Full-screen intent и качелька громкости».
+
 ### Диагностика: инструменты, которые понадобятся для остальных пунктов
 
 
@@ -1050,7 +1069,7 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
 - [ ] **O10. Входящий не доходит при закрытом приложении** · кластер: background-incoming · отчётов: 2 · примеры: [#1231](https://github.com/greenShirtMystery/forta-bugs/issues/1231), [#1113](https://github.com/greenShirtMystery/forta-bugs/issues/1113)
   - Факты: 2 отчёта; у 49 из 62 отчётов с диагностикой push-приглашения доходили, доставка в целом работает.
   - Причина: Push-путь: FCM → FortaFirebaseMessagingService → Telecom. На MIUI ещё и автозапуск.
-  - Статус после ветки: Не проверен на реальном аппарате.
+  - Статус после ветки: Не проверен на реальном аппарате. Отозванный full-screen intent — баннер в настройках уведомлений и поле в отчёте, F31; Doze и автозапуск MIUI — стенд.
   - Стенд: Samsung и Pixel · нужно: CI-сборка
   - Как проверить на стенде:
     1. Убить приложение (свайп из недавних), выждать 2 минуты, позвонить. Экран входящего обязан подняться. Повторить через 30 минут покоя (Doze).
@@ -1075,7 +1094,7 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
 - [ ] **O13. Тихий звук, качелька громкости не управляет звонком** · кластер: quality / stuck-after-call · отчётов: 3 · примеры: [#1068](https://github.com/greenShirtMystery/forta-bugs/issues/1068), [#1022](https://github.com/greenShirtMystery/forta-bugs/issues/1022), [#1216](https://github.com/greenShirtMystery/forta-bugs/issues/1216)
   - Факты: #1216 Motorola: «при начале звонка захватывается индикатор громкости, потом…», #1068 Infinix: входящий тихий на полной громкости.
   - Причина: STREAM_VOICE_CALL привязан в CallActivity, но на экране входящего и в WebView-UI кнопки могут крутить медиа-поток.
-  - Статус после ветки: Не закрыт.
+  - Статус после ветки: Не закрыт. Качелька на экране входящего → STREAM_RING, F31; поток WebView-движка не менялся (сначала измерить).
   - Стенд: Samsung и Pixel
   - Как проверить на стенде:
     1. Во время ринга и во время разговора нажать качельку: какой ползунок появляется (звонок или медиа) и меняется ли громкость собеседника.

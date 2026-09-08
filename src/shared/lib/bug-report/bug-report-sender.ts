@@ -207,6 +207,11 @@ async function formatBody(
       `| Recent invites | ${diag.inviteHistory.length} |`,
       `| Expired invites | ${diag.expiredInviteCount} |`,
     );
+    // O10: a revoked full-screen intent is the usual reason an incoming
+    // call "did not ring" on Android 14+ sideloads.
+    if (diag.fullScreenIntentAllowed != null) {
+      lines.push(`| Full-screen intent | ${diag.fullScreenIntentAllowed ? 'allowed' : 'REVOKED' } |`);
+    }
     // O05/O14: relay=0 with a failed ICE state is the "no TURN reachable"
     // signature; the Tor row explains a peer that saw the reporter's IP.
     if (diag.ice) {

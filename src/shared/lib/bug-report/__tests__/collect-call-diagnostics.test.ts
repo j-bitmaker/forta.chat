@@ -4,6 +4,13 @@ const mockGetAudioStatus = vi.fn();
 const mockGetInviteThrottleSnapshot = vi.fn();
 const mockGetAudioTimeline = vi.fn();
 
+const mockGetFullScreenIntentStatus = vi.fn();
+vi.mock("@/shared/lib/push/push-data-plugin", () => ({
+  PushData: {
+    getFullScreenIntentStatus: (...args: unknown[]) => mockGetFullScreenIntentStatus(...args),
+  },
+}));
+
 vi.mock("@/shared/lib/native-calls", () => ({
   nativeCallBridge: {
     getAudioStatus: mockGetAudioStatus,
@@ -259,5 +266,43 @@ describe("collectCallDiagnostics — ICE and Tor extras (O05/O14)", () => {
     expect(out.ice).toBeNull();
     expect(out.tor).toBeNull();
     expect(out.audioMode).toBe("MODE_NORMAL");
+  });
+});
+
+describe("collectCallDiagnostics — full-screen intent (O10)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.resetModules();
+    mockGetAudioTimeline.mockResolvedValue([]);
+    mockGetAudioStatus.mockResolvedValue({ mode: "MODE_NORMAL", isSpeakerOn: false, isBtScoOn: false });
+    mockGetInviteThrottleSnapshot.mockResolvedValue({ records: [] });
+  });
+
+  it("reports a revoked full-screen intent on Android 14+", async () => {
+    vi.doMock("@/shared/lib/platform", () => ({ isNative: true, isAndroid: true, isIOS: false }));
+    mockGetFullScreenIntentStatus.mockResolvedValue({ allowed: false, manageable: true });
+    const { collectCallDiagnostics } = await import("../collect-call-diagnostics");
+    expect((await collectCallDiagnostics()).fullScreenIntentAllowed).toBe(false);
+  });
+
+  it("reports null before Android 14 (nothing to manage) and when the query fails", async () => {
+    vi.doMock("@/shared/lib/platform", () => ({ isNative: true, isAndroid: true, isIOS: false }));
+    mockGetFullScreenIntentStatus.mockResolvedValue({ allowed: true, manageable: false });
+    let mod = await import("../collect-call-diagnostics");
+    expect((await mod.collectCallDiagnostics()).fullScreenIntentAllowed).toBeNull();
+
+    vi.resetModules();
+    mockGetFullScreenIntentStatus.mockRejectedValue(new Error("not implemented"));
+    mod = await import("../collect-call-diagnostics");
+    const out = await mod.collectCallDiagnostics();
+    expect(out.fullScreenIntentAllowed).toBeNull();
+    expect(out.audioMode).toBe("MODE_NORMAL");
+  });
+
+  it("does not ask on iOS", async () => {
+    vi.doMock("@/shared/lib/platform", () => ({ isNative: true, isAndroid: false, isIOS: true }));
+    const { collectCallDiagnostics } = await import("../collect-call-diagnostics");
+    expect((await collectCallDiagnostics()).fullScreenIntentAllowed).toBeNull();
+    expect(mockGetFullScreenIntentStatus).not.toHaveBeenCalled();
   });
 });

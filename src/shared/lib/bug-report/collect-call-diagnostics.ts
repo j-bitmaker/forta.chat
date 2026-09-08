@@ -106,6 +106,12 @@ export interface BugReportCallDiagnostics {
   ice: CallIceDiagnostics | null;
   /** Tor mode at report time — calls bypass Tor, so a report should say whether it was on. */
   tor: CallTorDiagnostics | null;
+  /**
+   * O10: whether Android still grants the full-screen incoming-call surface.
+   * False = revoked (Android 14+ sideload), the ringer degrades to a heads-up
+   * card. Null off Android, before Android 14, or when the query failed.
+   */
+  fullScreenIntentAllowed: boolean | null;
 }
 
 export const EMPTY_CALL_DIAGNOSTICS: BugReportCallDiagnostics = {
@@ -118,6 +124,7 @@ export const EMPTY_CALL_DIAGNOSTICS: BugReportCallDiagnostics = {
   audioTimeline: [],
   ice: null,
   tor: null,
+  fullScreenIntentAllowed: null,
 };
 
 export async function collectCallDiagnostics(): Promise<BugReportCallDiagnostics> {
@@ -147,7 +154,12 @@ export async function collectCallDiagnostics(): Promise<BugReportCallDiagnostics
   // the bug-report envelope shape obvious to triagers reading the JSON.
   let audioTimeline: AudioTimelineEntry[] = [];
   let inviteHistory: InviteThrottleRecord[] = [];
+  let fullScreenIntentAllowed: boolean | null = null;
   if (isAndroid) {
+    fullScreenIntentAllowed = await import("@/shared/lib/push/push-data-plugin")
+      .then(({ PushData }) => PushData.getFullScreenIntentStatus())
+      .then((status) => (status.manageable ? status.allowed : null))
+      .catch(() => null);
     audioTimeline = await nativeCallBridge.getAudioTimeline().catch(() => []);
     const inviteSnapshot: InviteThrottleSnapshot = await nativeCallBridge
       .getInviteThrottleSnapshot()
@@ -166,5 +178,6 @@ export async function collectCallDiagnostics(): Promise<BugReportCallDiagnostics
     webrtcEngine,
     audioTimeline,
     ...extras,
+    fullScreenIntentAllowed,
   };
 }

@@ -17,10 +17,14 @@ vi.mock("@/shared/lib/platform", () => ({
 
 const mockGetDeviceManufacturer: Mock = vi.fn();
 const mockOpenNotificationSettings: Mock = vi.fn();
+const mockGetFullScreenIntentStatus: Mock = vi.fn();
+const mockOpenFullScreenIntentSettings: Mock = vi.fn();
 vi.mock("@/shared/lib/push/push-data-plugin", () => ({
   PushData: {
     getDeviceManufacturer: (...args: unknown[]) => mockGetDeviceManufacturer(...args),
     openNotificationSettings: (...args: unknown[]) => mockOpenNotificationSettings(...args),
+    getFullScreenIntentStatus: (...args: unknown[]) => mockGetFullScreenIntentStatus(...args),
+    openFullScreenIntentSettings: (...args: unknown[]) => mockOpenFullScreenIntentSettings(...args),
   },
 }));
 
@@ -33,6 +37,9 @@ describe("useNotificationSettings", () => {
     mockGetDeviceManufacturer.mockReset();
     mockOpenNotificationSettings.mockReset();
     mockOpenNotificationSettings.mockResolvedValue(undefined);
+    mockGetFullScreenIntentStatus.mockReset();
+    mockOpenFullScreenIntentSettings.mockReset();
+    mockOpenFullScreenIntentSettings.mockResolvedValue(undefined);
   });
 
   it("exposes a system-settings deep-link on native Android", () => {
@@ -100,5 +107,48 @@ describe("useNotificationSettings", () => {
     const { detectVendor } = useNotificationSettings();
     await detectVendor();
     expect(mockGetDeviceManufacturer).not.toHaveBeenCalled();
+  });
+});
+
+describe("useNotificationSettings — full-screen intent (O10)", () => {
+  beforeEach(() => {
+    mockIsNative.value = true;
+    mockIsAndroid.value = true;
+    mockGetFullScreenIntentStatus.mockReset();
+    mockOpenFullScreenIntentSettings.mockReset();
+    mockOpenFullScreenIntentSettings.mockResolvedValue(undefined);
+  });
+
+  it("flags a revoked full-screen intent so the banner can show", async () => {
+    mockGetFullScreenIntentStatus.mockResolvedValue({ allowed: false, manageable: true });
+    const { fullScreenIntentAllowed, detectFullScreenIntent } = useNotificationSettings();
+    expect(fullScreenIntentAllowed.value).toBeNull();
+    await detectFullScreenIntent();
+    expect(fullScreenIntentAllowed.value).toBe(false);
+  });
+
+  it("stays null before Android 14, off Android, and when the query rejects", async () => {
+    mockGetFullScreenIntentStatus.mockResolvedValue({ allowed: true, manageable: false });
+    const a = useNotificationSettings();
+    await a.detectFullScreenIntent();
+    expect(a.fullScreenIntentAllowed.value).toBeNull();
+
+    mockGetFullScreenIntentStatus.mockRejectedValue(new Error("not implemented"));
+    const b = useNotificationSettings();
+    await b.detectFullScreenIntent();
+    expect(b.fullScreenIntentAllowed.value).toBeNull();
+
+    mockIsAndroid.value = false;
+    mockGetFullScreenIntentStatus.mockClear();
+    const c = useNotificationSettings();
+    await c.detectFullScreenIntent();
+    expect(mockGetFullScreenIntentStatus).not.toHaveBeenCalled();
+  });
+
+  it("opens the system screen and reports failure without throwing", async () => {
+    const { openFullScreenIntentSettings } = useNotificationSettings();
+    await expect(openFullScreenIntentSettings()).resolves.toBe(true);
+    mockOpenFullScreenIntentSettings.mockRejectedValue(new Error("unsupported"));
+    await expect(openFullScreenIntentSettings()).resolves.toBe(false);
   });
 });

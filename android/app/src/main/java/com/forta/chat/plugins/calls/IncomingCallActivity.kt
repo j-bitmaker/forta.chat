@@ -7,6 +7,7 @@ import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.media.AudioManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -93,6 +94,10 @@ class IncomingCallActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         currentInstance = this
+        // O13: the volume rocker on this screen must change the ringer, not
+        // media — the ringtone plays on STREAM_RING, and a user turning a
+        // loud ring down was adjusting the wrong stream.
+        volumeControlStream = AudioManager.STREAM_RING
 
         // Session 41: now that the FCM service posts the FSI notification
         // unconditionally, both the channel ringtone and the activity's

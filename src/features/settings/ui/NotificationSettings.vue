@@ -20,9 +20,15 @@ const {
   vendorGuidanceId,
   openSystemNotificationSettings,
   detectVendor,
+  fullScreenIntentAllowed,
+  detectFullScreenIntent,
+  openFullScreenIntentSettings,
 } = useNotificationSettings();
 
-onMounted(detectVendor);
+onMounted(() => {
+  void detectVendor();
+  void detectFullScreenIntent();
+});
 </script>
 
 <template>
@@ -91,6 +97,26 @@ onMounted(detectVendor);
           <polyline points="9 18 15 12 9 6" />
         </svg>
       </button>
+    </SettingsSection>
+
+    <!-- O10: Android 14+ revoked the full-screen incoming-call surface -->
+    <SettingsSection
+      v-if="fullScreenIntentAllowed === false"
+      :title="t('notificationsSettings.fsiTitle')"
+    >
+      <div
+        data-testid="fsi-banner"
+        class="space-y-3 rounded-xl border border-color-star-yellow/30 bg-color-star-yellow/5 p-4"
+      >
+        <p class="text-sm text-text-color">{{ t("notificationsSettings.fsiHint") }}</p>
+        <button
+          data-testid="fsi-open"
+          class="w-full rounded-lg bg-color-bg-ac px-4 py-2.5 text-sm font-medium text-text-on-bg-ac-color transition-opacity hover:opacity-90"
+          @click="openFullScreenIntentSettings"
+        >
+          {{ t("notificationsSettings.fsiOpen") }}
+        </button>
+      </div>
     </SettingsSection>
 
     <!-- Aggressive-OEM guidance (Xiaomi/MIUI & friends) -->
