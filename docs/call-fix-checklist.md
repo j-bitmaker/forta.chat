@@ -715,6 +715,33 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
   - Автотесты: `CallTeardownPolicyTest.kt` (таблица reason×state), `CallTeardownContractTest.kt` (все хуки зовут `endCall`; только роутер пишет MODE_IN_COMMUNICATION; stale STOP; маркер закрывается на обоих путях), `AudioRouterEnsureModeTest.kt`, `CallServiceStopPolicyTest.kt`; androidTest `CallTeardownInstrumentedTest.kt` — реальный AudioManager на эмуляторе (`./gradlew :app:connectedSideloadDebugAndroidTest`).
   - Запись в `docs/manual-verification.md`: «Аудиорежим сбрасывается без JS-финализации: убитый процесс, FCM-hangup, серия звонков».
 
+- [ ] **F26. Один владелец ринга по callId; ответ из шторки и с экрана блокировки не сбрасывает звонок (O04, O09)**
+  - Коммиты: `<этот>` · Кластер: duplicate-ring, accept-button · Отчёты: O04 (4), O09 (6)
+  - Где: Samsung и Pixel · Можно ли: можно проверить · Нужно: обе сборки; для «убитый процесс + шторка» и keyguard — CI-сборка (push)
+  - Ограничения: на эмуляторе API 35 подтверждён только цикл рингера в рантайме: `IncomingRinger: arm` при ринге, через 30 с `auto-rejecting` → `stop` → Telecom REJECT → `CallTeardown` (MODE_RINGTONE не трогается, режим вернулся в NORMAL после отпускания Telecom); ответ через Telecom-уведомление и ответ с экрана прогнать не удалось — на софтверном рендере SystemUI отвечает ANR-диалогами, тап по кнопке Answer в шторке не доходит до PendingIntent, затем эмуляторы упали. Путь шторки, keyguard с PIN и путь FCM при убитом процессе — только аппарат (CI-сборка).
+  - Симптом: после ответа рингтон продолжает играть поверх разговора, и на 30-й секунде звонок сбрасывается; «Принять» из шторки или с заблокированного экрана оставляет «Соединение…» навсегда или сбрасывает звонок.
+  - Причина: рингтон, вибрация и 30-секундный авто-сброс жили в экземпляре `IncomingCallActivity`, а accept/decline-интенты Telecom-уведомления запускались с голым `NEW_TASK`: если экран ринга не был наверху задачи, создавался второй экземпляр, статический указатель переезжал на него, а первый экземпляр продолжал звонить и на 30-й секунде делал `decline()` → reject уже принятого звонка. Те же интенты не несли `roomId`, а `onNewIntent` подменял intent целиком — push-уведомление не гасилось, JS не получал комнату и сам сбрасывал звонок через 30 с. `MainActivity` (singleTask) поднимала keyguard только в `onCreate` — при тёплом процессе ответ с экрана блокировки оставлял WebView остановленным.
+  - Что изменилось: `IncomingRinger` (объект процесса, ключ callId; `IncomingRingerLedger` — чистая часть) владеет рингтоном, вибрацией и дедлайном; его останавливают Accept на экране, `CallConnection.onAnswer`, `reportCallConnected` из JS и `CallTeardown` (действие `STOP_RINGER`, для REJECT/DISCONNECT — только по совпадению callId). Telecom-интенты accept/decline получили `CLEAR_TOP|SINGLE_TOP` и `roomId`; `onNewIntent` сливает extras через `IncomingIntentMerge` (недостающие берутся из удерживаемого intent, только для того же звонка). `decline()` для звонка, который уже не звонит, при установленном соединении в слоте — игнорируется (не пишет reject-маркеры, не грузит JS с `push_call_decline`). `onAnswer`/`reportCallConnected` гасят push-уведомление. `MainActivity.onNewIntent` поднимает keyguard так же, как `onCreate`.
+  - Воспроизвести на старой сборке:
+    1. Установить `forta-old.apk` на Pixel (принимающий), Samsung звонит.
+    2. Пока Pixel звонит, нажать Home (экран ринга уходит с верха задачи), раскрыть шторку, нажать «Принять» на уведомлении Forta.
+    3. Слушать 40 с.
+    4. Вариант: заблокировать Pixel (PIN), принять из шторки на экране блокировки.
+    Признак бага: рингтон играет поверх разговора; на 30-й секунде звонок сбрасывается (у звонящего «отклонён»); при keyguard — «Соединение…» не проходит до ручной разблокировки.
+  - Проверить на новой сборке:
+    1. Установить `forta-new.apk` поверх старой.
+    2. Повторить шаги 2–4; звонок жив на 45-й секунде, рингтон замолкает в момент ответа.
+    3. `adb logcat -s IncomingRinger IncomingCallActivity CallConnectionService` — есть `IncomingRinger: stop callId=…` сразу после `onAnswer`, нет `auto-rejecting`, нет второго `onCreate` у IncomingCallActivity, нет `decline ignored` (или есть — тогда это сработавшая защита, звонок при этом жив).
+    4. CI-сборка: убить процесс Pixel (смахнуть из недавних) до звонка, позвонить с Samsung, принять из шторки при выключенном экране: звонок соединяется без разблокировки; в логе `MainActivity`-путь не нужен — смотреть, что нет `Connecting` дольше 10 с.
+    5. Отклонение из шторки при живом процессе всё ещё работает: у звонящего «отклонён» в течение 3 с.
+    Ожидаемо: ни одного сброса на 30-й секунде; ответ из шторки/с экрана блокировки соединяет; decline из шторки отклоняет.
+    Лог: `adb logcat -s IncomingRinger IncomingCallActivity CallConnectionService CallTeardown`
+    adb: `adb shell dumpsys activity activities | grep IncomingCallActivity` — во время ринга ровно одна запись
+    adb: `adb shell cmd statusbar expand-notifications` — раскрыть шторку без рук
+  - Если не исправлен, приложить: `adb logcat -s IncomingRinger IncomingCallActivity CallConnectionService CallTeardown CallPlugin` за минуту вокруг ответа + `dumpsys activity activities` во время ринга.
+  - Автотесты: `IncomingRingerLedgerTest.kt`, `IncomingIntentMergeTest.kt`, `IncomingRingerContractTest.kt` (владелец один; флаги и roomId у интентов; onAnswer/reportCallConnected гасят ринг и push; decline gated; MainActivity.onNewIntent), `CallTeardownPolicyTest.kt` (STOP_RINGER по ключу). Maestro `05-call-answer.yaml` теперь ждёт 35 с после ответа и повторно проверяет `Mute`.
+  - Запись в `docs/manual-verification.md`: «Ответ из шторки и с экрана блокировки переживает 30-ю секунду».
+
 ### Диагностика: инструменты, которые понадобятся для остальных пунктов
 
 
@@ -879,7 +906,7 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
 - [ ] **O04. Рингтон продолжает играть после ответа, звонок сбрасывается через 30 с** · кластер: accept-button / no-ringtone · отчётов: 4 · примеры: [#1227](https://github.com/greenShirtMystery/forta-bugs/issues/1227), [#1108](https://github.com/greenShirtMystery/forta-bugs/issues/1108), [#890](https://github.com/greenShirtMystery/forta-bugs/issues/890), [#1204](https://github.com/greenShirtMystery/forta-bugs/issues/1204)
   - Факты: #1227 OnePlus: «соединение произошло, а мелодия ещё играет», устройство в MODE_RINGTONE. #1108 Honor и #890 realme сняты в MODE_RINGTONE. Гипотеза из docs/call-bugs-needing-you.md: рингтон переживает ответ, а 30-секундный авто-сброс экрана входящего кладёт трубку.
   - Причина: Экран входящего (IncomingCallActivity) и Telecom-соединение живут отдельно; при ответе из одного места второе не всегда узнаёт об этом.
-  - Статус после ветки: Не закрыт. F03 подбирает застрявший MODE_RINGTONE при возврате, но не мешает авто-сбросу.
+  - Статус после ветки: Не закрыт. F03 подбирает застрявший MODE_RINGTONE при возврате, но не мешает авто-сбросу. Владелец ринга по callId, флаги и roomId у интентов шторки, гашение push при ответе — F26.
   - Стенд: Samsung и Pixel · нужно: обе сборки; шторка и заблокированный экран лучше на CI-сборке
   - Как проверить на стенде:
     1. Позвонить на Pixel, ответить с экрана входящего, слушать 40 с: рингтон обязан замолчать сразу, звонок не должен оборваться на 30-й секунде.
@@ -928,7 +955,7 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
 - [ ] **O09. Кнопка «Принять» сбрасывает звонок: из шторки или при спящем процессе** · кластер: accept-button · отчётов: 6 · примеры: [#1268](https://github.com/greenShirtMystery/forta-bugs/issues/1268), [#1108](https://github.com/greenShirtMystery/forta-bugs/issues/1108), [#1068](https://github.com/greenShirtMystery/forta-bugs/issues/1068), [#1044](https://github.com/greenShirtMystery/forta-bugs/issues/1044)
   - Факты: 6 отчётов, ни одного Samsung. Двойной тап исключён E2E-флоу (01f0836f); #1183 закрыт F09. Остались приём из шторки и при выгруженном процессе.
   - Причина: Оба сценария живут в push-пути, который есть только в CI-сборке.
-  - Статус после ветки: Не закрыт для шторки и спящего процесса.
+  - Статус после ветки: Не закрыт для шторки и спящего процесса. Живой процесс: F26 (шторка, merge intent, decline-guard, keyguard в onNewIntent). Спящий процесс и keyguard с PIN — проверка F26 п. 4 на CI-сборке.
   - Стенд: Pixel · нужно: CI-сборка
   - Как проверить на стенде:
     1. Смахнуть приложение из недавних, подождать минуту, позвонить с Samsung, принять из шторки уведомления, не открывая приложение.

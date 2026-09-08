@@ -46,6 +46,8 @@ object CallTeardownPolicy {
     }
 
     enum class Action {
+        /** `IncomingRinger.stop` — silence the ringtone/vibration and retire the 30 s deadline. */
+        STOP_RINGER,
         /** `AudioRouter.forceStop` — restore `MODE_NORMAL`, clear routing, close the marker. */
         FORCE_STOP_ROUTER,
         /** `CallForegroundService.stop` — drop the ongoing-call notification and wake-lock. */
@@ -61,14 +63,29 @@ object CallTeardownPolicy {
         val routerActive: Boolean,
         /** Persisted "audio session open" marker written by the router on start. */
         val sessionMarkerOpen: Boolean,
+        /** The call `IncomingRinger` is ringing for, or null when silent. */
+        val ringingCallId: String? = null,
     )
 
-    fun decide(reason: Reason, state: State): List<Action> {
-        if (state.otherCallLive) return emptyList()
+    /**
+     * [callId] is the call that ended, when the hook knows it. The ringer is
+     * stopped for that call only: a Telecom reject of one call must not
+     * silence the ring of the call that displaced it. A push hangup and the
+     * cold-start sweep carry no id worth trusting (the push id is the event
+     * id, not the call id), so they stop whatever rings.
+     */
+    fun decide(reason: Reason, state: State, callId: String? = null): List<Action> {
+        val actions = mutableListOf<Action>()
+        val ringing = state.ringingCallId
+        if (ringing != null) {
+            val keyed = reason == Reason.REJECT || reason == Reason.DISCONNECT
+            if (!keyed || callId.isNullOrEmpty() || callId == ringing) actions.add(Action.STOP_RINGER)
+        }
+        if (state.otherCallLive) return actions
         val abandoned = state.routerActive ||
             (state.sessionMarkerOpen && state.audioMode == AudioManager.MODE_IN_COMMUNICATION)
-        if (!abandoned) return emptyList()
-        val actions = mutableListOf(Action.FORCE_STOP_ROUTER)
+        if (!abandoned) return actions
+        actions.add(Action.FORCE_STOP_ROUTER)
         if (state.foregroundServiceRunning) actions.add(Action.STOP_FOREGROUND_SERVICE)
         return actions
     }

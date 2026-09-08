@@ -6,15 +6,10 @@ import android.app.Activity
 import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
-import android.media.AudioAttributes
-import android.media.RingtoneManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.VibrationEffect
-import android.os.Vibrator
-import android.os.VibratorManager
 import android.view.View
 import android.view.WindowManager
 import android.view.animation.AccelerateDecelerateInterpolator
@@ -36,12 +31,12 @@ class IncomingCallActivity : Activity() {
 
     companion object {
         private const val TAG = "IncomingCallActivity"
-        private const val AUTO_REJECT_TIMEOUT_MS = 30_000L
 
         /** Static reference so FCM service can dismiss on call cancel/hangup */
         var currentInstance: IncomingCallActivity? = null
 
         fun dismissIfShowing() {
+            IncomingRinger.stopAll()
             currentInstance?.let {
                 Log.d(TAG, "Dismissing incoming call screen (remote hangup)")
                 it.handler.post { it.dismissByRemote() }
@@ -49,23 +44,24 @@ class IncomingCallActivity : Activity() {
         }
 
         /**
-         * Silence the ringer because the call was answered.
-         *
-         * The ringtone loops and the vibration waveform repeats forever, and both
-         * live in this activity — so an answer that never passes through
-         * [accept] leaves them running. That happens whenever Telecom answers on
-         * its own: a Bluetooth headset button, Android Auto, a car kit, a watch,
-         * the system call UI. CallActivity then covers this one, and a covered
-         * activity gets onPause/onStop but *not* onDestroy, so [cleanup] never
-         * runs. The user hears the ringtone over a connected call — and 30
-         * seconds in, [autoRejectRunnable] hangs up the conversation they are
-         * having.
+         * The call was answered somewhere other than this screen's Accept
+         * button — Telecom on its own (a Bluetooth headset, Android Auto, the
+         * system call UI) or the JS side reporting the connect. Stop the ring
+         * and take this screen down. The ringtone, the vibration and the 30 s
+         * deadline live in [IncomingRinger], so this works even when the
+         * instance that armed them is no longer the one [currentInstance]
+         * points at; a covered activity gets onPause/onStop but never
+         * onDestroy, which is how the old instance-owned ringer kept playing
+         * over a connected call and hung it up at second 30.
          *
          * Unlike [dismissIfShowing] this deliberately leaves the pending-answer
          * markers alone: they are how the JS side learns to answer, and an
          * answered call is exactly when they are needed.
          */
         fun stopRingerIfShowing() {
+            // The ringer is process-wide now, so this silences it even when the
+            // instance that armed it is no longer the one the pointer holds.
+            IncomingRinger.stopAll()
             currentInstance?.let {
                 Log.d(TAG, "Call answered elsewhere — silencing ringer")
                 it.handler.post {
@@ -76,12 +72,10 @@ class IncomingCallActivity : Activity() {
         }
     }
 
-    private var ringtone: android.media.Ringtone? = null
-    private var vibrator: Vibrator? = null
     private var pulseAnimator: AnimatorSet? = null
 
     private val handler = Handler(Looper.getMainLooper())
-    private var countdownSeconds = (AUTO_REJECT_TIMEOUT_MS / 1000).toInt()
+    private var countdownSeconds = (IncomingRinger.AUTO_REJECT_TIMEOUT_MS / 1000).toInt()
 
     /** callId whose identity is currently painted on screen — see [onNewIntent]. */
     private var shownCallId: String = ""
@@ -94,10 +88,6 @@ class IncomingCallActivity : Activity() {
                 handler.postDelayed(this, 1000)
             }
         }
-    }
-
-    private val autoRejectRunnable = Runnable {
-        decline()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -204,16 +194,14 @@ class IncomingCallActivity : Activity() {
                 }
             }
 
-            // Start ringtone + vibration (already internally catch'd, but
-            // wrap for symmetry with logging step names).
-            safeStep("startRingtone") { startRingtone() }
-            safeStep("startVibration") { startVibration() }
+            // Ringtone, vibration and the 30 s no-answer deadline live in the
+            // process-wide ringer, keyed by this call — see IncomingRinger.
+            safeStep("startRinger") { IncomingRinger.arm(this, shownCallId) { autoDecline() } }
 
             // Start pulse animation
             safeStep("startPulseAnimation") { startPulseAnimation() }
 
-            // Start 30s auto-reject timer
-            handler.postDelayed(autoRejectRunnable, AUTO_REJECT_TIMEOUT_MS)
+            // The countdown is display only; the deadline itself is the ringer's.
             handler.postDelayed(countdownRunnable, 1000)
         } catch (t: Throwable) {
             Log.e(TAG, "[callee-crash-guard] onCreate failed — finishing gracefully", t)
@@ -221,7 +209,7 @@ class IncomingCallActivity : Activity() {
             // dismiss everything and finish. Without this the caller would
             // see "ringing" for ~30-60s until their own SDK timeout fires.
             runCatching {
-                rejectRingingConnection()
+                rejectRingingConnection(intent.getStringExtra("callId") ?: "")
                 CallConnectionService.dismissIncomingCallNotification(this)
                 intent.getStringExtra("roomId")?.let { rId ->
                     FortaFirebaseMessagingService.dismissPushCallNotification(this, rId)
@@ -281,6 +269,15 @@ class IncomingCallActivity : Activity() {
      */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        // A shade Accept/Decline from the Telecom notification carries no
+        // roomId; taking it as-is used to drop the room this ringer was
+        // opened for. Fill what the new intent lacks from the one we hold —
+        // for the same call only (IncomingIntentMerge).
+        val merged = IncomingIntentMerge.merge(extrasOf(this.intent), extrasOf(intent))
+        intent.putExtra("callId", merged.callId)
+        merged.callerName?.let { intent.putExtra("callerName", it) }
+        merged.roomId?.let { intent.putExtra("roomId", it) }
+        merged.hasVideo?.let { intent.putExtra("hasVideo", it) }
         setIntent(intent)
 
         val action = intent.getStringExtra("action")
@@ -323,12 +320,12 @@ class IncomingCallActivity : Activity() {
 
             // Restart the deadline rather than letting the new call inherit
             // whatever was left of the old one's — a call arriving at second 29
-            // would otherwise be auto-rejected almost on sight.
-            handler.removeCallbacks(autoRejectRunnable)
+            // would otherwise be auto-rejected almost on sight. Re-arming the
+            // ringer for the new callId retires the old deadline.
+            IncomingRinger.arm(this, newCallId) { autoDecline() }
             handler.removeCallbacks(countdownRunnable)
-            countdownSeconds = (AUTO_REJECT_TIMEOUT_MS / 1000).toInt()
+            countdownSeconds = (IncomingRinger.AUTO_REJECT_TIMEOUT_MS / 1000).toInt()
             findViewById<TextView>(R.id.countdown_text)?.text = "${countdownSeconds}s"
-            handler.postDelayed(autoRejectRunnable, AUTO_REJECT_TIMEOUT_MS)
             handler.postDelayed(countdownRunnable, 1000)
         }
     }
@@ -343,10 +340,17 @@ class IncomingCallActivity : Activity() {
      * global slot with no callId check, so without this guard a stray ringer
      * would hang up the conversation the user is actually having.
      */
-    private fun rejectRingingConnection() {
+    private fun rejectRingingConnection(callId: String) {
         val connection = CallConnectionService.currentConnection ?: return
         if (!DisplacedConnectionPolicy.mayRelease(connection.state)) {
             Log.w(TAG, "decline ignored: slot holds an established call, not this ringer")
+            return
+        }
+        // A stale tap for a call that was displaced must not reject the call
+        // that rings now. The slot's id is empty only on the pre-Telecom
+        // fallback, where there is nothing else it could be.
+        if (connection.callId.isNotEmpty() && callId.isNotEmpty() && connection.callId != callId) {
+            Log.w(TAG, "decline ignored: slot rings for ${connection.callId}, not $callId")
             return
         }
         connection.onReject()
@@ -361,9 +365,10 @@ class IncomingCallActivity : Activity() {
 
     private fun accept() {
         Log.d(TAG, "Accept pressed")
+        val callId = intent.getStringExtra("callId") ?: ""
+        IncomingRinger.stop(callId)
         cleanup()
 
-        val callId = intent.getStringExtra("callId") ?: ""
         val callerName = intent.getStringExtra("callerName") ?: "Unknown"
         val hasVideo = intent.getBooleanExtra("hasVideo", false)
 
@@ -443,16 +448,35 @@ class IncomingCallActivity : Activity() {
 
     private fun decline() {
         Log.d(TAG, "Decline pressed")
+        val callId = intent.getStringExtra("callId") ?: ""
+        val wasRinging = IncomingRinger.stop(callId)
         cleanup()
 
-        val callId = intent.getStringExtra("callId") ?: ""
+        // A decline reaching a call that is no longer ringing but is live in
+        // Telecom is the second-instance bug in person: the orphaned ringer's
+        // countdown, or a stale shade button, hanging up the conversation the
+        // user is having. Telecom itself is already guarded (rejectRinging-
+        // Connection spares an established call); the JS-side reject markers
+        // and the decline boot below were not.
+        val established = CallConnectionService.currentConnection
+            ?.let { !DisplacedConnectionPolicy.mayRelease(it.state) && (it.callId.isEmpty() || it.callId == callId) } == true
+        if (!wasRinging && established) {
+            Log.w(TAG, "decline ignored: $callId is not ringing and the slot holds an established call")
+            CallConnectionService.dismissIncomingCallNotification(this)
+            intent.getStringExtra("roomId")?.let { rId ->
+                FortaFirebaseMessagingService.dismissPushCallNotification(this, rId)
+            }
+            finish()
+            return
+        }
+
         val roomIdForPending = intent.getStringExtra("roomId")
 
         // Try ConnectionService — populates CallConnection.pendingReject*.
         // Same containment as accept(): the marker/boot work below is what
         // actually gets the rejection to the caller.
         tryStep("connection.onReject") {
-            rejectRingingConnection()
+            rejectRingingConnection(callId)
         }
 
         // Defence-in-depth: clear accept markers (we're declining, not
@@ -508,11 +532,21 @@ class IncomingCallActivity : Activity() {
     }
 
     private fun cleanup() {
-        stopRingtone()
-        stopVibration()
-        handler.removeCallbacks(autoRejectRunnable)
         handler.removeCallbacks(countdownRunnable)
     }
+
+    /** The ringer's 30 s deadline. It fires only while this call is still ringing. */
+    private fun autoDecline() {
+        tryStep("auto-decline") { decline() }
+    }
+
+    private fun extrasOf(i: Intent?): IncomingCallExtras = IncomingCallExtras(
+        callId = i?.getStringExtra("callId") ?: "",
+        callerName = i?.getStringExtra("callerName"),
+        roomId = i?.getStringExtra("roomId"),
+        hasVideo = if (i?.hasExtra("hasVideo") == true) i.getBooleanExtra("hasVideo", false) else null,
+        action = i?.getStringExtra("action"),
+    )
 
     private fun startPulseAnimation() {
         val outerRing = findViewById<View>(R.id.pulse_ring_outer) ?: return
@@ -539,66 +573,6 @@ class IncomingCallActivity : Activity() {
         }
     }
 
-    /**
-     * WEE-54 / forta-bugs#862: bump STREAM_RING when an OEM (MIUI / HyperOS)
-     * has left it muted while the phone is in normal ringer mode, otherwise
-     * the system ringtone plays inaudibly and only the vibration is felt.
-     * Silent / vibrate ringer modes are respected (no-op) — see
-     * [CallNotificationConfig.ringVolumeToForce]. Best-effort: any failure
-     * (locked stream on hardened ROMs) is swallowed; vibration still fires.
-     */
-    private fun ensureRingerAudible() {
-        try {
-            val am = getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager ?: return
-            val target = CallNotificationConfig.ringVolumeToForce(
-                ringerMode = am.ringerMode,
-                currentVolume = am.getStreamVolume(android.media.AudioManager.STREAM_RING),
-                maxVolume = am.getStreamMaxVolume(android.media.AudioManager.STREAM_RING),
-            ) ?: return
-            am.setStreamVolume(android.media.AudioManager.STREAM_RING, target, 0)
-        } catch (e: Exception) {
-            Log.w(TAG, "ensureRingerAudible failed", e)
-        }
-    }
-
-    private fun startRingtone() {
-        try {
-            ensureRingerAudible()
-            val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            ringtone = RingtoneManager.getRingtone(applicationContext, ringtoneUri)
-            ringtone?.audioAttributes = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .build()
-            ringtone?.isLooping = true
-            ringtone?.play()
-        } catch (e: Exception) { /* ignore */ }
-    }
-
-    private fun startVibration() {
-        try {
-            vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
-                vm.defaultVibrator
-            } else {
-                @Suppress("DEPRECATION")
-                getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-            }
-            val pattern = longArrayOf(0, 1000, 1000)
-            vibrator?.vibrate(VibrationEffect.createWaveform(pattern, 0))
-        } catch (e: Exception) { /* ignore */ }
-    }
-
-    private fun stopRingtone() {
-        ringtone?.stop()
-        ringtone = null
-    }
-
-    private fun stopVibration() {
-        vibrator?.cancel()
-        vibrator = null
-    }
-
     override fun onDestroy() {
         cleanup()
         pulseAnimator?.cancel()
@@ -610,6 +584,9 @@ class IncomingCallActivity : Activity() {
         // dismissIfShowing/stopRingerIfShowing into permanent no-ops and
         // orphaning a ringtone nothing can reach.
         if (currentInstance === this) {
+            // A back press or a swipe from Recents: stop ringing, as before.
+            // Telecom's own 45 s backstop still ends the connection.
+            IncomingRinger.stop(shownCallId)
             currentInstance = null
         }
         super.onDestroy()

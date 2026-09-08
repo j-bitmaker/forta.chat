@@ -26,11 +26,13 @@ object CallTeardown {
             Log.w(TAG, "endCall reason=$reason callId=$callId — could not read device state", t)
             return
         }
-        val actions = CallTeardownPolicy.decide(reason, state)
+        val actions = CallTeardownPolicy.decide(reason, state, callId)
         Log.i(TAG, "endCall reason=$reason callId=$callId $state actions=$actions")
         for (action in actions) {
             runCatching {
                 when (action) {
+                    CallTeardownPolicy.Action.STOP_RINGER ->
+                        IncomingRinger.stop(state.ringingCallId)
                     CallTeardownPolicy.Action.FORCE_STOP_ROUTER ->
                         AudioRouter.getSharedInstance(app).forceStop("teardown $reason")
                     CallTeardownPolicy.Action.STOP_FOREGROUND_SERVICE ->
@@ -59,6 +61,7 @@ object CallTeardown {
             foregroundServiceRunning = CallForegroundService.isRunning,
             routerActive = AudioRouter.getSharedInstance(app).isRoutingActive(),
             sessionMarkerOpen = AudioRouter.hasOpenSessionMarker(app),
+            ringingCallId = IncomingRinger.ringingCallId,
         )
     }
 }

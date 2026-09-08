@@ -160,7 +160,7 @@ class CallConnectionService : ConnectionService() {
             }
 
             // Show native incoming call UI
-            runCatching { showIncomingCallUI(callId, callerName, hasVideo) }
+            runCatching { showIncomingCallUI(callId, callerName, hasVideo, roomId) }
                 .onFailure { Log.e(TAG, "[callee-crash-guard] showIncomingCallUI failed", it) }
 
             connection
@@ -236,7 +236,7 @@ class CallConnectionService : ConnectionService() {
         Log.e(TAG, "onCreateOutgoingConnectionFailed")
     }
 
-    private fun showIncomingCallUI(callId: String, callerName: String, hasVideo: Boolean) {
+    private fun showIncomingCallUI(callId: String, callerName: String, hasVideo: Boolean, roomId: String) {
         val fullScreenIntent = Intent(applicationContext, IncomingCallActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_CLEAR_TOP or
@@ -244,6 +244,7 @@ class CallConnectionService : ConnectionService() {
             putExtra("callId", callId)
             putExtra("callerName", callerName)
             putExtra("hasVideo", hasVideo)
+            putExtra("roomId", roomId)
         }
 
         val fullScreenPendingIntent = PendingIntent.getActivity(
@@ -251,11 +252,20 @@ class CallConnectionService : ConnectionService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Accept action
+        // Accept action. CLEAR_TOP|SINGLE_TOP deliver the tap to the ringer
+        // already on screen through onNewIntent; a bare NEW_TASK started a
+        // second IncomingCallActivity whenever the first was not on top of
+        // its task, and that orphan kept ringing over the answered call and
+        // rejected it 30 s later. roomId travels with it so the accept can
+        // still dismiss the push notification and hand JS the room.
         val acceptIntent = Intent(applicationContext, IncomingCallActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra("callId", callId)
             putExtra("callerName", callerName)
+            putExtra("roomId", roomId)
+            putExtra("hasVideo", hasVideo)
             putExtra("action", "accept")
         }
         val acceptPendingIntent = PendingIntent.getActivity(
@@ -265,9 +275,13 @@ class CallConnectionService : ConnectionService() {
 
         // Decline action
         val declineIntent = Intent(applicationContext, IncomingCallActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra("callId", callId)
             putExtra("callerName", callerName)
+            putExtra("roomId", roomId)
+            putExtra("hasVideo", hasVideo)
             putExtra("action", "decline")
         }
         val declinePendingIntent = PendingIntent.getActivity(
@@ -348,7 +362,7 @@ class CallConnectionService : ConnectionService() {
 class CallConnection(
     private val context: Context,
     val callId: String,
-    private val roomId: String = ""
+    val roomId: String = ""
 ) : Connection() {
 
     companion object {
@@ -391,9 +405,9 @@ class CallConnection(
 
         /**
          * Backstop for a connection nobody ever resolves. Longer than the 30 s
-         * countdown in [IncomingCallActivity] so that, when the activity does
-         * run, its own auto-reject still wins and the user keeps the UI they
-         * are looking at. Shorter than the SDK's 60 s invite lifetime, so the
+         * deadline in [IncomingRinger] so that, when the ringer does run, its
+         * own auto-reject still wins and the user keeps the UI they are
+         * looking at. Shorter than the SDK's 60 s invite lifetime, so the
          * device is never left ringing for a call the caller has given up on.
          */
         const val RING_TIMEOUT_MS = 45_000L
@@ -474,8 +488,16 @@ class CallConnection(
         // used to leave its looping ringtone playing over the connected call
         // until the 30 s auto-reject hung it up. Idempotent for the Accept path,
         // which has already run cleanup().
+        IncomingRinger.stop(callId)
         IncomingCallActivity.stopRingerIfShowing()
         CallConnectionService.dismissIncomingCallNotification(context)
+        // The push-side notification keeps its own Accept/Decline buttons; a
+        // Decline tapped on it during the call would hang the call up.
+        if (roomId.isNotEmpty()) {
+            runCatching {
+                com.forta.chat.FortaFirebaseMessagingService.dismissPushCallNotification(context, roomId)
+            }
+        }
         // Populate accept-only markers here, never in onCreateIncoming-
         // Connection — otherwise Decline and a plain push delivery
         // would also set them and JS would fast-path into an in-call

@@ -22,13 +22,79 @@ class CallTeardownPolicyTest {
         fgsRunning: Boolean = false,
         routerActive: Boolean = false,
         markerOpen: Boolean = false,
+        ringingCallId: String? = null,
     ) = State(
         audioMode = audioMode,
         otherCallLive = otherCallLive,
         foregroundServiceRunning = fgsRunning,
         routerActive = routerActive,
         sessionMarkerOpen = markerOpen,
+        ringingCallId = ringingCallId,
     )
+
+    // -- the ringer ------------------------------------------------------------
+
+    @Test
+    fun `a reject of the ringing call stops its ring`() {
+        val actions = CallTeardownPolicy.decide(Reason.REJECT, state(ringingCallId = "call-1"), "call-1")
+        assertEquals(listOf(Action.STOP_RINGER), actions)
+    }
+
+    @Test
+    fun `a reject of another call leaves the ring alone`() {
+        // The first call, displaced by the second, is disconnected while the
+        // second one rings.
+        val actions = CallTeardownPolicy.decide(Reason.DISCONNECT, state(ringingCallId = "call-2"), "call-1")
+        assertEquals(emptyList<Action>(), actions)
+    }
+
+    @Test
+    fun `a push hangup and the cold start stop whatever rings`() {
+        // The push carries the event id, not the call id — no key to match.
+        assertEquals(
+            listOf(Action.STOP_RINGER),
+            CallTeardownPolicy.decide(Reason.REMOTE_HANGUP, state(ringingCallId = "push-id"), "other-id"),
+        )
+        assertEquals(
+            listOf(Action.STOP_RINGER),
+            CallTeardownPolicy.decide(Reason.COLD_START, state(ringingCallId = "push-id"), null),
+        )
+    }
+
+    @Test
+    fun `an unknown ended id stops the ring too`() {
+        assertEquals(
+            listOf(Action.STOP_RINGER),
+            CallTeardownPolicy.decide(Reason.REJECT, state(ringingCallId = "call-1"), ""),
+        )
+    }
+
+    @Test
+    fun `the ringer is stopped even while another call keeps the audio session`() {
+        // A second incoming call rejected as BUSY: its ring stops, the live
+        // call's router and service are untouched.
+        val actions = CallTeardownPolicy.decide(
+            Reason.REJECT,
+            state(otherCallLive = true, routerActive = true, fgsRunning = true, ringingCallId = "call-2"),
+            "call-2",
+        )
+        assertEquals(listOf(Action.STOP_RINGER), actions)
+    }
+
+    @Test
+    fun `the ring stops before the audio session is released`() {
+        val actions = CallTeardownPolicy.decide(
+            Reason.DISCONNECT,
+            state(routerActive = true, fgsRunning = true, ringingCallId = "call-1"),
+            "call-1",
+        )
+        assertEquals(listOf(Action.STOP_RINGER, Action.FORCE_STOP_ROUTER, Action.STOP_FOREGROUND_SERVICE), actions)
+    }
+
+    @Test
+    fun `silence means no ringer action`() {
+        assertEquals(emptyList<Action>(), CallTeardownPolicy.decide(Reason.REJECT, state(), "call-1"))
+    }
 
     @Test
     fun `the normal JS-driven hangup is a no-op`() {

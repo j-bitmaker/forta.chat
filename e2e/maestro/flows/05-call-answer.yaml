@@ -34,3 +34,13 @@ tags:
     visible: "Mute"
     timeout: 60000
 - assertVisible: "Earpiece"
+
+# The ringer used to keep a 30 s auto-reject alive after the answer whenever
+# a second IncomingCallActivity had taken over the static pointer; the call
+# then dropped at second 30 with the ringtone still playing. Outlive that
+# deadline with the in-call controls still up.
+- extendedWaitUntil:
+    notVisible: "Mute"
+    timeout: 35000
+    optional: true
+- assertVisible: "Mute"

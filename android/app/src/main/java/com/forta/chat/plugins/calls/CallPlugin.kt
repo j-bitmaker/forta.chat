@@ -272,8 +272,17 @@ class CallPlugin : Plugin() {
         // setActive() here bypasses CallConnection.onAnswer(), so the silencing
         // that lives there does not cover this route. JS reaches it whenever the
         // call connects without Telecom having answered it itself.
+        IncomingRinger.stopAll()
         IncomingCallActivity.stopRingerIfShowing()
-        CallConnectionService.currentConnection?.setActive()
+        val connection = CallConnectionService.currentConnection
+        connection?.setActive()
+        // Same reason as CallConnection.onAnswer: the push notification's
+        // Decline button must not outlive the ring.
+        connection?.roomId?.takeIf { it.isNotEmpty() }?.let { roomId ->
+            runCatching {
+                com.forta.chat.FortaFirebaseMessagingService.dismissPushCallNotification(context, roomId)
+            }
+        }
         call.resolve()
     }
 

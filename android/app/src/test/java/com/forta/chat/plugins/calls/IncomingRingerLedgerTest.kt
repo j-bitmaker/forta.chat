@@ -1,0 +1,81 @@
+package com.forta.chat.plugins.calls
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * The bookkeeping behind [IncomingRinger]: one ring per process, keyed by
+ * callId, with a deadline that dies with the ring it was posted for.
+ */
+class IncomingRingerLedgerTest {
+
+    @Test
+    fun `arming records the call and stop for it reports it was ringing`() {
+        val ledger = IncomingRingerLedger()
+        ledger.arm("call-1")
+        assertEquals("call-1", ledger.armedCallId)
+        assertTrue(ledger.isArmedFor("call-1"))
+        assertTrue(ledger.stop("call-1"))
+        assertNull(ledger.armedCallId)
+    }
+
+    @Test
+    fun `a stop for another call is a no-op and says so`() {
+        // The second call that displaced the first must not be silenced by
+        // the first call's teardown.
+        val ledger = IncomingRingerLedger()
+        ledger.arm("call-2")
+        assertFalse(ledger.stop("call-1"))
+        assertEquals("call-2", ledger.armedCallId)
+    }
+
+    @Test
+    fun `a stop with no id silences whatever rings`() {
+        // reportCallConnected carries the Matrix call id, which is not the
+        // push-side id the ringer was armed with; an answered call stops the
+        // ring regardless.
+        val ledger = IncomingRingerLedger()
+        ledger.arm("push-event-id")
+        assertTrue(ledger.stop(null))
+        assertNull(ledger.armedCallId)
+        assertFalse(ledger.stop(""))
+    }
+
+    @Test
+    fun `stopping twice reports ringing only once`() {
+        val ledger = IncomingRingerLedger()
+        ledger.arm("call-1")
+        assertTrue(ledger.stop("call-1"))
+        assertFalse(ledger.stop("call-1"))
+    }
+
+    @Test
+    fun `the deadline fires only while its ring is still the current one`() {
+        val ledger = IncomingRingerLedger()
+        val token = ledger.arm("call-1")
+        assertTrue(ledger.mayFire(token))
+        ledger.stop("call-1")
+        assertFalse("an answered call must never see the auto-reject", ledger.mayFire(token))
+    }
+
+    @Test
+    fun `re-arming for a second call retires the first deadline`() {
+        val ledger = IncomingRingerLedger()
+        val first = ledger.arm("call-1")
+        val second = ledger.arm("call-2")
+        assertFalse("call-1's deadline would reject call-2 on sight", ledger.mayFire(first))
+        assertTrue(ledger.mayFire(second))
+    }
+
+    @Test
+    fun `re-arming the same call restarts its deadline`() {
+        val ledger = IncomingRingerLedger()
+        val first = ledger.arm("call-1")
+        val again = ledger.arm("call-1")
+        assertFalse(ledger.mayFire(first))
+        assertTrue(ledger.mayFire(again))
+    }
+}
