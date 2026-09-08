@@ -394,6 +394,18 @@ class AudioRouter private constructor(private val context: Context) {
     @Volatile private var coreListener: Listener? = null
     @Volatile private var uiListener: Listener? = null
     private var activeDevice: Device = Device.EARPIECE
+
+    // The device the user picked by hand during this call (setDevice from
+    // the in-call UI). Read by handleDevicesChanged through AudioRoutePolicy;
+    // cleared by start() so a pin never outlives its call.
+    @Volatile private var pinnedDevice: Device? = null
+
+    // Guards the pin together with the route it belongs to. setDevice runs
+    // on the plugin thread, handleDevicesChanged on the main handler; a
+    // volatile alone leaves "read pin → decide → clear pin → route" open to
+    // a tap landing in the middle, which would let a Bluetooth event route
+    // over a loudspeaker the user had just chosen.
+    private val routeLock = Any()
     // WEE-56: coarse OEM classification used for vendor-conditional audio
     // tweaks. Resolved once from Build at construction — the manufacturer
     // does not change at runtime. GENERIC for any unrecognised device, so the
@@ -528,6 +540,7 @@ class AudioRouter private constructor(private val context: Context) {
         timeline.record("start", callType)
 
         activeDevice = if (callType == "video") Device.SPEAKER else Device.EARPIECE
+        pinnedDevice = null
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
         timeline.record("mode", "MODE_IN_COMMUNICATION")
         // From here the session has a real owner with its own watchdog; the
@@ -629,7 +642,9 @@ class AudioRouter private constructor(private val context: Context) {
 
         val available = getAvailableDevices()
         if (Device.BLUETOOTH in available) {
-            setDevice(Device.BLUETOOTH)
+            // Auto-selection, not a pin: only setDevice() from the UI pins.
+            setDeviceInternal(Device.BLUETOOTH)
+            notifyListener()
         } else {
             setDeviceInternal(activeDevice)
         }
@@ -1027,11 +1042,27 @@ class AudioRouter private constructor(private val context: Context) {
         return devices
     }
 
-    fun setDevice(device: Device) {
-        if (!isActive) return
-        Log.d(TAG, "setDevice: $device")
-        setDeviceInternal(device)
+    /**
+     * A route chosen by the user. Returns false — and applies nothing — when
+     * the router is not running: the call has not reached start() yet or is
+     * already torn down. The old silent return let the in-call toggle flip
+     * to "speaker on" while the earpiece stayed live (O08). A refusal here
+     * must not start the router either: setDevice outside a call would
+     * otherwise put the phone in VoIP mode with no one to end it.
+     */
+    fun setDevice(device: Device): Boolean {
+        if (!isActive) {
+            Log.w(TAG, "setDevice($device) refused: router inactive")
+            timeline.record("route", "$device refused: router inactive")
+            return false
+        }
+        Log.d(TAG, "setDevice: $device (pinned)")
+        synchronized(routeLock) {
+            pinnedDevice = device
+            setDeviceInternal(device)
+        }
         notifyListener()
+        return true
     }
 
     fun getActiveDevice(): Device = activeDevice
@@ -1151,19 +1182,16 @@ class AudioRouter private constructor(private val context: Context) {
     private fun handleDevicesChanged() {
         if (!isActive) return
         val available = getAvailableDevices()
-        Log.d(TAG, "Devices changed: available=$available, active=$activeDevice")
+        Log.d(TAG, "Devices changed: available=$available, active=$activeDevice, pinned=$pinnedDevice")
 
-        if (Device.BLUETOOTH in available && activeDevice != Device.BLUETOOTH) {
-            Log.d(TAG, "BT appeared, auto-switching")
-            setDeviceInternal(Device.BLUETOOTH)
-        } else if (activeDevice !in available) {
-            val fallback = when {
-                Device.WIRED_HEADSET in available -> Device.WIRED_HEADSET
-                callType == "video" -> Device.SPEAKER
-                else -> Device.EARPIECE
+        synchronized(routeLock) {
+            val decision = AudioRoutePolicy.onDevicesChanged(activeDevice, available.toSet(), pinnedDevice, callType)
+            if (!decision.keepPin) pinnedDevice = null
+            decision.target?.let { target ->
+                Log.d(TAG, "Devices changed: routing to $target (pinned=$pinnedDevice)")
+                timeline.record("route", "$target on devices changed")
+                setDeviceInternal(target)
             }
-            Log.d(TAG, "Active device $activeDevice gone, fallback to $fallback")
-            setDeviceInternal(fallback)
         }
 
         notifyListener()

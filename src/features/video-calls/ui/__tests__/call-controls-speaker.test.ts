@@ -45,7 +45,13 @@ vi.mock("@/shared/lib/platform", () => ({
   resolveAppUpdaterEnabled: () => false,
 }));
 
-const setAudioDevice = vi.fn().mockResolvedValue(undefined);
+// Resolves `true` like the real bridge does when the native router applied
+// the route; a test flips it to `false` to simulate a refusal (O08).
+const setAudioDevice = vi.fn().mockResolvedValue(true);
+const toastSpy = vi.fn();
+vi.mock("@/shared/lib/use-toast", () => ({
+  useToast: () => ({ toast: toastSpy }),
+}));
 // Native AudioRouter snapshot the mocked bridge reports on mount, plus the
 // captured audioDevicesChanged callback so tests can simulate hot-swaps.
 const nativeState = { active: "" };
@@ -115,6 +121,7 @@ describe("CallControls — native speaker toggle (WEE-60)", () => {
     platformMock.isNative = true;
     mediaDevicesState.audioOutputDevices.value = [];
     setAudioDevice.mockClear();
+    toastSpy.mockClear();
     nativeState.active = "";
     audioDevicesCb = null;
     vi.stubGlobal("useI18n", () => ({ t: (k: string) => k }));
@@ -178,6 +185,44 @@ describe("CallControls — native speaker toggle (WEE-60)", () => {
     // speakerOn is now false → next tap routes back to speaker.
     await wrapper.find('[data-testid="speaker-toggle"]').trigger("click");
     expect(setAudioDevice).toHaveBeenLastCalledWith({ type: "speaker" });
+  });
+
+  it("rolls the toggle back and says so when native refuses the route (O08)", async () => {
+    // Voice call → speaker off. The router is not running yet (the call has
+    // not reached AudioRouter.start()), so the plugin rejects and the bridge
+    // reports false. Before: the toggle showed "speaker on" over a live
+    // earpiece and stayed wrong until the next audioDevicesChanged event.
+    setAudioDevice.mockResolvedValueOnce(false);
+    const store = useCallStore();
+    store.setActiveCall(makeCall("voice"));
+    const wrapper = mount(CallControls);
+
+    const btn = wrapper.find('[data-testid="speaker-toggle"]');
+    await btn.trigger("click");
+    await flushPromises();
+    expect(setAudioDevice).toHaveBeenLastCalledWith({ type: "speaker" });
+    // The script uses the real i18n (the global useI18n stub only reaches
+    // the template), so the message is the English string.
+    expect(toastSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/switch the audio output|routeUnavailable/),
+      "error",
+    );
+
+    // Rolled back to "off": the next tap asks for speaker again, not earpiece.
+    await btn.trigger("click");
+    expect(setAudioDevice).toHaveBeenLastCalledWith({ type: "speaker" });
+  });
+
+  it("keeps the optimistic state and stays quiet when native applies the route", async () => {
+    const store = useCallStore();
+    store.setActiveCall(makeCall("voice"));
+    const wrapper = mount(CallControls);
+
+    await wrapper.find('[data-testid="speaker-toggle"]').trigger("click");
+    await flushPromises();
+    expect(toastSpy).not.toHaveBeenCalled();
+    await wrapper.find('[data-testid="speaker-toggle"]').trigger("click");
+    expect(setAudioDevice).toHaveBeenLastCalledWith({ type: "earpiece" });
   });
 
   it("does not render the native toggle on web, and selectOutput stays store-only", async () => {

@@ -563,6 +563,7 @@ export const en = {
   "call.speaker": "Speaker",
   "call.speakerOn": "Speaker on",
   "call.speakerOff": "Speaker off",
+  "call.routeUnavailable": "Couldn't switch the audio output. Try again once the call is connected.",
   "call.devices": "Devices",
   "call.deviceLabel.earpiece": "Earpiece",
   "call.deviceLabel.speakerphone": "Speakerphone",

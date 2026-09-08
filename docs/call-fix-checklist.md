@@ -788,6 +788,27 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
   - Автотесты: `TrackAttachPolicyTest` (8 строк таблицы), `TrackAttachContractTest` (единственная точка `addTrack`, обе reuse-ветки через правило, `startLocalVideo` под `mediaLock`, `initVideoRenderers` без `startLocalVideo`, `attachLocalRenderer` без блокировки и порядок записи/чтения полей в обеих ветках гонки). Соединение, чьи senders не читаются (идёт teardown), пропускается с warning; ошибки `addTrack` по-прежнему всплывают наверх.
   - Запись в `docs/manual-verification.md`: «Одна камера на исходящий видеозвонок».
 
+- [ ] **F29. Громкая связь: отказ вместо молчания, ручной выбор не сбивается Bluetooth (O08)**
+  - Коммиты: `<этот>` · Кластер: speaker-toggle · Отчёты: O08 (#1334 OnePlus, #1328, #1223)
+  - Где: Samsung и Pixel · Можно ли: можно проверить · Нужно: обе сборки, Bluetooth-гарнитура
+  - Ограничения: на эмуляторе нет Bluetooth и нет отдельного динамика/наушника — эмулятором не проверяется. Прошивки, где оба API переключения динамика игнорируются (часть OnePlus), фикс не чинит: они видны как `route: … FAILED` в таймлайне отчёта.
+  - Симптом: кнопка динамика загорается, а звук остаётся в наушнике (или наоборот); при подключённой/мигающей Bluetooth-гарнитуре звук уходит в неё сразу после нажатия «динамик».
+  - Причина: `AudioRouter.setDevice` при неактивном роутере (звонок ещё не дошёл до `start()` или уже разобран) молча выходил, `CallPlugin.setAudioDevice` всё равно резолвил, мост глотал ошибку, а `CallControls` уже перевернул `speakerOn`. Отдельно `handleDevicesChanged` при появлении Bluetooth безусловно переключал на него поверх ручного выбора — гарнитура с «мигающим» соединением каждый раз снимала громкую связь.
+  - Что изменилось: `setDevice` возвращает `Boolean` и при неактивном роутере отказывает (с записью в таймлайн), не оживляя роутер; `CallPlugin.setAudioDevice` → `reject("router_inactive")`; мост возвращает `false`; `CallControls.applyNativeRoute` откатывает переключатель и показывает тост `call.routeUnavailable`. Ручной выбор — пин (`pinnedDevice`): новая чистая `AudioRoutePolicy` при появлении Bluetooth не трогает запинённый динамик (наушник — трогает: иначе гарнитуру, подключённую в разговоре, нечем выбрать), пин снимается вместе с исчезнувшим устройством и в `start()`. Пин и решение по смене устройств — под одним `routeLock` (plugin-поток против main-потока). Известное ограничение: нативный список устройств в `CallActivity` (нижний лист) отказ по-прежнему не показывает — там галочка считается от реального состояния, а не оптимистично, поэтому неверного состояния нет, только проигнорированный тап с записью `refused` в логе.
+  - Воспроизвести на старой сборке:
+    1. `forta-old.apk`; на Pixel `adb logcat -c`; позвонить Samsung и нажать «динамик» в первую секунду после «Вызов…», до соединения.
+    2. Признак бага: кнопка горит, звук в наушнике; в `adb logcat -s AudioRouter` нет `setDevice: SPEAKER`.
+    3. В соединённом звонке включить динамик, затем подключить Bluetooth-гарнитуру: звук уходит в гарнитуру, кнопка динамика гаснет.
+  - Проверить на новой сборке:
+    1. `forta-new.apk` поверх старой; тот же ранний тап: кнопка возвращается в «выкл.» и появляется тост «Не удалось переключить звук…»; в логе `setDevice(SPEAKER) refused: router inactive`.
+    2. В соединённом звонке: динамик вкл → выкл → вкл, каждый раз в логе `setDevice: … (pinned)` и слышимая смена маршрута.
+    3. Динамик включён, подключить Bluetooth-гарнитуру: звук остаётся на динамике (`Devices changed: … pinned=SPEAKER`, без `routing to BLUETOOTH`); выключить динамик — звук уходит в гарнитуру. Отключить гарнитуру в разговоре с активным Bluetooth: fallback на наушник/динамик.
+    4. Повторить п. 2 на движке WebView (F23).
+    Лог: `adb logcat -v time -s AudioRouter CallPlugin`
+  - Если не исправлен, приложить: логкат от нажатия до +5 с + отчёт из приложения (таймлайн `route`).
+  - Автотесты: `AudioRoutePolicyTest` (8 строк таблицы), `AudioRoutePinContractTest` (отказ без старта роутера, reject в плагине, политика в `handleDevicesChanged`, сброс пина в `start()`), `call-controls-speaker.test.ts` (откат + тост при `false`, тишина при `true`), `native-call-bridge.set-audio-device.test.ts` (`false` при reject).
+  - Запись в `docs/manual-verification.md`: «Громкая связь: отказ и пин ручного выбора».
+
 ### Диагностика: инструменты, которые понадобятся для остальных пунктов
 
 
@@ -991,7 +1012,7 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
 - [ ] **O08. Громкая связь не переключается** · кластер: speaker-toggle · отчётов: 10 · примеры: [#1334](https://github.com/greenShirtMystery/forta-bugs/issues/1334), [#1328](https://github.com/greenShirtMystery/forta-bugs/issues/1328), [#1223](https://github.com/greenShirtMystery/forta-bugs/issues/1223), [#1164](https://github.com/greenShirtMystery/forta-bugs/issues/1164), [#909](https://github.com/greenShirtMystery/forta-bugs/issues/909), [#890](https://github.com/greenShirtMystery/forta-bugs/issues/890)
   - Факты: 10 отчётов; 4 из них в застрявшем режиме на момент отчёта. OnePlus #1334 от сегодняшнего дня, WebView 152.
   - Причина: На части прошивок оба API переключения динамика игнорируются (legacy-fallback WEE-76 уже есть); часть случаев — следствие застрявшего режима (O01).
-  - Статус после ветки: Частично. Проверить, что на Samsung и Pixel работает; OnePlus/Infinix на стенде нет.
+  - Статус после ветки: Частично. Проверить, что на Samsung и Pixel работает; OnePlus/Infinix на стенде нет. Отказ вместо молчания и пин ручного выбора — F29.
   - Стенд: Samsung и Pixel
   - Как проверить на стенде:
     1. В звонке нажать динамик, выключить, снова включить; проверить с подключёнными Bluetooth-наушниками и без.

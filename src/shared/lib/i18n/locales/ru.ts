@@ -565,6 +565,7 @@ export const ru: Record<TranslationKey, string> = {
   "call.speaker": "Динамик",
   "call.speakerOn": "Громкая связь вкл.",
   "call.speakerOff": "Громкая связь выкл.",
+  "call.routeUnavailable": "Не удалось переключить звук. Попробуйте после соединения.",
   "call.devices": "Устройства",
   "call.deviceLabel.earpiece": "Разговорный (в ухо)",
   "call.deviceLabel.speakerphone": "Громкая связь",

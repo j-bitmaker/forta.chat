@@ -482,8 +482,13 @@ class CallPlugin : Plugin() {
                 return
             }
         }
-        audioRouter?.setDevice(device)
-        call.resolve()
+        // A refusal reaches JS as a reject so the toggle can roll back
+        // instead of showing a loudspeaker that is not on.
+        if (audioRouter?.setDevice(device) == true) {
+            call.resolve()
+        } else {
+            call.reject("Audio routing inactive — $type not applied", "router_inactive")
+        }
     }
 
     @PluginMethod

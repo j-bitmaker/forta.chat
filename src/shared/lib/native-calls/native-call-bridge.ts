@@ -641,12 +641,17 @@ class NativeCallBridge {
    * the Vue speaker toggle has a typed entry point instead of reaching into the
    * raw Capacitor plugin.
    */
-  async setAudioDevice(options: { type: NativeAudioDeviceType }): Promise<void> {
-    if (!isNative) return;
+  async setAudioDevice(options: { type: NativeAudioDeviceType }): Promise<boolean> {
+    if (!isNative) return false;
     try {
       await NativeCall.setAudioDevice(options);
+      return true;
     } catch (e) {
+      // The native router refuses a route while it is not running (reject
+      // code `router_inactive`). The caller owns the optimistic UI state,
+      // so the refusal is returned rather than swallowed.
       console.warn('[NativeCallBridge] setAudioDevice failed:', e);
+      return false;
     }
   }
 
