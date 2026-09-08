@@ -183,9 +183,13 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
                 // connection on the main one — blanking the slot here can
                 // orphan a call that is only just starting to ring.
                 val connection = com.forta.chat.plugins.calls.CallConnectionService.currentConnection
-                if (connection != null) {
+                if (connection != null &&
+                    com.forta.chat.plugins.calls.CallSlotPolicy.owns(connection.callId, endedCallId)
+                ) {
                     connection.onDisconnect()
                     disconnectedConnection = true
+                } else if (connection != null) {
+                    Log.w(TAG, "hangup for $endedCallId: slot holds ${connection.callId}, leaving it")
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to disconnect currentConnection", e)

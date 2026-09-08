@@ -57,7 +57,10 @@ object CallTeardown {
         val slot = CallConnectionService.currentConnection
         return CallTeardownPolicy.State(
             audioMode = mode,
-            otherCallLive = slot != null && slot.callId != callId,
+            // A slot keyed by a push event id ($…) can never match a Matrix
+            // call id; treating it as "another call" used to skip the router
+            // force-stop and leave the device in a call audio mode.
+            otherCallLive = slot != null && (callId == null || !CallSlotPolicy.owns(slot.callId, callId)),
             foregroundServiceRunning = CallForegroundService.isRunning,
             routerActive = AudioRouter.getSharedInstance(app).isRoutingActive(),
             sessionMarkerOpen = AudioRouter.hasOpenSessionMarker(app),

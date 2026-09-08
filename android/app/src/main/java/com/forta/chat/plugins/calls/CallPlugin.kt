@@ -211,11 +211,19 @@ class CallPlugin : Plugin() {
             val telecomManager = context.getSystemService(TelecomManager::class.java)
             val handle = CallConnectionService.getPhoneAccountHandle(context)
 
-            val extras = Bundle().apply {
+            // Telecom hands a ConnectionService only the bundle nested under
+            // EXTRA_OUTGOING_CALL_EXTRAS; keys put straight into placeCall's
+            // extras never reach onCreateOutgoingConnection. That is why every
+            // outgoing Connection used to log "callId=" and could not be
+            // matched by id — every keyed teardown treated it as another call.
+            val callExtras = Bundle().apply {
                 putString("callId", callId)
                 putString("callerName", callerName)
                 putBoolean("hasVideo", hasVideo)
+            }
+            val extras = Bundle().apply {
                 putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle)
+                putBundle(TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS, callExtras)
             }
 
             telecomManager.placeCall(
@@ -263,7 +271,15 @@ class CallPlugin : Plugin() {
         // the *next* call and anything that reads it — leaving that call with
         // no Connection to answer, and its own ring backstop hanging it up 45
         // seconds after the user picked up.
-        CallConnectionService.currentConnection?.onDisconnect()
+        val callId = call.getString("callId")
+        val slot = CallConnectionService.currentConnection
+        if (slot != null && !CallSlotPolicy.owns(slot.callId, callId)) {
+            // The slot holds a different call — ending it here is how a
+            // refused second invite used to hang up the conversation.
+            Log.w(TAG, "reportCallEnded($callId): slot holds ${slot.callId}, leaving it")
+        } else {
+            slot?.onDisconnect()
+        }
         call.resolve()
     }
 
@@ -274,7 +290,12 @@ class CallPlugin : Plugin() {
         // call connects without Telecom having answered it itself.
         IncomingRinger.stopAll()
         IncomingCallActivity.stopRingerIfShowing()
-        val connection = CallConnectionService.currentConnection
+        val callId = call.getString("callId")
+        val connection = CallConnectionService.currentConnection?.takeIf { slot ->
+            CallSlotPolicy.owns(slot.callId, callId).also { owns ->
+                if (!owns) Log.w(TAG, "reportCallConnected($callId): slot holds ${slot.callId}, leaving it")
+            }
+        }
         connection?.setActive()
         // Same reason as CallConnection.onAnswer: the push notification's
         // Decline button must not outlive the ring.

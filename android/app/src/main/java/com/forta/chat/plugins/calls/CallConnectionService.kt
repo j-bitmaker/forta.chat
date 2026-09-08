@@ -184,9 +184,13 @@ class CallConnectionService : ConnectionService() {
         connectionManagerPhoneAccount: PhoneAccountHandle?,
         request: ConnectionRequest?
     ): Connection {
+        // placeCall's app extras arrive nested under EXTRA_OUTGOING_CALL_EXTRAS
+        // (Telecom merges them into the request on most versions, not all);
+        // read the nested bundle as well so the id is never lost.
         val extras = request?.extras ?: Bundle()
-        val callId = extras.getString("callId", "")
-        val callerName = extras.getString("callerName", "")
+        val nested = extras.getBundle(TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS) ?: Bundle()
+        val callId = extras.getString("callId", "").ifEmpty { nested.getString("callId", "") }
+        val callerName = extras.getString("callerName", "").ifEmpty { nested.getString("callerName", "") }
 
         Log.d(TAG, "onCreateOutgoingConnection: callId=$callId, callee=$callerName")
 

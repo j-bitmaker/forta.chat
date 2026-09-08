@@ -846,6 +846,25 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
   - Автотесты: `IncomingCallSurfaceContractTest` (STREAM_RING в onCreate, гейт API 34, deep-link для пакета, разрешение в манифесте), `use-notification-settings.test.ts` (false/null/reject, открытие экрана), `notification-settings-fsi.test.ts` (баннер только при `false`, кнопка), `collect-call-diagnostics.test.ts` (Android 14 / до 14 / iOS), `bug-report-sender.test.ts` (строка).
   - Запись в `docs/manual-verification.md`: «Full-screen intent и качелька громкости».
 
+- [ ] **F32. Исходящее Telecom-соединение получает свой callId; читатели слота проверяют id (O06)**
+  - Коммиты: `<этот>` · Кластер: stuck-after-call / second-call · Отчёты: O06 (код)
+  - Где: Samsung и Pixel · Можно ли: можно проверить · Нужно: обе сборки, третья сторона (веб) для второго входящего
+  - Ограничения: слот по-прежнему один — второй входящий во время разговора получает BUSY (продуктовое решение, см. O06). Эмулятор: без прогона (эмуляторы после перезагрузки хоста не поднимались).
+  - Симптом: во время разговора приходит и отбивается второй звонок — и разговор рвётся; или после «занято» у второго звонящего первый звонок остаётся в состоянии звонка (Telecom держит аудиорежим).
+  - Причина: `CallPlugin.reportOutgoingCall` клал `callId` прямо в extras `placeCall`, а Telecom доносит до `onCreateOutgoingConnection` только bundle под `EXTRA_OUTGOING_CALL_EXTRAS` — у каждого исходящего соединения `callId=""` (лог `onCreateOutgoingConnection: callId=, callee=`). `reportCallEnded`, `reportCallConnected` и push-hangup брали слот без проверки id: конец звонка B завершал звонок A.
+  - Что изменилось: extras вложены под `EXTRA_OUTGOING_CALL_EXTRAS`, `onCreateOutgoingConnection` читает и вложенный bundle; чистая `CallSlotPolicy.owns(slotCallId, requestedCallId)` — слот «свой», если запрос без id, слот без id, id совпали или слот ключуется push `event_id` (`$…`, несопоставим с Matrix `call_id` — иначе слот нельзя было бы завершить); три читателя (`reportCallEnded`, `reportCallConnected`, FCM `m.call.hangup`) проходят через неё и пишут warning, когда оставляют чужой слот; той же политикой пользуются `CallTeardown.collectState` (`otherCallLive` — раньше `$`-слот считался «другим звонком», и force-stop роутера пропускался) и `IncomingCallActivity.rejectRingingConnection`.
+  - Воспроизвести на старой сборке:
+    1. `forta-old.apk` на Pixel; `adb logcat -s CallConnectionService`; исходящий звонок с Pixel: строка `onCreateOutgoingConnection: callId=, callee=…` (пустой id).
+    2. Pixel↔Samsung в разговоре; с веба позвонить на Pixel, дождаться «занято»/отбоя: разговор Pixel↔Samsung рвётся или Pixel остаётся «в звонке» после конца.
+  - Проверить на новой сборке:
+    1. `forta-new.apk`; исходящий с Pixel: `onCreateOutgoingConnection: callId=<непустой>`.
+    2. Тот же второй входящий с веба во время разговора: второй получает «занято», разговор живёт; в логе `CallPlugin` строка `reportCallEnded(<id второго>): slot holds <id первого>, leaving it`; после конца разговора `dumpsys audio | grep "Actual mode"` → `MODE_NORMAL`.
+    3. Обычный цикл: позвонить, поговорить 20 с, положить трубку с каждой стороны по разу — нет застревания.
+    Лог: `adb logcat -v time -s CallConnectionService CallPlugin FortaFCM`
+  - Если не исправлен, приложить: логкат обоих аппаратов + отчёт из приложения.
+  - Автотесты: `CallSlotPolicyTest` (5 строк), `CallSlotContractTest` (вложенные extras, чтение вложенного bundle, пять читателей через `owns`).
+  - Запись в `docs/manual-verification.md`: «Слот Telecom по callId».
+
 ### Диагностика: инструменты, которые понадобятся для остальных пунктов
 
 
@@ -1032,7 +1051,7 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
 - [ ] **O06. Второй входящий во время разговора: «занято» без ожидания вызова, слот не привязан к callId** · кластер: call-lifecycle · отчётов: 0
   - Факты: Найдено в коде: CallConnectionService держит одно соединение, все читатели берут его без проверки callId. После e3079e09 второй звонящий получает BUSY, разговор не рвётся.
   - Причина: Нужно продуктовое решение: ждущий вызов, «занято» или ничего. Техническая часть: соединения по callId вместо слота.
-  - Статус после ветки: Частично: BUSY сделан (F10). Ожидание вызова не реализовано.
+  - Статус после ветки: Частично: BUSY сделан (F10). Ожидание вызова не реализовано. Исходящий callId и читатели слота по id — F32; call waiting вместо BUSY — продуктовое решение.
   - Стенд: Samsung и Pixel · нужно: третья сторона: веб-клиент или эмулятор
   - Как проверить на стенде:
     1. Разговор Samsung↔Pixel, третий (веб) звонит на Samsung: разговор обязан продолжиться, третьему «занято». Это F10.

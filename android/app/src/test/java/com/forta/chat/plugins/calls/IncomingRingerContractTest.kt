@@ -126,7 +126,7 @@ class IncomingRingerContractTest {
     @Test
     fun aStaleDeclineCannotRejectTheCallThatRingsNow() {
         val body = functionBody(activity, "private\\s+fun\\s+rejectRingingConnection\\s*\\(")
-        assertTrue("rejectRingingConnection must compare the slot's callId:\n$body", body.contains("connection.callId != callId"))
+        assertTrue("rejectRingingConnection must compare the slot's callId:\n$body", body.contains("CallSlotPolicy.owns(connection.callId, callId)"))
         val gate = functionBody(activity, "private\\s+fun\\s+decline\\s*\\(").substringBefore("if (!wasRinging && established)")
         assertTrue("the established gate must be keyed to the declined call:\n$gate", gate.contains("it.callId == callId"))
     }

@@ -352,9 +352,9 @@ class IncomingCallActivity : Activity() {
             return
         }
         // A stale tap for a call that was displaced must not reject the call
-        // that rings now. The slot's id is empty only on the pre-Telecom
-        // fallback, where there is nothing else it could be.
-        if (connection.callId.isNotEmpty() && callId.isNotEmpty() && connection.callId != callId) {
+        // that rings now. CallSlotPolicy knows which slot ids are comparable
+        // (an empty or push-event-id slot is not).
+        if (!CallSlotPolicy.owns(connection.callId, callId)) {
             Log.w(TAG, "decline ignored: slot rings for ${connection.callId}, not $callId")
             return
         }
