@@ -65,6 +65,15 @@ function onProblem(problem: CallProblem): void {
       >
         👎
       </button>
+      <button
+        type="button"
+        class="flex h-10 w-10 items-center justify-center rounded-full text-sm text-text-on-main-bg-color opacity-70 transition-opacity hover:opacity-100"
+        :aria-label="t('callFeedback.close')"
+        data-testid="call-feedback-close"
+        @click="emit('dismiss')"
+      >
+        ✕
+      </button>
     </div>
 
     <div v-else class="space-y-2">

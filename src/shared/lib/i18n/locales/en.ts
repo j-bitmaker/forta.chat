@@ -609,6 +609,7 @@ export const en = {
   "callFeedback.bad": "Had problems",
   "callFeedback.whatWentWrong": "What went wrong?",
   "callFeedback.skip": "Skip",
+  "callFeedback.close": "Close",
   "callFeedback.problem.peer_not_heard": "I could not hear the other person",
   "callFeedback.problem.not_heard_by_peer": "They could not hear me",
   "callFeedback.problem.audio_dropped": "Audio dropped out",

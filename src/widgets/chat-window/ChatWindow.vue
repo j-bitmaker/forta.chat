@@ -16,7 +16,7 @@ import PinnedBar from "@/features/messaging/ui/PinnedBar.vue";
 import { UserAvatar } from "@/entities/user";
 import { useUserStore } from "@/entities/user/model";
 
-import { useCallLauncher, CallProviderPicker } from "@/features/video-calls";
+import { useCallLauncher, CallProviderPicker, CallFeedbackDock } from "@/features/video-calls";
 import type { CallType } from "@/entities/call";
 import { useWalletStore } from "@/features/wallet";
 import DonateModal from "@/features/wallet/ui/DonateModal.vue";
@@ -663,6 +663,7 @@ onUnmounted(() => {
           </div>
         </div>
         <MessageList ref="messageListRef" />
+        <CallFeedbackDock />
         <SelectionBar
           v-if="chatStore.selectionMode"
           @copy="handleSelectionCopy"

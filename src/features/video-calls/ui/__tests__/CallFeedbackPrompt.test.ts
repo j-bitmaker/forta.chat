@@ -62,4 +62,13 @@ describe("CallFeedbackPrompt", () => {
     expect(wrapper.emitted("dismiss")).toHaveLength(1);
     expect(openBugReport).not.toHaveBeenCalled();
   });
+
+  it("closes without a report when the card is dismissed outright", async () => {
+    const wrapper = mountPrompt();
+
+    await wrapper.find('[data-testid="call-feedback-close"]').trigger("click");
+
+    expect(wrapper.emitted("dismiss")).toHaveLength(1);
+    expect(openBugReport).not.toHaveBeenCalled();
+  });
 });

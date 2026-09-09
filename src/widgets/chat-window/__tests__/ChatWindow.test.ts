@@ -182,6 +182,11 @@ const TransitionStub = {
 };
 
 // ── Stubs for child components ChatWindow renders ─────────────────
+import {
+  useCallFeedbackPrompt,
+  __resetCallFeedbackPromptForTests,
+} from "@/features/video-calls/model/use-call-feedback-prompt";
+
 const mountOpts = {
   global: {
     stubs: {
@@ -353,5 +358,32 @@ describe("ChatWindow — loading vs select-prompt placeholders", () => {
     expect(header.find('[aria-label="info.title"]').exists()).toBe(true);
 
     wrapper.unmount();
+  });
+
+  it("docks the post-call feedback card in the joined room, not on placeholders", async () => {
+    // Deliberately unstubbed: a name-keyed stub resolves even when ChatWindow
+    // never imports the component, which is exactly the regression to catch.
+    const { show } = useCallFeedbackPrompt();
+    show(5);
+
+    fakeActiveRoomId.value = null;
+    fakeRoomsInitialized.value = true;
+
+    const empty = mount(ChatWindow, mountOpts);
+    await flushPromises();
+    expect(empty.find('[data-testid="call-feedback-good"]').exists()).toBe(false);
+    empty.unmount();
+
+    fakeActiveRoomId.value = "!abc:matrix.org";
+    fakeRooms.value = [
+      { id: "!abc:matrix.org", name: "Alice", isGroup: false, members: [], membership: "join" },
+    ];
+
+    const joined = mount(ChatWindow, mountOpts);
+    await flushPromises();
+    expect(joined.find('[data-testid="call-feedback-good"]').exists()).toBe(true);
+    joined.unmount();
+
+    __resetCallFeedbackPromptForTests();
   });
 });

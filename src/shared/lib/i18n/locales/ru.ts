@@ -611,6 +611,7 @@ export const ru: Record<TranslationKey, string> = {
   "callFeedback.bad": "Были проблемы",
   "callFeedback.whatWentWrong": "Что пошло не так?",
   "callFeedback.skip": "Пропустить",
+  "callFeedback.close": "Закрыть",
   "callFeedback.problem.peer_not_heard": "Я не слышал собеседника",
   "callFeedback.problem.not_heard_by_peer": "Меня не слышали",
   "callFeedback.problem.audio_dropped": "Звук пропадал или прерывался",

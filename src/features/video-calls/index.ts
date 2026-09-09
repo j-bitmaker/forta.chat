@@ -2,6 +2,7 @@ export { default as CallWindow } from "./ui/CallWindow.vue";
 export { default as CallControls } from "./ui/CallControls.vue";
 export { default as IncomingCallModal } from "./ui/IncomingCallModal.vue";
 export { default as CallStatusBar } from "./ui/CallStatusBar.vue";
+export { default as CallFeedbackDock } from "./ui/CallFeedbackDock.vue";
 export { useCallService } from "./model/call-service";
 export { useMediaDevices } from "./model/use-media-devices";
 export { default as CallProviderPicker } from "./ui/CallProviderPicker.vue";
