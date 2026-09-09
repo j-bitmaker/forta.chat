@@ -300,6 +300,27 @@ class CallPlugin : Plugin() {
             }
         }
         connection?.setActive()
+        // The answer is on the wire now — JS only reaches here from the
+        // connected state — so the marker has nothing left to carry. It exists
+        // only to replay a decision across a process that was not alive to send
+        // it; kept until finalizeCall instead, it sat there for the whole call
+        // and outlived it entirely whenever teardown never ran (a task swipe),
+        // which is how a later call from the same room got answered unattended.
+        //
+        // Retired here rather than from JS because the key must be the
+        // connection's own: a marker written from a push is keyed by the
+        // event_id, so a JS-side retire carrying the Matrix callId would be
+        // inert on exactly the path that matters most.
+        //
+        // By callId alone, never by room. Any marker belonging to this
+        // connection was written under this connection's id — onAnswer and
+        // IncomingCallActivity both use it — so the room buys nothing here, and
+        // a room-scoped retire from native code would be a guess: only JS knows
+        // whether another call is live in that room. A second invite for the
+        // same room still reaches the push-side ringer even while Telecom
+        // answers it BUSY, and declining it writes a marker this would
+        // otherwise wipe before JS ever read it.
+        connection?.let { CallConnection.retirePendingMarkersForCall(it.callId, null) }
         // Same reason as CallConnection.onAnswer: the push notification's
         // Decline button must not outlive the ring.
         connection?.roomId?.takeIf { it.isNotEmpty() }?.let { roomId ->

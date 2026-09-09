@@ -131,6 +131,31 @@ class PendingMarkerStampContractTest {
         }
     }
 
+    @Test
+    fun aConnectedCallRetiresItsMarkersImmediately() {
+        // The marker only ever has to carry a decision across a process that
+        // was not alive to send it. Once the answer is on the wire it is spent,
+        // and leaving it until finalizeCall means it survives any path where
+        // teardown never runs — a task swipe — and gets replayed into the next
+        // call from that room.
+        val body = functionBody(plugin, "fun\\s+reportCallConnected\\s*\\(")
+        val retire = body.indexOf("retirePendingMarkersForCall(")
+        assertTrue("a connected call must retire its markers:\n$body", retire >= 0)
+        // After the slot filter, so a stale report cannot retire another call's
+        // markers, and keyed by the connection's own ids: a push-created
+        // connection is keyed by the event_id, which no JS-side caller has.
+        val owns = body.indexOf("CallSlotPolicy.owns(")
+        assertTrue("the retire must come after the slot check:\n$body", owns in 0 until retire)
+        // By callId alone: a marker belonging to this connection was written
+        // under this connection's id, so the room buys nothing — and a
+        // room-scoped retire from native code would wipe a marker a second,
+        // concurrently declined invite for the same room still needs.
+        assertTrue(
+            "the retire must be keyed by callId alone, not by room:\n$body",
+            body.contains("retirePendingMarkersForCall(it.callId, null)"),
+        )
+    }
+
     private fun functionBody(src: String, signaturePattern: String): String {
         val match = Regex("$signaturePattern[^{]*\\{").find(src)
             ?: error("Could not find /$signaturePattern/ in source")
