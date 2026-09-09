@@ -1174,3 +1174,57 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
 | 7 | **Сбор артефактов при провале.** `scripts/capture-call-failure.sh <ID>`: логкат за 3 минуты, dumpsys audio/telecom/notification, версия WebView и приложения, таймлайн через отчёт. Один архив вместо переписки. | нет | 0,5 дня | Диагноз без аппарата в руках |
 
 Чего автоматизация не заменит: слух на конкретной OEM-прошивке. Всё остальное (режим аудио, занятый микрофон, живые соединения, экраны, сигналинг) читается через adb и проверяется без человека.
+
+## Прогон на реальном Samsung, 2026-09-09
+
+Стенд: Samsung SM-A528B (Android 14, SDK 34, WebView 151.0.7922.199, серийник
+`R5CT316HB2T`) с новой сборкой поверх старой + веб-клиент под TEST1 в headless
+Chrome с фейковым микрофоном. Оба конца управляются скриптами, аккаунты
+тестовые. Скрипты прогона лежат в скретчпаде сессии, не в репозитории.
+
+### Подтверждено на живом устройстве
+
+| Фикс | Доказательство из логката |
+|---|---|
+| **F32** | `CallPlugin: reportOutgoingCall: test3823818 (1788954840884hVNAUhH8ehEk5JZ7)` → `CallConnectionService: onCreateOutgoingConnection: callId=1788954840884hVNAUhH8ehEk5JZ7, callee=test3823818`. Старая сборка печатала `callId=` пустым. Тот же callId дальше приходит в `reportCallConnected: {"callId":"1788955257466MefxcBGPSWGUqHY7"}`. |
+| **F25** | Три завершения подряд, каждое `CallTeardown: endCall reason=… callId=<непустой> … actions=[]`: по таймауту звонящего (`DISCONNECT`), по сбросу трубки (`DISCONNECT`), по 30-секундному авто-reject (`REJECT`, `audioMode=1`). Во всех случаях `MODE_IN_COMMUNICATION → MODE_NORMAL` за ~600 мс, `CallForegroundService: Service stopped`. Инвариант «при MODE_RINGTONE не трогать режим напрямую» соблюдён: при `audioMode=1` политика вернула `actions=[]`, режим вернулся сам. |
+| **F26** | `IncomingRinger: arm callId=X` … `stop callId=X` — один и тот же callId, `stop` ровно по `onAnswer`, второго `arm` нет. Авто-reject тоже кейнутый: `no answer in 30s for X — auto-rejecting` → `stop callId=X` → `onReject: callId=X`. Флаги интента видны в системном логе: `START … IncomingCallActivity … flg=0x34000000 … LAUNCH_SINGLE_TOP` (NEW_TASK\|CLEAR_TOP\|SINGLE_TOP). |
+| **F31** | `CallConnectionService: USE_FULL_SCREEN_INTENT not granted, FSI will be heads-up only` — на этом аппарате система разрешение действительно отозвала. Это прямая причина O10, и новая диагностика её показывает. |
+
+Один звонок дошёл до разговора: со стороны веба `ice: connected`,
+`pair: succeeded`, `localType=host / remoteType=prflx` — прямое p2p, relay не
+понадобился (оба конца в одной сети, для O05 это не ответ). `AudioLifecycle:
+start(voice) complete: active=EARPIECE, available=[EARPIECE, SPEAKER],
+vendor=SAMSUNG`.
+
+### Не проверено этим прогоном
+
+- **F29** (динамик): выбор «Динамик» в нативной шторке «Аудиовыход» ни разу не
+  попал в живой звонок — каждый раз соединение успевало закрыться. Ни строки
+  `AudioRouter … setDevice`, ни отказа `router_inactive` в логах нет, то есть
+  проверка не выполнена, а не провалена.
+- **Слышимость**: веб отдаёт синтетический тон, микрофон телефона в тихой
+  комнате, `totalAudioEnergy` со стороны веба ≈ 3·10⁻⁸. Отличить «нет звука»
+  от «тихо» без человека у аппарата нельзя.
+
+### Найдено на стенде: протухшая метка reject гасит следующий звонок
+
+`consumePendingRejectCallId` (`src/shared/lib/native-calls/native-call-bridge.ts`)
+сверяет метку не только по callId, но и **по roomId**, а у метки нет ни срока
+жизни, ни привязки к конкретному звонку. 30-секундный авто-reject пишет
+`CallConnection.pendingRejectCallId/RoomId` (`CallConnectionService.kt:554`); если
+JS не забрал метку в тот момент, она доживает до следующего инвайта из той же
+комнаты и гасит его через ветку по roomId.
+
+Наблюдение: авто-reject в 15:07:24 (`callId=1788955612273O7S736BrqFIxqwQS`), а в
+15:13:01 свежий звонок `17889559802696wWSVJYT0cFnIWQt` из той же комнаты получил
+`[call-service] Pre-rejected incoming call, calling reject()` — телефон не
+зазвонил, `onCreateIncomingConnection` не было вовсе, звонящий увидел «отклонён».
+
+Воспроизводится по времени, а не по команде: в контрольном повторе звонящий
+успел положить трубку раньше рингера (`stop callId=null` → `reason=DISCONNECT`),
+метка не записалась, и следующий звонок прошёл нормально. Нужен исход, где
+30-секундный таймаут приложения выигрывает гонку у lifetime инвайта.
+
+Код пришёл из `75ecca14`, который **уже в `origin/master`** — это не регрессия
+ветки, а открытый баг у пользователей. Симптом ложится в кластеры O04/O09.
