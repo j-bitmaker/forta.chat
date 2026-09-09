@@ -2,7 +2,12 @@ import { registerPlugin } from '@capacitor/core';
 import { isAndroid, isIOS, isNative } from '@/shared/lib/platform';
 import { NativeWebRTC } from '@/shared/lib/native-webrtc/native-webrtc-bridge';
 import { isInviteEventExpired } from './invite-ttl';
-import { matchesPendingCallMarker, pendingCallMarkerOf } from './pending-call-marker';
+import {
+  callIdNeedsRoomCorrelation,
+  matchesPendingCallMarker,
+  pendingCallMarkerIsFresh,
+  pendingCallMarkerOf,
+} from './pending-call-marker';
 import type { PendingCallMarker } from './pending-call-marker';
 import type {
   AudioProbeResult,
@@ -269,6 +274,8 @@ export async function retirePendingMarkers(callId: string, roomId?: string): Pro
 
 class NativeCallBridge {
   private callService: any = null;
+  /** Bumped on every arm of {@link waitForMatrixCallAndAnswer}; only the newest may answer. */
+  private answerWaitGeneration = 0;
   /**
    * WEE-16: signal aborted by stop/forceStop so any in-flight
    * `startAudioRouting` retry bails immediately. Without this, a user
@@ -304,7 +311,7 @@ class NativeCallBridge {
       // exactly how a stale marker used to swallow an unrelated later call.
       // Written on this side rather than natively, hence the local clock.
       pendingAnswer = pendingCallMarkerOf(callId, roomId, Date.now());
-      this.waitForMatrixCallAndAnswer(callId, roomId);
+      this.waitForMatrixCallAndAnswer(callId, roomId, pendingAnswer);
     });
 
     await NativeCall.addListener('callDeclined', ({ callId }) => {
@@ -342,13 +349,35 @@ class NativeCallBridge {
         atMs: pendingAtMs,
       } = await NativeCall.getPendingAnswer();
       if (pendingCallId) {
-        console.log('[NativeCallBridge] Pending answer queued, waiting for matrixCall:', pendingCallId, 'room:', pendingRoomId);
-        pendingAnswer = pendingCallMarkerOf(
+        const marker = pendingCallMarkerOf(
           pendingCallId,
           pendingRoomId,
           pendingAtMs ?? missingStamp(),
         );
-        this.waitForMatrixCallAndAnswer(pendingCallId, pendingRoomId ?? undefined);
+        // Seeded whatever its age: an exact callId still names the very call
+        // the user tapped, and `matchesPendingCallMarker` honours that with no
+        // time bound. Only the *replay* below is age-gated.
+        pendingAnswer = marker;
+        // A replay is speculative — there is no invite in hand to compare ids
+        // with, so this arms a poll that will answer whatever shows up. Past
+        // one invite lifetime nothing legitimate can still be waiting: the SDK
+        // has expired the invite itself. Observed on a Samsung 2026-09-09 —
+        // the user swiped the app away mid-call, so nothing retired the marker
+        // `onAnswer` had written; the next app start replayed it 141 s later
+        // and the poll picked up an entirely unrelated call from that room,
+        // with no ringer and the mic open.
+        if (marker && !pendingCallMarkerIsFresh(marker)) {
+          console.warn(
+            '[NativeCallBridge] Discarding a stale queued answer (age ' +
+              (typeof pendingAtMs === 'number' ? Date.now() - pendingAtMs : 'unknown') + 'ms):',
+            pendingCallId,
+          );
+          // Nothing to retire natively: getPendingAnswer is read-and-clear, so
+          // the read above already took it.
+        } else {
+          console.log('[NativeCallBridge] Pending answer queued, waiting for matrixCall:', pendingCallId, 'room:', pendingRoomId);
+          this.waitForMatrixCallAndAnswer(pendingCallId, pendingRoomId ?? undefined, marker);
+        }
       }
     } catch (e) {
       console.warn('[NativeCallBridge] getPendingAnswer failed:', e);
@@ -423,7 +452,18 @@ class NativeCallBridge {
    * into the handler so it re-emits Call.incoming and our normal
    * onIncomingCall → handleIncomingCall path kicks in.
    */
-  private waitForMatrixCallAndAnswer(callId: string, roomId?: string): void {
+  private waitForMatrixCallAndAnswer(
+    callId: string,
+    roomId?: string,
+    marker?: PendingCallMarker | null,
+  ): void {
+    // Only the newest wait may answer. Two sites arm one — wire()'s replay and
+    // the callAnswered listener — and neither used to hold a handle or stop on
+    // answer or hangup, so a poll armed for one call kept running for its full
+    // 30 s and could still fire on a later, unrelated one. In the Samsung
+    // swipe-away repro the poll armed at 23:04:41.913 answered at 23:04:52.503:
+    // eleven seconds and a different call later.
+    const generation = ++this.answerWaitGeneration;
     const MAX_WAIT_MS = 30_000;
     const POLL_MS = 300;
     // Don't even attempt the invite-recovery scan for the first
@@ -441,6 +481,12 @@ class NativeCallBridge {
     let recoveryAttempted = false;
 
     const tick = async (): Promise<void> => {
+      // Abandoning a superseded wait also abandons its recovery pass below.
+      // That is safe because the recovery is not the only route: whenever it
+      // has already re-emitted Call.incoming, handleIncomingCall consumes the
+      // same module-level marker through consumePendingAnswerCallId and
+      // answers from there, independently of any wait.
+      if (generation !== this.answerWaitGeneration) return;
       try {
         const { useCallStore } = await import('@/entities/call');
         const store = useCallStore();
@@ -451,8 +497,26 @@ class NativeCallBridge {
         // homeserver the push-side id doesn't equal Matrix's call.callId
         // (it's an event_id), so roomId is the reliable correlator.
         const matchById = !!current?.callId && current.callId === callId;
+        // ...but only for a marker whose own id cannot be compared. A push id
+        // is really an event_id and never equals `call.callId`, so there the
+        // room is the only correlator we have. When the connection was created
+        // from /sync the marker carries the real Matrix callId instead, and
+        // widening that to the room only ever lets it claim someone else's
+        // call — which is exactly what happened on the Samsung bench. The test
+        // is the id itself, not which path created the connection: a
+        // push-created one is keyed by the event_id and keeps its fallback.
+        // Re-checked every tick, not just at arm time: the poll runs for 30 s,
+        // and a marker that was 55 s old when it armed must not still be
+        // claiming calls 20 s later. Bounding it by the marker's own age caps
+        // the room fallback at one invite lifetime from the user's tap, which
+        // is the same rule matchesPendingCallMarker applies.
+        const roomStillFresh = !marker || pendingCallMarkerIsFresh(marker);
         const matchByRoom =
-          !!roomId && !!current?.roomId && current.roomId === roomId;
+          callIdNeedsRoomCorrelation(callId) &&
+          roomStillFresh &&
+          !!roomId &&
+          !!current?.roomId &&
+          current.roomId === roomId;
         if (current && (matchById || matchByRoom)) {
           console.log(
             '[NativeCallBridge] matrixCall ready, answering (matchById=' +

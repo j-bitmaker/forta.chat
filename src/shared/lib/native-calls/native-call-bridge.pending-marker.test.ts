@@ -31,6 +31,11 @@ interface BridgeMocks {
   /** Captures the handlers wire() registers, so a test can fire one. */
   listeners?: NativeListeners;
   retirePendingMarkers?: Mock;
+  /** What `callStore.matrixCall` holds; a function is re-read on every tick. */
+  matrixCall?:
+    | { callId?: string; roomId?: string }
+    | null
+    | (() => { callId?: string; roomId?: string } | null);
 }
 
 async function loadBridge(answer: Mock, reject: Mock, mocks: BridgeMocks = {}) {
@@ -57,8 +62,14 @@ async function loadBridge(answer: Mock, reject: Mock, mocks: BridgeMocks = {}) {
   }));
   // The callAnswered listener kicks off a poll for the MatrixCall; give it
   // one that matches so the poll finishes on its first tick.
+  const matrixCall =
+    'matrixCall' in mocks ? mocks.matrixCall : { callId: MATRIX_CALL_ID, roomId: ROOM };
   vi.doMock('@/entities/call', () => ({
-    useCallStore: () => ({ matrixCall: { callId: MATRIX_CALL_ID, roomId: ROOM } }),
+    useCallStore: () => ({
+      get matrixCall() {
+        return typeof matrixCall === 'function' ? matrixCall() : matrixCall;
+      },
+    }),
   }));
   vi.doMock('@/shared/lib/platform', () => android);
   vi.doMock('@/shared/lib/native-webrtc/native-webrtc-bridge', () => ({
@@ -346,5 +357,218 @@ describe('consumePendingAnswerCallId', () => {
     );
 
     await expect(consumePendingAnswerCallId(MATRIX_CALL_ID, ROOM)).resolves.toBe(false);
+  });
+});
+
+describe("wire() replaying a queued answer", () => {
+  // The Samsung repro, 2026-09-09. The user answered, talked, then swiped the
+  // app away from Recents. That destroys the WebView but not the process, so
+  // nothing ran finalizeCall and the marker `onAnswer` wrote stayed in native
+  // statics. On the next app start wire() replayed it — 141 s later — and the
+  // poll it armed answered an entirely different call from the same room:
+  // no ringer, mic open, nobody had touched the phone.
+  const freshService = () => ({
+    answerCall: vi.fn(),
+    rejectCall: vi.fn(),
+    hangup: vi.fn(),
+  });
+
+  it("does not answer anything on a marker that outlived its invite", async () => {
+    // Only setTimeout is faked: markerAged reads Date.now() to build the stamp,
+    // and the freshness check reads it again — both must stay on the real clock.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const callService = freshService();
+      const mod = await loadBridge(markerAged(141_000), noMarker());
+
+      await mod.nativeCallBridge.wire(callService);
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(callService.answerCall).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still answers on a fresh marker, so cold start from push keeps working", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const callService = freshService();
+      const mod = await loadBridge(markerAged(3_000), noMarker());
+
+      await mod.nativeCallBridge.wire(callService);
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(callService.answerCall).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("holds the replay right up to the TTL", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const callService = freshService();
+      const mod = await loadBridge(
+        markerAged(PENDING_MARKER_ROOM_TTL_MS - 5_000),
+        noMarker(),
+      );
+
+      await mod.nativeCallBridge.wire(callService);
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(callService.answerCall).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps seeding the marker, so an exact callId can still be consumed", async () => {
+    // The replay is speculative and gets aged out; an exact callId match is not
+    // ambiguous and stays valid whatever its age.
+    const stale = vi.fn().mockResolvedValue({
+      callId: MATRIX_CALL_ID,
+      roomId: ROOM,
+      atMs: Date.now() - 10 * 60_000,
+    });
+    const mod = await loadBridge(stale, noMarker());
+    await mod.nativeCallBridge.wire({
+      answerCall: vi.fn(),
+      rejectCall: vi.fn(),
+      hangup: vi.fn(),
+    });
+    stale.mockResolvedValue({ callId: null, roomId: null, atMs: 0 });
+
+    await expect(mod.consumePendingAnswerCallId(MATRIX_CALL_ID, ROOM)).resolves.toBe(true);
+  });
+});
+
+describe("the queued-answer waiter", () => {
+  const OTHER_CALL_ID = "1788984290557dSfOceinVzLEuz9Z";
+  const freshService = () => ({
+    answerCall: vi.fn(),
+    rejectCall: vi.fn(),
+    hangup: vi.fn(),
+  });
+
+  it("does not adopt a different call from the same room", async () => {
+    // A marker written by CallConnection.onAnswer carries the real Matrix
+    // callId, so the room fallback buys nothing and can only mis-fire.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const callService = freshService();
+      const listeners: NativeListeners = {};
+      const mod = await loadBridge(noMarker(), noMarker(), {
+        listeners,
+        matrixCall: { callId: OTHER_CALL_ID, roomId: ROOM },
+      });
+      await mod.nativeCallBridge.wire(callService);
+
+      listeners.callAnswered({ callId: MATRIX_CALL_ID, roomId: ROOM });
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(callService.answerCall).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the room fallback for a push id, which can never match by callId", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const callService = freshService();
+      const listeners: NativeListeners = {};
+      const mod = await loadBridge(noMarker(), noMarker(), {
+        listeners,
+        matrixCall: { callId: OTHER_CALL_ID, roomId: ROOM },
+      });
+      await mod.nativeCallBridge.wire(callService);
+
+      listeners.callAnswered({ callId: PUSH_EVENT_ID, roomId: ROOM });
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(callService.answerCall).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets a newer wait supersede an older one", async () => {
+    // Nothing used to stop a wait: no handle was kept and neither answering nor
+    // hanging up cancelled it, so one armed for call A polled for a full 30 s
+    // and could still fire on call B.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const callService = freshService();
+      const listeners: NativeListeners = {};
+      const mod = await loadBridge(noMarker(), noMarker(), {
+        listeners,
+        matrixCall: { callId: PUSH_EVENT_ID, roomId: ROOM },
+      });
+      await mod.nativeCallBridge.wire(callService);
+
+      listeners.callAnswered({ callId: PUSH_EVENT_ID, roomId: ROOM });
+      listeners.callAnswered({ callId: PUSH_EVENT_ID, roomId: ROOM });
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(callService.answerCall).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("the room fallback inside a running wait", () => {
+  const OTHER_CALL_ID = "1788984290557dSfOceinVzLEuz9Z";
+
+  // The wait runs 30 s and the marker may already be nearly a minute old when
+  // it arms, so checking freshness only at arm time still leaves a window in
+  // which a redial into the same room gets adopted. Bounding the fallback by
+  // the marker's own age closes it at one invite lifetime from the user's tap.
+  it("stops matching by room once the marker ages out mid-poll", async () => {
+    // Everything stays inside RECOVERY_GRACE_MS (2 s): past it the tick enters
+    // the invite-recovery pass, which needs the Matrix client this harness does
+    // not mock, and the poll would stall there instead of proving anything.
+    const nearlyStale = markerAged(PENDING_MARKER_ROOM_TTL_MS - 500);
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      const callService = { answerCall: vi.fn(), rejectCall: vi.fn(), hangup: vi.fn() };
+      let live: { callId: string; roomId: string } | null = null;
+      const mod = await loadBridge(nearlyStale, noMarker(), { matrixCall: () => live });
+
+      await mod.nativeCallBridge.wire(callService);
+      // Fresh enough to arm, but nothing in the room yet.
+      await vi.advanceTimersByTimeAsync(400);
+      expect(callService.answerCall).not.toHaveBeenCalled();
+
+      // Past the marker's lifetime now. A call showing up in that room is a
+      // different call, and must not be adopted.
+      await vi.advanceTimersByTimeAsync(400);
+      live = { callId: OTHER_CALL_ID, roomId: ROOM };
+      await vi.advanceTimersByTimeAsync(900);
+
+      expect(callService.answerCall).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still adopts one while the marker is fresh, which is the cold-start case", async () => {
+    const fresh = markerAged(3_000);
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      const callService = { answerCall: vi.fn(), rejectCall: vi.fn(), hangup: vi.fn() };
+      let live: { callId: string; roomId: string } | null = null;
+      const mod = await loadBridge(fresh, noMarker(), { matrixCall: () => live });
+
+      await mod.nativeCallBridge.wire(callService);
+      await vi.advanceTimersByTimeAsync(400);
+      live = { callId: OTHER_CALL_ID, roomId: ROOM };
+      await vi.advanceTimersByTimeAsync(900);
+
+      expect(callService.answerCall).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
+  callIdNeedsRoomCorrelation,
   matchesPendingCallMarker,
+  pendingCallMarkerIsFresh,
   pendingCallMarkerOf,
   PENDING_MARKER_ROOM_TTL_MS,
 } from "./pending-call-marker";
@@ -202,5 +204,59 @@ describe("pendingCallMarkerOf", () => {
     expect(matchesPendingCallMarker(next!, { callId: "call-c", roomId: ROOM, now: NOW })).toBe(
       false,
     );
+  });
+});
+
+describe("pendingCallMarkerIsFresh", () => {
+  const at = (atMs: number | null | undefined) => ({
+    callId: "call-a",
+    roomId: ROOM,
+    atMs,
+  });
+
+  it("accepts a marker written moments ago", () => {
+    expect(pendingCallMarkerIsFresh(at(NOW - 3_000), NOW)).toBe(true);
+  });
+
+  it("holds right up to the TTL and refuses one tick past it", () => {
+    expect(pendingCallMarkerIsFresh(at(NOW - PENDING_MARKER_ROOM_TTL_MS + 1), NOW)).toBe(true);
+    expect(pendingCallMarkerIsFresh(at(NOW - PENDING_MARKER_ROOM_TTL_MS), NOW)).toBe(false);
+  });
+
+  it("refuses the 141-second-old marker from the Samsung swipe-away repro", () => {
+    expect(pendingCallMarkerIsFresh(at(NOW - 141_000), NOW)).toBe(false);
+  });
+
+  it("keeps the un-aged behaviour when the platform reports no write time", () => {
+    // iOS derives markers from live CallKit state and has no stored stamp.
+    expect(pendingCallMarkerIsFresh(at(null), NOW)).toBe(true);
+    expect(pendingCallMarkerIsFresh(at(undefined), NOW)).toBe(true);
+  });
+
+  it("fails closed on a missing or corrupt stamp", () => {
+    // Android always writes one, so 0 means something went wrong.
+    expect(pendingCallMarkerIsFresh(at(0), NOW)).toBe(false);
+    expect(pendingCallMarkerIsFresh(at(-1), NOW)).toBe(false);
+  });
+
+  it("fails closed when the clock moved backwards between the two reads", () => {
+    expect(pendingCallMarkerIsFresh(at(NOW + 5_000), NOW)).toBe(false);
+  });
+});
+
+describe("callIdNeedsRoomCorrelation", () => {
+  it("says yes for a push id, which never equals a Matrix callId", () => {
+    // The homeserver fills the push's call_id with the event_id.
+    expect(callIdNeedsRoomCorrelation("$ZM8kQ5-push-event-id")).toBe(true);
+  });
+
+  it("says no for a real Matrix callId, which compares directly", () => {
+    expect(callIdNeedsRoomCorrelation("17889559802696wWSVJYT0cFnIWQt")).toBe(false);
+  });
+
+  it("treats an absent id as uncomparable, like CallSlotPolicy does", () => {
+    expect(callIdNeedsRoomCorrelation("")).toBe(true);
+    expect(callIdNeedsRoomCorrelation(null)).toBe(true);
+    expect(callIdNeedsRoomCorrelation(undefined)).toBe(true);
   });
 });

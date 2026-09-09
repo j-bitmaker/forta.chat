@@ -92,6 +92,24 @@ export function matchesPendingCallMarker(
     return false;
   }
 
+  return pendingCallMarkerIsFresh(marker, target.now);
+}
+
+/**
+ * True while the marker is young enough that a live invite could still belong
+ * to it.
+ *
+ * Split out of {@link matchesPendingCallMarker} because the same question is
+ * asked in a second place with no target to match against: `wire()` replays
+ * whatever marker native still holds, and a replay is speculative by nature —
+ * there is no invite in hand to compare ids with. A marker older than one
+ * invite lifetime cannot belong to any call worth answering, because the SDK
+ * has already expired the invite itself.
+ */
+export function pendingCallMarkerIsFresh(
+  marker: PendingCallMarker,
+  now?: number,
+): boolean {
   const { atMs } = marker;
   // Platform cannot report a write time (iOS): behave as before.
   if (atMs === null || atMs === undefined) return true;
@@ -103,6 +121,32 @@ export function matchesPendingCallMarker(
   // the two makes the age negative. Fail closed: a negative age means the
   // stamp cannot be trusted, and trusting it would restore exactly the
   // unbounded matching this guard exists to prevent.
-  const age = (target.now ?? Date.now()) - atMs;
+  const age = (now ?? Date.now()) - atMs;
   return age >= 0 && age < PENDING_MARKER_ROOM_TTL_MS;
+}
+
+/**
+ * Matrix event ids start with `$` and never equal a Matrix call_id — the JS
+ * twin of `CallSlotPolicy.EVENT_ID_PREFIX` in the Android sources. Keep the
+ * two in step.
+ */
+const EVENT_ID_PREFIX = "$";
+
+/**
+ * True when a marker's callId cannot be compared with the SDK's `call.callId`,
+ * so the room is the only correlator available.
+ *
+ * A connection created from a push carries the push's `call_id` — which this
+ * homeserver fills with the event_id — so the room fallback is the whole
+ * reason cold-start-from-push works. A marker written by `CallConnection.
+ * onAnswer` already holds the real Matrix callId, and widening it to the room
+ * only ever lets it claim a different call: that is how an answer meant for a
+ * call at 23:02 picked up an unrelated one at 23:04. Empty counts as
+ * uncomparable for the same reason `CallSlotPolicy.owns` treats an empty slot
+ * id as unkeyed.
+ */
+export function callIdNeedsRoomCorrelation(
+  callId: string | null | undefined,
+): boolean {
+  return !callId || callId.startsWith(EVENT_ID_PREFIX);
 }
