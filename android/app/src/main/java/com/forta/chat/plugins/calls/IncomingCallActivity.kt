@@ -380,7 +380,7 @@ class IncomingCallActivity : Activity() {
         // Notify Telecom / JS listener that user tapped Answer. One of
         // two paths fires depending on whether the app process is alive:
         //   - connection.onAnswer() → invokes onAnswered callback (wired
-        //     by CallPlugin.load) or queues pendingAnswerCallId for JS
+        //     by CallPlugin.load) or queues the pending-answer marker for JS
         //     to pick up later via getPendingAnswer.
         //   - CallConnection.onAnswered direct invoke as fallback when
         //     we bypassed Telecom.
@@ -406,12 +406,9 @@ class IncomingCallActivity : Activity() {
         // the push-side call_id doesn't match the Matrix call.callId,
         // so the roomId in particular must be present.
         val roomIdForPending = intent.getStringExtra("roomId")
-        if (CallConnection.pendingAnswerCallId.isNullOrEmpty()) {
-            CallConnection.pendingAnswerCallId = callId
-        }
-        if (CallConnection.pendingAnswerRoomId.isNullOrEmpty()) {
-            CallConnection.pendingAnswerRoomId = roomIdForPending
-        }
+        CallConnection.seedPendingAnswerIfEmpty(
+            PendingCallMarker.of(callId, roomIdForPending, System.currentTimeMillis()),
+        )
 
         // Launch MainActivity in the FOREGROUND so Capacitor's WebView
         // becomes the resumed activity. Android pauses and eventually
@@ -486,14 +483,10 @@ class IncomingCallActivity : Activity() {
 
         // Defence-in-depth: clear accept markers (we're declining, not
         // accepting) and set reject markers if Telecom path was bypassed.
-        CallConnection.pendingAnswerCallId = null
-        CallConnection.pendingAnswerRoomId = null
-        if (CallConnection.pendingRejectCallId.isNullOrEmpty()) {
-            CallConnection.pendingRejectCallId = callId
-        }
-        if (CallConnection.pendingRejectRoomId.isNullOrEmpty()) {
-            CallConnection.pendingRejectRoomId = roomIdForPending
-        }
+        CallConnection.pendingAnswer = PendingCallMarker.NONE
+        CallConnection.seedPendingRejectIfEmpty(
+            PendingCallMarker.of(callId, roomIdForPending, System.currentTimeMillis()),
+        )
 
         // Boot the app (in the same way as Accept) so JS can actually
         // send m.call.reject to Matrix once the invite is delivered via
@@ -527,8 +520,7 @@ class IncomingCallActivity : Activity() {
         cleanup()
         // Clear accept markers so a stale invite can't re-trigger
         // the JS fast-path after the caller has cancelled.
-        CallConnection.pendingAnswerCallId = null
-        CallConnection.pendingAnswerRoomId = null
+        CallConnection.pendingAnswer = PendingCallMarker.NONE
         CallConnectionService.dismissIncomingCallNotification(this)
         intent.getStringExtra("roomId")?.let { rId ->
             FortaFirebaseMessagingService.dismissPushCallNotification(this, rId)

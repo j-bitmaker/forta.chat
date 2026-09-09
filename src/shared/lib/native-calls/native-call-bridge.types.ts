@@ -82,13 +82,27 @@ export interface NativeCallNativePlugin {
    * payload's call_id is often the event_id (not Matrix's content.
    * call_id), so room is the reliable correlation key.
    */
-  getPendingAnswer(): Promise<{ callId: string | null; roomId: string | null }>;
+  getPendingAnswer(): Promise<{
+    callId: string | null;
+    roomId: string | null;
+    /**
+     * Wall-clock ms when native wrote the marker, 0 when there is none.
+     * Absent on iOS, whose adapter reads live CallKit state instead of a
+     * stored marker. See `matchesPendingCallMarker`.
+     */
+    atMs?: number | null;
+  }>;
   /**
    * Check if user tapped Decline before JS was ready. Symmetric to
    * getPendingAnswer — JS consumer calls matrixCall.reject() when the
    * SDK later delivers the invite so the caller stops ringing.
    */
-  getPendingReject(): Promise<{ callId: string | null; roomId: string | null }>;
+  getPendingReject(): Promise<{
+    callId: string | null;
+    roomId: string | null;
+    /** See `getPendingAnswer`. */
+    atMs?: number | null;
+  }>;
   reportOutgoingCall(options: {
     callId: string;
     callerName: string;

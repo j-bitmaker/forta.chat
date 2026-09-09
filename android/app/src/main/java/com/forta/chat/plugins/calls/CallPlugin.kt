@@ -73,8 +73,11 @@ class CallPlugin : Plugin() {
                 // the push event_id in place of the Matrix content.call_id,
                 // so JS can't correlate by callId alone. By the time this
                 // callback fires CallConnection.onAnswer has already set
-                // pendingAnswerRoomId, so read it here.
-                put("roomId", CallConnection.pendingAnswerRoomId ?: "")
+                // the pending-answer marker's room, so read it here. A plain
+                // read, not a take: onAnswer wrote this marker two statements
+                // ago on this same thread, and getPendingAnswer consumes it
+                // separately for the cold-start path.
+                put("roomId", CallConnection.pendingAnswer.roomId ?: "")
             })
         }
         CallConnection.onRejected = { callId ->
@@ -706,25 +709,26 @@ class CallPlugin : Plugin() {
 
     @PluginMethod
     fun getPendingAnswer(call: PluginCall) {
-        val pendingCallId = CallConnection.pendingAnswerCallId
-        val pendingRoomId = CallConnection.pendingAnswerRoomId
-        CallConnection.pendingAnswerCallId = null
-        CallConnection.pendingAnswerRoomId = null
+        // One atomic read-and-clear: the three parts can never be mixed
+        // across calls, and a write landing right now is not lost.
+        val marker = CallConnection.takePendingAnswer()
         val ret = com.getcapacitor.JSObject()
-        ret.put("callId", pendingCallId)
-        ret.put("roomId", pendingRoomId)
+        ret.put("callId", marker.callId)
+        ret.put("roomId", marker.roomId)
+        // Lets the JS matcher refuse a room-scoped marker older than an
+        // invite lifetime, which would otherwise hit an unrelated later call.
+        ret.put("atMs", marker.atMs)
         call.resolve(ret)
     }
 
     @PluginMethod
     fun getPendingReject(call: PluginCall) {
-        val pendingCallId = CallConnection.pendingRejectCallId
-        val pendingRoomId = CallConnection.pendingRejectRoomId
-        CallConnection.pendingRejectCallId = null
-        CallConnection.pendingRejectRoomId = null
+        // See getPendingAnswer — one atomic read-and-clear.
+        val marker = CallConnection.takePendingReject()
         val ret = com.getcapacitor.JSObject()
-        ret.put("callId", pendingCallId)
-        ret.put("roomId", pendingRoomId)
+        ret.put("callId", marker.callId)
+        ret.put("roomId", marker.roomId)
+        ret.put("atMs", marker.atMs)
         call.resolve(ret)
     }
 }

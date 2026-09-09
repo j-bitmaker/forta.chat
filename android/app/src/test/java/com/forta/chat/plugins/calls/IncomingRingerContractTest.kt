@@ -106,7 +106,7 @@ class IncomingRingerContractTest {
         val body = functionBody(activity, "private\\s+fun\\s+decline\\s*\\(")
         val stop = body.indexOf("val wasRinging = IncomingRinger.stop(callId)")
         val gate = body.indexOf("if (!wasRinging && established)")
-        val markers = body.indexOf("CallConnection.pendingRejectCallId = callId")
+        val markers = body.indexOf("CallConnection.seedPendingRejectIfEmpty(")
         assertTrue("decline must ask the ringer whether the call still rings:\n$body", stop >= 0)
         assertTrue("the gate must sit before the reject markers:\n$body", gate in (stop + 1) until markers)
         assertTrue("an established call must be spared:\n$body",

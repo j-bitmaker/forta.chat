@@ -2,6 +2,8 @@ import { registerPlugin } from '@capacitor/core';
 import { isAndroid, isIOS, isNative } from '@/shared/lib/platform';
 import { NativeWebRTC } from '@/shared/lib/native-webrtc/native-webrtc-bridge';
 import { isInviteEventExpired } from './invite-ttl';
+import { matchesPendingCallMarker, pendingCallMarkerOf } from './pending-call-marker';
+import type { PendingCallMarker } from './pending-call-marker';
 import type {
   AudioProbeResult,
   AudioTimelineEntry,
@@ -56,8 +58,22 @@ const NativeCall: NativeCallNativePlugin = isIOS
  * if the user tapped Answer on ANY incoming ringer for room R, then
  * the first MatrixCall we receive for room R is the one they accepted.
  */
-let pendingAnswerCallId: string | null = null;
-let pendingAnswerRoomId: string | null = null;
+let pendingAnswer: PendingCallMarker | null = null;
+
+/**
+ * What to assume when the platform hands back a marker with no write time.
+ *
+ * iOS has none to give — its adapter reads live CallKit state instead of a
+ * stored marker — and `null` keeps the un-aged behaviour there. On Android
+ * the stamp is always written, so its absence means something is wrong; 0
+ * makes `matchesPendingCallMarker` refuse the roomId fallback rather than
+ * silently fall back to matching for ever. (JS and the Kotlin plugin ship
+ * inside one APK, so they cannot drift apart in practice — this is a
+ * belt-and-braces default, not a compatibility shim.)
+ */
+function missingStamp(): number | null {
+  return isAndroid ? 0 : null;
+}
 
 /**
  * Decide whether the given Matrix call is the one the user already
@@ -83,25 +99,23 @@ export async function consumePendingAnswerCallId(
   callId: string,
   roomId?: string,
 ): Promise<boolean> {
-  const matchAndClear = (mCall: string | null, mRoom: string | null): boolean => {
-    if (mCall && mCall === callId) {
-      pendingAnswerCallId = null;
-      pendingAnswerRoomId = null;
-      return true;
-    }
-    if (mRoom && roomId && mRoom === roomId) {
-      pendingAnswerCallId = null;
-      pendingAnswerRoomId = null;
-      return true;
-    }
-    return false;
+  const matchAndClear = (marker: PendingCallMarker | null): boolean => {
+    if (!marker || !matchesPendingCallMarker(marker, { callId, roomId })) return false;
+    pendingAnswer = null;
+    return true;
   };
 
-  if (matchAndClear(pendingAnswerCallId, pendingAnswerRoomId)) return true;
+  if (matchAndClear(pendingAnswer)) return true;
   if (!isNative) return false;
   try {
-    const { callId: nativeCall, roomId: nativeRoom } = await NativeCall.getPendingAnswer();
-    if (matchAndClear(nativeCall ?? null, nativeRoom ?? null)) return true;
+    const {
+      callId: nativeCall,
+      roomId: nativeRoom,
+      atMs: nativeAt,
+    } = await NativeCall.getPendingAnswer();
+    if (matchAndClear(pendingCallMarkerOf(nativeCall, nativeRoom, nativeAt ?? missingStamp()))) {
+      return true;
+    }
   } catch (e) {
     console.warn('[NativeCallBridge] consumePendingAnswerCallId peek failed:', e);
   }
@@ -109,38 +123,35 @@ export async function consumePendingAnswerCallId(
 }
 
 /**
- * Symmetric to pendingAnswerCallId/RoomId but for the Decline path.
+ * Symmetric to the pending-answer marker but for the Decline path.
  * Populated from CallConnection.onReject in Kotlin when the user taps
  * Decline in the native ringer, consumed by handleIncomingCall so the
  * matrixCall can be rejected back to Matrix (the caller otherwise keeps
  * ringing until their lifetime timeout).
  */
-let pendingRejectCallId: string | null = null;
-let pendingRejectRoomId: string | null = null;
+let pendingReject: PendingCallMarker | null = null;
 
 export async function consumePendingRejectCallId(
   callId: string,
   roomId?: string,
 ): Promise<boolean> {
-  const matchAndClear = (mCall: string | null, mRoom: string | null): boolean => {
-    if (mCall && mCall === callId) {
-      pendingRejectCallId = null;
-      pendingRejectRoomId = null;
-      return true;
-    }
-    if (mRoom && roomId && mRoom === roomId) {
-      pendingRejectCallId = null;
-      pendingRejectRoomId = null;
-      return true;
-    }
-    return false;
+  const matchAndClear = (marker: PendingCallMarker | null): boolean => {
+    if (!marker || !matchesPendingCallMarker(marker, { callId, roomId })) return false;
+    pendingReject = null;
+    return true;
   };
 
-  if (matchAndClear(pendingRejectCallId, pendingRejectRoomId)) return true;
+  if (matchAndClear(pendingReject)) return true;
   if (!isNative) return false;
   try {
-    const { callId: nativeCall, roomId: nativeRoom } = await NativeCall.getPendingReject();
-    if (matchAndClear(nativeCall ?? null, nativeRoom ?? null)) return true;
+    const {
+      callId: nativeCall,
+      roomId: nativeRoom,
+      atMs: nativeAt,
+    } = await NativeCall.getPendingReject();
+    if (matchAndClear(pendingCallMarkerOf(nativeCall, nativeRoom, nativeAt ?? missingStamp()))) {
+      return true;
+    }
   } catch (e) {
     console.warn('[NativeCallBridge] consumePendingRejectCallId peek failed:', e);
   }
@@ -179,8 +190,11 @@ class NativeCallBridge {
       // the push payload's call_id is actually the event_id — it will
       // NEVER match the Matrix SDK's call.callId. The roomId fallback
       // is how we correlate the pending accept with the MatrixCall.
-      pendingAnswerCallId = callId;
-      if (roomId) pendingAnswerRoomId = roomId;
+      // Assigned whole: this event names one call, so its room travels with
+      // its id. Keeping a previous call's room here and re-stamping it is
+      // exactly how a stale marker used to swallow an unrelated later call.
+      // Written on this side rather than natively, hence the local clock.
+      pendingAnswer = pendingCallMarkerOf(callId, roomId, Date.now());
       this.waitForMatrixCallAndAnswer(callId, roomId);
     });
 
@@ -213,11 +227,18 @@ class NativeCallBridge {
     // it never matches we just bail out — the auto-reject-after-30s
     // logic on the other side will take care of the caller's UI.
     try {
-      const { callId: pendingCallId, roomId: pendingRoomId } = await NativeCall.getPendingAnswer();
+      const {
+        callId: pendingCallId,
+        roomId: pendingRoomId,
+        atMs: pendingAtMs,
+      } = await NativeCall.getPendingAnswer();
       if (pendingCallId) {
         console.log('[NativeCallBridge] Pending answer queued, waiting for matrixCall:', pendingCallId, 'room:', pendingRoomId);
-        pendingAnswerCallId = pendingCallId;
-        if (pendingRoomId) pendingAnswerRoomId = pendingRoomId;
+        pendingAnswer = pendingCallMarkerOf(
+          pendingCallId,
+          pendingRoomId,
+          pendingAtMs ?? missingStamp(),
+        );
         this.waitForMatrixCallAndAnswer(pendingCallId, pendingRoomId ?? undefined);
       }
     } catch (e) {
@@ -231,11 +252,18 @@ class NativeCallBridge {
     // delivers the invite via /sync) can call matrixCall.reject() and
     // the caller stops ringing.
     try {
-      const { callId: rejectCallId, roomId: rejectRoomId } = await NativeCall.getPendingReject();
+      const {
+        callId: rejectCallId,
+        roomId: rejectRoomId,
+        atMs: rejectAtMs,
+      } = await NativeCall.getPendingReject();
       if (rejectCallId || rejectRoomId) {
         console.log('[NativeCallBridge] Pending reject queued:', rejectCallId, 'room:', rejectRoomId);
-        pendingRejectCallId = rejectCallId;
-        pendingRejectRoomId = rejectRoomId;
+        pendingReject = pendingCallMarkerOf(
+          rejectCallId,
+          rejectRoomId,
+          rejectAtMs ?? missingStamp(),
+        );
       }
     } catch (e) {
       console.warn('[NativeCallBridge] getPendingReject failed:', e);

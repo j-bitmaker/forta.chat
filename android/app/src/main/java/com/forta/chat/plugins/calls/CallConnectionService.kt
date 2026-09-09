@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import java.util.concurrent.atomic.AtomicReference
 import android.telecom.*
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -375,37 +376,53 @@ class CallConnection(
         var onEnded: ((String) -> Unit)? = null
 
         /**
-         * Queued answer callId — set when user taps "Answer" before JS listener
-         * is wired. JS side checks and replays this on wire().
+         * "The user answered / declined before JS was running" markers, read
+         * once by CallPlugin.getPendingAnswer / getPendingReject.
          *
-         * Note: the push payload from pocketnet's Matrix homeserver does
-         * NOT include the Matrix `content.call_id`, so the value stored
-         * here is really the push `event_id` — different from the call
-         * id the JS-side SDK will later see on the MatrixCall object.
-         * Consumers should also match by room (pendingAnswerRoomId
-         * below) to reliably correlate.
+         * Written from the main thread (Telecom callbacks, IncomingCallActivity)
+         * and read from Capacitor's plugin thread, exactly like
+         * [currentConnection] above — hence the atomic holders. They also have
+         * to move as a unit: the callId and roomId name one call, and the JS
+         * matcher ages the room-scoped branch out by the write time, so a
+         * half-updated pair could offer a stale room as freshly marked. See
+         * [PendingCallMarker].
+         *
+         * Note the id stored here is really the push `event_id` — pocketnet's
+         * homeserver does not put Matrix's `content.call_id` in the payload —
+         * so the JS consumer correlates by room too.
          */
-        var pendingAnswerCallId: String? = null
+        private val pendingAnswerRef = AtomicReference(PendingCallMarker.NONE)
+        private val pendingRejectRef = AtomicReference(PendingCallMarker.NONE)
+
+        var pendingAnswer: PendingCallMarker
+            get() = pendingAnswerRef.get()
+            set(value) = pendingAnswerRef.set(value)
+
+        var pendingReject: PendingCallMarker
+            get() = pendingRejectRef.get()
+            set(value) = pendingRejectRef.set(value)
+
+        /** Reads the marker and clears it in one step, so a concurrent write cannot be lost. */
+        fun takePendingAnswer(): PendingCallMarker =
+            pendingAnswerRef.getAndSet(PendingCallMarker.NONE)
+
+        /** @see takePendingAnswer */
+        fun takePendingReject(): PendingCallMarker =
+            pendingRejectRef.getAndSet(PendingCallMarker.NONE)
 
         /**
-         * Matrix room id the user tapped "Answer" on — set ONLY inside
-         * CallConnection.onAnswer() so Decline and other paths never
-         * trigger the JS-side fast-path auto-answer. JS consumer treats
-         * the presence of this marker as "user already accepted a call
-         * in room R, next incoming MatrixCall for R is that one".
+         * Belt-and-braces write for the paths where Telecom never ran (a region
+         * that rate-limits addNewIncomingCall, say): fills the marker in only
+         * when the authoritative path left none.
          */
-        var pendingAnswerRoomId: String? = null
+        fun seedPendingAnswerIfEmpty(marker: PendingCallMarker) {
+            pendingAnswerRef.updateAndGet { if (it.isEmpty) marker else it }
+        }
 
-        /**
-         * Set when user taps Decline before JS is running. Symmetric to
-         * pendingAnswerCallId/RoomId. When JS boots it reads both via
-         * NativeCall.getPendingReject, and when Matrix finally delivers
-         * the invite for this room the handler calls `matrixCall.reject()`
-         * so the caller actually gets our rejection signal — otherwise
-         * the caller keeps ringing until their own timeout.
-         */
-        var pendingRejectCallId: String? = null
-        var pendingRejectRoomId: String? = null
+        /** @see seedPendingAnswerIfEmpty */
+        fun seedPendingRejectIfEmpty(marker: PendingCallMarker) {
+            pendingRejectRef.updateAndGet { if (it.isEmpty) marker else it }
+        }
 
         /**
          * Backstop for a connection nobody ever resolves. Longer than the 30 s
@@ -506,10 +523,7 @@ class CallConnection(
         // Connection — otherwise Decline and a plain push delivery
         // would also set them and JS would fast-path into an in-call
         // screen the user never asked for.
-        pendingAnswerCallId = callId
-        if (roomId.isNotEmpty()) {
-            pendingAnswerRoomId = roomId
-        }
+        pendingAnswer = PendingCallMarker.of(callId, roomId, System.currentTimeMillis())
         if (onAnswered != null) {
             onAnswered?.invoke(callId)
         } else {
@@ -551,8 +565,7 @@ class CallConnection(
         // reject from reaching JS.
         runCatching { CallTeardown.endCall(context, CallTeardownPolicy.Reason.REJECT, callId) }
             .onFailure { Log.w("CallConnection", "teardown after reject threw", it) }
-        pendingRejectCallId = callId
-        if (roomId.isNotEmpty()) pendingRejectRoomId = roomId
+        pendingReject = PendingCallMarker.of(callId, roomId, System.currentTimeMillis())
         onRejected?.invoke(callId)
     }
 
@@ -587,7 +600,11 @@ class CallConnection(
     }
 
     private fun clearPendingFor(cid: String, rid: String) {
-        if (pendingAnswerCallId == cid) pendingAnswerCallId = null
-        if (rid.isNotEmpty() && pendingAnswerRoomId == rid) pendingAnswerRoomId = null
+        // Answer markers only, as before: we are declining, so a pending
+        // accept for this call must go, while a pending reject is the thing
+        // being recorded. Either key identifies the call, so a match on one
+        // drops the marker whole — clearing just the matching half used to
+        // strand the other.
+        pendingAnswerRef.updateAndGet { it.clearedFor(cid, rid) }
     }
 }
