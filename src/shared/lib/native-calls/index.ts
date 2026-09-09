@@ -2,6 +2,7 @@ export {
   nativeCallBridge,
   consumePendingAnswerCallId,
   consumePendingRejectCallId,
+  retirePendingMarkers,
 } from './native-call-bridge';
 export type {
   AudioProbeResult,

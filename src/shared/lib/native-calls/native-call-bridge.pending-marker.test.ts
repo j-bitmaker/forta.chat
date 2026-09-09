@@ -25,7 +25,15 @@ const android = {
   currentPlatform: 'android' as const,
 };
 
-async function loadBridge(answer: Mock, reject: Mock) {
+type NativeListeners = Record<string, (payload: { callId: string; roomId?: string }) => void>;
+
+interface BridgeMocks {
+  /** Captures the handlers wire() registers, so a test can fire one. */
+  listeners?: NativeListeners;
+  retirePendingMarkers?: Mock;
+}
+
+async function loadBridge(answer: Mock, reject: Mock, mocks: BridgeMocks = {}) {
   vi.resetModules();
   vi.doMock('@capacitor/core', () => ({
     registerPlugin: (name: string) => {
@@ -33,12 +41,23 @@ async function loadBridge(answer: Mock, reject: Mock) {
         return {
           getPendingAnswer: answer,
           getPendingReject: reject,
-          addListener: vi.fn().mockResolvedValue({ remove: vi.fn() }),
+          retirePendingMarkers:
+            mocks.retirePendingMarkers ?? vi.fn().mockResolvedValue(undefined),
+          addListener: vi.fn((event: string, handler: (p: { callId: string }) => void) => {
+            if (mocks.listeners) mocks.listeners[event] = handler;
+            return Promise.resolve({ remove: vi.fn() });
+          }),
           requestAudioPermission: vi.fn().mockResolvedValue({ granted: true }),
+          ensureIncomingCallVisible: vi.fn().mockResolvedValue(undefined),
         };
       }
       return new Proxy({}, { get: () => vi.fn().mockResolvedValue({}) });
     },
+  }));
+  // The callAnswered listener kicks off a poll for the MatrixCall; give it
+  // one that matches so the poll finishes on its first tick.
+  vi.doMock('@/entities/call', () => ({
+    useCallStore: () => ({ matrixCall: { callId: MATRIX_CALL_ID, roomId: ROOM } }),
   }));
   vi.doMock('@/shared/lib/platform', () => android);
   vi.doMock('@/shared/lib/native-webrtc/native-webrtc-bridge', () => ({
@@ -136,6 +155,159 @@ describe('markers seeded by wire()', () => {
     fresh.mockResolvedValue({ callId: null, roomId: null, atMs: 0 });
 
     await expect(mod.consumePendingRejectCallId(MATRIX_CALL_ID, ROOM)).resolves.toBe(true);
+  });
+});
+
+describe('markers retire with the call they belong to', () => {
+  const callService = { answerCall: vi.fn(), rejectCall: vi.fn(), hangup: vi.fn() };
+
+  /** What handleIncomingCall does: tell native about a call JS now knows. */
+  const seen = (mod: Awaited<ReturnType<typeof loadBridge>>, callId: string) =>
+    mod.nativeCallBridge.ensureIncomingCallVisible({
+      callId,
+      callerName: 'test3823818',
+      roomId: ROOM,
+      hasVideo: false,
+    });
+
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+  it('stops a finished call from auto-answering the redial', async () => {
+    // The device owner's own report on the bench: «я не снимал трубку — она
+    // сама снялась». A live answer writes the marker, nothing retired it, and
+    // the next call from that room took handleIncomingCall's fast path —
+    // answered with no ringer and no tap, opening the mic unattended.
+    const listeners: NativeListeners = {};
+    const mod = await loadBridge(noMarker(), noMarker(), { listeners });
+    await mod.nativeCallBridge.wire(callService);
+    listeners.callAnswered({ callId: MATRIX_CALL_ID, roomId: ROOM });
+
+    await mod.retirePendingMarkers(MATRIX_CALL_ID, ROOM);
+
+    await expect(mod.consumePendingAnswerCallId('1788970871478wZRHj3xutBX8VHfI', ROOM)).resolves.toBe(
+      false,
+    );
+  });
+
+  it('retires a marker the push path wrote under an event_id', async () => {
+    // The case callId-only scoping could not reach, and the one that matters
+    // most: a connection created from a push is keyed by the push's call_id,
+    // which this homeserver fills with the event_id. finalizeCall carries the
+    // Matrix callId, so the two never match and the room is the only shared
+    // key. Push is the primary ringer surface, so without this the retire
+    // would be inert exactly where the bug lives.
+    const fromPush = markerAged(2_000);
+    const mod = await loadBridge(noMarker(), fromPush);
+    await mod.nativeCallBridge.wire(callService);
+    fromPush.mockResolvedValue({ callId: null, roomId: null, atMs: 0 });
+    // /sync delivers the invite; handleIncomingCall tells native about it.
+    await seen(mod, MATRIX_CALL_ID);
+
+    await mod.retirePendingMarkers(MATRIX_CALL_ID, ROOM);
+
+    await expect(mod.consumePendingRejectCallId('a-later-call', ROOM)).resolves.toBe(false);
+  });
+
+  it('hands both keys to native so the marker native holds goes too', async () => {
+    const retire = vi.fn().mockResolvedValue(undefined);
+    const mod = await loadBridge(noMarker(), noMarker(), { retirePendingMarkers: retire });
+
+    await mod.retirePendingMarkers(MATRIX_CALL_ID, ROOM);
+
+    expect(retire).toHaveBeenCalledWith({ callId: MATRIX_CALL_ID, roomId: ROOM });
+  });
+
+  it('leaves a marker from another room alone', async () => {
+    // Matching by room is what makes the push path work; it must still not
+    // reach across rooms.
+    const listeners: NativeListeners = {};
+    const mod = await loadBridge(noMarker(), noMarker(), { listeners });
+    await mod.nativeCallBridge.wire(callService);
+    listeners.callAnswered({ callId: MATRIX_CALL_ID, roomId: ROOM });
+
+    await mod.retirePendingMarkers('some-other-call', '!elsewhere:matrix.pocketnet.app');
+
+    await expect(mod.consumePendingAnswerCallId(MATRIX_CALL_ID, ROOM)).resolves.toBe(true);
+  });
+
+  it('keeps a fresh marker that a newer call in the same room still needs', async () => {
+    // Telecom displaces a still-ringing connection for a same-room re-invite,
+    // so two calls in one room is a normal occurrence, not a contrivance.
+    // Finishing the older one must not erase the newer one's marker — that
+    // would strand the user's tap and reproduce the very symptom being fixed.
+    // Time cannot decide this: the marker is written when the user taps, which
+    // is often after JS already knew the call being finalized.
+    const listeners: NativeListeners = {};
+    const retire = vi.fn().mockResolvedValue(undefined);
+    const mod = await loadBridge(noMarker(), noMarker(), { listeners, retirePendingMarkers: retire });
+    await mod.nativeCallBridge.wire(callService);
+    await seen(mod, 'the-older-call');
+    await seen(mod, 'the-newer-call');
+    listeners.callAnswered({ callId: 'the-newer-call', roomId: ROOM });
+
+    await mod.retirePendingMarkers('the-older-call', ROOM);
+
+    // Native is not even asked to widen the retire to the room.
+    expect(retire).toHaveBeenCalledWith({ callId: 'the-older-call', roomId: undefined });
+    await expect(mod.consumePendingAnswerCallId('the-newer-call', ROOM)).resolves.toBe(true);
+  });
+
+  it('widens to the room again once the newer call is over too', async () => {
+    const listeners: NativeListeners = {};
+    const retire = vi.fn().mockResolvedValue(undefined);
+    const mod = await loadBridge(noMarker(), noMarker(), { listeners, retirePendingMarkers: retire });
+    await mod.nativeCallBridge.wire(callService);
+    await seen(mod, 'the-older-call');
+    await seen(mod, 'the-newer-call');
+
+    await mod.retirePendingMarkers('the-older-call', ROOM);
+    await mod.retirePendingMarkers('the-newer-call', ROOM);
+
+    expect(retire).toHaveBeenLastCalledWith({ callId: 'the-newer-call', roomId: ROOM });
+  });
+
+  it('makes an answer consume wait for a retire still crossing the bridge', async () => {
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const retire = vi.fn(() => gate.then(() => void order.push('retire')));
+    const mod = await loadBridge(markerAged(3_000), noMarker(), { retirePendingMarkers: retire });
+
+    const retiring = mod.retirePendingMarkers(MATRIX_CALL_ID, ROOM);
+    const consuming = mod
+      .consumePendingAnswerCallId('a-later-call', ROOM)
+      .then(() => void order.push('consume'));
+
+    release();
+    await Promise.all([retiring, consuming]);
+
+    expect(order).toEqual(['retire', 'consume']);
+  });
+
+  it('makes a consume wait for a retire still crossing the bridge', async () => {
+    // The native markers are read-and-clear, so a peek that overtook a retire
+    // in flight would consume a marker already meant to be gone. Nothing in
+    // Capacitor promises the two land in dispatch order, so the bridge orders
+    // them itself.
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const retire = vi.fn(() => gate.then(() => void order.push('retire')));
+    const mod = await loadBridge(noMarker(), markerAged(3_000), { retirePendingMarkers: retire });
+
+    const retiring = mod.retirePendingMarkers(MATRIX_CALL_ID, ROOM);
+    const consuming = mod
+      .consumePendingRejectCallId('a-later-call', ROOM)
+      .then(() => void order.push('consume'));
+
+    release();
+    await Promise.all([retiring, consuming]);
+
+    expect(order).toEqual(['retire', 'consume']);
   });
 });
 

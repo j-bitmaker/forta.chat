@@ -42,6 +42,38 @@ class PendingMarkerStampContractTest {
     }
 
     @Test
+    fun aFinishedCallRetiresBothOfItsMarkers() {
+        // A marker only carries a decision across a process that was not alive
+        // to act on it. Once JS finalizes the call it has acted, and anything
+        // left behind reaches the next invite from that room through the
+        // roomId fallback — auto-answering it or declining it unheard, both
+        // seen on the Samsung bench 2026-09-09.
+        val retire = functionBody(service, "fun\\s+retirePendingMarkersForCall\\s*\\(")
+        for (kind in listOf("Answer", "Reject")) {
+            assertTrue(
+                "a finished call must retire its pending$kind marker:\n$retire",
+                retire.contains("pending${kind}Ref.updateAndGet { it.clearedFor(callId, roomId) }"),
+            )
+        }
+        // The room half is what makes the push path work at all: a connection
+        // created from a push is keyed by an event_id that never equals the
+        // Matrix callId a finalize carries. Narrowing this back to the callId
+        // would make the retire inert on that path.
+        assertTrue(
+            "the retire must keep matching on the room:\n$retire",
+            !retire.contains("clearedFor(callId, null)"),
+        )
+
+        val method = functionBody(plugin, "fun\\s+retirePendingMarkers\\s*\\(")
+        assertTrue(
+            "CallPlugin must hand JS's callId and roomId through:\n$method",
+            method.contains("CallConnection.retirePendingMarkersForCall(") &&
+                method.contains("call.getString(\"callId\")") &&
+                method.contains("call.getString(\"roomId\")"),
+        )
+    }
+
+    @Test
     fun noLooseMarkerFieldsSurvive() {
         // Three separate vars are what let a call's id sit next to another
         // call's room; nothing may reintroduce them.

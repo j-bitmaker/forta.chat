@@ -503,7 +503,7 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
       // → closeAllPeerConnections) run in order with isolated error
       // handling so a leaked AudioRecord is always disposed.
       if (isNative) {
-        void finalizeCall("sdk-ended", call.callId);
+        void finalizeCall("sdk-ended", call.callId, call.roomId);
       }
       const activeCall = callStore.activeCall;
       if (activeCall) {
@@ -545,7 +545,7 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
     // for rejected-while-ringing cases. finalizeCall is idempotent per
     // callId so a follow-up onState→ended will be a no-op.
     if (isNative) {
-      void finalizeCall("sdk-ended", call.callId);
+      void finalizeCall("sdk-ended", call.callId, call.roomId);
     }
   }) as CallEventHandlerMap[CallEvent.Hangup];
 
@@ -566,7 +566,7 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
     // it so the camera/mic don't stay captured after the error.
     releaseLocalMedia(call);
     if (isNative) {
-      void finalizeCall("error", call.callId);
+      void finalizeCall("error", call.callId, call.roomId);
     }
     callStore.updateStatus(CallStatus.failed);
     const activeCall = callStore.activeCall;
@@ -1171,7 +1171,7 @@ export function useCallService() {
       // each step is idempotent on the native side, so calling it when
       // startAudioRouting never ran is just a no-op + one warn log.
       if (isNative) {
-        void finalizeCall("error", call.callId);
+        void finalizeCall("error", call.callId, call.roomId);
       }
     }
   }
@@ -1244,7 +1244,11 @@ export function useCallService() {
     if (callStore.hasLiveCall) {
       console.log("[call-service] handleIncomingCall: already in call, rejecting");
       // Deliberately NOT finalizeCall() here, unlike the expired-invite
-      // ("sdk-ended") bail-out later in this function:
+      // ("sdk-ended") bail-out later in this function. Skipping it also skips
+      // the pending-marker retire, which is fine only because Telecom answers
+      // a second incoming call with BUSY while one is established — no
+      // CallConnection is constructed, so no marker is ever written for it.
+      // Revisit this if busy-handling ever starts creating a connection:
       // finalize is global teardown (audio mode -> NORMAL, dismissCallUI,
       // closeAllPeerConnections), so running it for the *incoming* call would
       // hang up the conversation the user is currently having. FCM may already
@@ -1390,7 +1394,7 @@ export function useCallService() {
       // Pinia slot alone is invisible to native — the phone would keep ringing
       // for a call that is already over.
       unwireCallEvents();
-      if (isNative) void finalizeCall("sdk-ended", matrixCall.callId);
+      if (isNative) void finalizeCall("sdk-ended", matrixCall.callId, matrixCall.roomId);
       callStore.setMatrixCall(null);
       return;
     }
@@ -1562,7 +1566,7 @@ export function useCallService() {
       // startAudioRouting, but a previous accept attempt in this session
       // might have. finalizeCall is a no-op when nothing is set up yet.
       if (isNative) {
-        void finalizeCall("permission-denied", call.callId);
+        void finalizeCall("permission-denied", call.callId, call.roomId);
       }
       // Release the re-entry lock — the user may legitimately retry the
       // same call after granting the previously-denied permission, and
@@ -1603,7 +1607,7 @@ export function useCallService() {
       callStore.updateStatus(CallStatus.failed);
       callStore.scheduleClearCall(2000);
       if (isNative) {
-        void finalizeCall("watchdog-timeout", call.callId);
+        void finalizeCall("watchdog-timeout", call.callId, call.roomId);
       }
     }, CONNECTING_WATCHDOG_MS);
 
@@ -1653,7 +1657,7 @@ export function useCallService() {
       // also dismisses the native UI and disposes peer-connection media
       // so a leaked AudioRecord cannot lock the mic device-wide.
       if (isNative) {
-        void finalizeCall("error", call.callId);
+        void finalizeCall("error", call.callId, call.roomId);
       }
     }
     } finally {
@@ -1711,7 +1715,7 @@ export function useCallService() {
     // attempt. Idempotent on native side; safe even if the router never
     // started for an incoming call that began from ringing.
     if (isNative) {
-      void finalizeCall("reject", call.callId);
+      void finalizeCall("reject", call.callId, call.roomId);
     }
 
     // WEE-89: a call rejected after it acquired media (e.g. answered then
@@ -1758,7 +1762,7 @@ export function useCallService() {
     // delayed by 200-500ms while the SDK negotiates. Idempotent per
     // callId, so the follow-up Ended is a no-op.
     if (isNative) {
-      void finalizeCall("hangup", call.callId);
+      void finalizeCall("hangup", call.callId, call.roomId);
     }
 
     // WEE-89: stop local tracks immediately on user hangup so the browser's

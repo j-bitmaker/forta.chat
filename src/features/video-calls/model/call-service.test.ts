@@ -71,6 +71,7 @@ vi.mock('@/shared/lib/native-calls', () => ({
   },
   consumePendingAnswerCallId: vi.fn().mockResolvedValue(false),
   consumePendingRejectCallId: vi.fn().mockResolvedValue(false),
+  retirePendingMarkers: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Mock permissions — by default resolves ok; individual tests override via
@@ -1146,7 +1147,7 @@ describe('call-service permission flow', () => {
       service.hangup();
 
       expect(mockHangup).toHaveBeenCalledOnce();
-      expect(mockStopAudioRouting).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(mockStopAudioRouting).toHaveBeenCalledOnce());
     });
 
     it('calls stopAudioRouting on rejectCall', async () => {
@@ -1170,7 +1171,7 @@ describe('call-service permission flow', () => {
       service.rejectCall();
 
       expect(mockReject).toHaveBeenCalledOnce();
-      expect(mockStopAudioRouting).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(mockStopAudioRouting).toHaveBeenCalledOnce());
     });
 
     it('does not throw when stopAudioRouting fails', async () => {
@@ -1239,7 +1240,7 @@ describe('call-service permission flow', () => {
       const service = useCallService();
       await service.answerCall();
 
-      expect(mockStopAudioRouting).toHaveBeenCalled();
+      await vi.waitFor(() => expect(mockStopAudioRouting).toHaveBeenCalled());
     });
 
     it('calls stopAudioRouting in catch when placeVoiceCall throws', async () => {

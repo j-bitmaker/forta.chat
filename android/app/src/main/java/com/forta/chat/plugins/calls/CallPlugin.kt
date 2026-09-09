@@ -731,4 +731,18 @@ class CallPlugin : Plugin() {
         ret.put("atMs", marker.atMs)
         call.resolve(ret)
     }
+
+    /**
+     * Called from `finalizeCall` once JS has finished with a call, so its
+     * queued answer/reject cannot reach the next invite from that room.
+     * See [CallConnection.retirePendingMarkersForCall].
+     */
+    @PluginMethod
+    fun retirePendingMarkers(call: PluginCall) {
+        CallConnection.retirePendingMarkersForCall(
+            call.getString("callId"),
+            call.getString("roomId"),
+        )
+        call.resolve()
+    }
 }

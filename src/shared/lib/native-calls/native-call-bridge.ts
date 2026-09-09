@@ -76,6 +76,15 @@ function missingStamp(): number | null {
 }
 
 /**
+ * Tail of every retire still crossing the bridge. The native markers are
+ * read-and-clear, so a peek that overtook a retire in flight would consume a
+ * marker that is already meant to be gone — and act on it. Both consumers
+ * await this before peeking, which makes the ordering explicit instead of
+ * leaning on Capacitor's dispatch order.
+ */
+let markerRetireInFlight: Promise<void> = Promise.resolve();
+
+/**
  * Decide whether the given Matrix call is the one the user already
  * accepted via the native ringer, and consume the marker on match.
  *
@@ -107,6 +116,10 @@ export async function consumePendingAnswerCallId(
 
   if (matchAndClear(pendingAnswer)) return true;
   if (!isNative) return false;
+  // A retire for a call that just ended may still be crossing the bridge;
+  // the native markers are read-and-clear, so a peek that overtook one would
+  // consume a marker already meant to be gone.
+  await markerRetireInFlight;
   try {
     const {
       callId: nativeCall,
@@ -143,6 +156,10 @@ export async function consumePendingRejectCallId(
 
   if (matchAndClear(pendingReject)) return true;
   if (!isNative) return false;
+  // A retire for a call that just ended may still be crossing the bridge;
+  // the native markers are read-and-clear, so a peek that overtook one would
+  // consume a marker already meant to be gone.
+  await markerRetireInFlight;
   try {
     const {
       callId: nativeCall,
@@ -156,6 +173,81 @@ export async function consumePendingRejectCallId(
     console.warn('[NativeCallBridge] consumePendingRejectCallId peek failed:', e);
   }
   return false;
+}
+
+/**
+ * Calls JS currently knows about, by callId. Entries arrive as JS tells native
+ * about a call and leave as that call finalizes, so this is the set of live
+ * calls from JS's point of view. It exists to answer one question for the
+ * retire below: is there another call in this room that could still own a
+ * marker?
+ */
+const liveCalls = new Map<string, { roomId?: string; at: number }>();
+
+/**
+ * A call that never finalizes would otherwise pin its room forever. Six hours
+ * is far longer than any real call and far shorter than a session, so a
+ * stranded entry heals on its own; until it does, the retire simply falls back
+ * to matching on callId, which is what it did before this mechanism existed.
+ */
+const LIVE_CALL_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+/** Records a call JS has just told native about. */
+function noteCallSeen(callId: string | undefined, roomId?: string): void {
+  if (!callId) return;
+  const now = Date.now();
+  for (const [id, entry] of liveCalls) {
+    if (now - entry.at > LIVE_CALL_MAX_AGE_MS) liveCalls.delete(id);
+  }
+  if (!liveCalls.has(callId)) liveCalls.set(callId, { roomId, at: now });
+}
+
+/**
+ * Retire both markers for a call JS has finished with.
+ *
+ * A marker only has to carry a decision across a process that was not alive
+ * to act on it. Once `finalizeCall` has run, JS has acted — and a marker left
+ * behind reaches the NEXT invite from that room through the roomId fallback:
+ * a queued answer picks it up with no ringer at all, a queued reject declines
+ * it unheard. Both were seen on the Samsung bench on 2026-09-09.
+ *
+ * Matches on callId OR roomId, and the room is the load-bearing half. A
+ * connection created from a push is keyed by the push's call_id, which this
+ * homeserver fills with the event_id — it can never equal the Matrix callId
+ * a finalize carries, so on the push path, which is the primary ringer
+ * surface, callId alone would retire nothing at all. The room is the only key
+ * the two paths share.
+ *
+ * The room match is withheld while another call JS knows about is still live
+ * in that room, so finishing one call cannot erase a marker a newer one still
+ * needs. Exact callId matches stay unconditional.
+ */
+export async function retirePendingMarkers(callId: string, roomId?: string): Promise<void> {
+  if (!callId && !roomId) return;
+  if (callId) liveCalls.delete(callId);
+  // Match on the room only while no OTHER call JS knows about is live in it.
+  // A marker cannot belong to a call that does not exist, and this is what
+  // stops one finished call from erasing the marker of a newer one in the
+  // same room — the case Telecom makes real by displacing a still-ringing
+  // connection for a same-room re-invite. Timestamps cannot answer this: the
+  // marker is written when the user taps, which is often AFTER JS already
+  // knew the call being finalized.
+  const roomIsClear =
+    !!roomId && ![...liveCalls.values()].some((entry) => entry.roomId === roomId);
+  const byRoom = roomIsClear ? roomId : undefined;
+  const spent = (marker: PendingCallMarker | null): boolean =>
+    !!marker &&
+    ((!!callId && marker.callId === callId) || (!!byRoom && marker.roomId === byRoom));
+  if (spent(pendingAnswer)) pendingAnswer = null;
+  if (spent(pendingReject)) pendingReject = null;
+  if (!isNative) return;
+  const done = NativeCall.retirePendingMarkers({ callId, roomId: byRoom }).catch((e: unknown) => {
+    // Best effort, as everywhere else on this bridge. The room-scoped TTL
+    // still caps how long a marker that survives this can do damage.
+    console.warn('[NativeCallBridge] retirePendingMarkers failed:', e);
+  });
+  markerRetireInFlight = markerRetireInFlight.then(() => done);
+  await done;
 }
 
 class NativeCallBridge {
@@ -474,6 +566,7 @@ class NativeCallBridge {
     roomId: string;
     hasVideo: boolean;
   }): Promise<void> {
+    noteCallSeen(options.callId, options.roomId);
     if (!isNative) return;
     await NativeCall.reportIncomingCall(options);
   }
@@ -492,6 +585,7 @@ class NativeCallBridge {
     roomId: string;
     hasVideo: boolean;
   }): Promise<void> {
+    noteCallSeen(options.callId, options.roomId);
     if (!isNative) return;
     try {
       const plugin = NativeCall as Partial<NativeCallNativePlugin>;
@@ -529,6 +623,7 @@ class NativeCallBridge {
     callerName: string;
     hasVideo: boolean;
   }): Promise<void> {
+    noteCallSeen(options.callId, undefined);
     if (!isNative) return;
     try {
       await NativeCall.reportOutgoingCall(options);

@@ -64,6 +64,8 @@ class PendingCallMarkerTest {
         assertEquals(room, previous.roomId)
     }
 
+    private val matrixCallId = "1788970536304tw7II5UU5wJ1O0sv"
+
     @Test
     fun clearedFor_dropsTheWholeMarkerWhenTheCallIdMatches() {
         val marker = PendingCallMarker.of("call-a", room, now)
@@ -101,5 +103,29 @@ class PendingCallMarkerTest {
     @Test
     fun clearedFor_onAnEmptyMarkerStaysEmpty() {
         assertSame(PendingCallMarker.NONE, PendingCallMarker.NONE.clearedFor("call-a", room))
+    }
+
+    @Test
+    fun clearedFor_retiresAPushMarkerByRoomWhenTheIdsCannotMatch() {
+        // What retirePendingMarkersForCall relies on. A connection created
+        // from a push is keyed by the push's call_id, which this homeserver
+        // fills with the event_id, so the marker holds `$...` while a finalize
+        // arrives with the Matrix callId. The two never match and the room is
+        // the only shared key — without it the retire is inert on the push
+        // path, which is the primary ringer surface.
+        val fromPush = PendingCallMarker.of("\$ZM8kQ5-push-event-id", room, now)
+
+        assertSame(PendingCallMarker.NONE, fromPush.clearedFor(matrixCallId, room))
+        assertSame(fromPush, fromPush.clearedFor(matrixCallId, "!elsewhere:server"))
+    }
+
+    @Test
+    fun clearedFor_withoutARoomFallsBackToTheCallId() {
+        // JS withholds the room whenever another call it knows about is still
+        // live there, so native must then clear on an exact id or not at all.
+        val marker = PendingCallMarker.of("call-a", room, now)
+
+        assertSame(marker, marker.clearedFor(matrixCallId, null))
+        assertSame(PendingCallMarker.NONE, marker.clearedFor("call-a", null))
     }
 }

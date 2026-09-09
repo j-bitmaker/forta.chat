@@ -1,5 +1,5 @@
 import { isNative } from "@/shared/lib/platform";
-import { nativeCallBridge } from "@/shared/lib/native-calls";
+import { nativeCallBridge, retirePendingMarkers } from "@/shared/lib/native-calls";
 import { NativeWebRTC } from "@/shared/lib/native-webrtc";
 
 /**
@@ -12,6 +12,9 @@ import { NativeWebRTC } from "@/shared/lib/native-webrtc";
  * failure in one does not block the next.
  *
  * Order of operations:
+ *   0. retirePendingMarkers → the queued answer/reject for this call can no
+ *      longer reach the next invite from the same room. First, so the
+ *      bridge's ordering guard is armed before the slower steps run.
  *   1. stopAudioRouting → audio mode → NORMAL, communication device cleared
  *   2. reportCallEnded → Telecom CallConnection released
  *   3. dismissCallUI → activity finished, foreground service stopped
@@ -67,7 +70,11 @@ async function safeStep(name: string, callId: string, step: () => Promise<unknow
   }
 }
 
-export async function finalizeCall(reason: FinalizeReason, callId: string): Promise<void> {
+export async function finalizeCall(
+  reason: FinalizeReason,
+  callId: string,
+  roomId?: string,
+): Promise<void> {
   // Outer try/catch ensures a sync throw (e.g. broken bridge import,
   // listener loop bug) cannot escape as an unhandled promise rejection.
   try {
@@ -90,6 +97,21 @@ export async function finalizeCall(reason: FinalizeReason, callId: string): Prom
 
     try {
       emit({ type: "call_finalize_start", reason, callId });
+
+      // Step 0: retire this call's pending answer/reject markers. They exist
+      // to carry a decision across a process that was not alive to act on it;
+      // reaching here means JS has acted. Left behind, a marker matches the
+      // NEXT invite from the same room and either auto-answers it with no
+      // ringer or declines it unheard — both seen on the Samsung bench,
+      // 2026-09-09. Runs on every termination path, because every one of them
+      // comes through here, and runs FIRST so the bridge's ordering guard is
+      // armed before the slower native steps below.
+      //
+      // roomId matters as much as callId: a connection created from a push
+      // is keyed by the push's call_id, which this homeserver fills with the
+      // event_id, so its marker can never be matched by the Matrix callId
+      // that arrives here. The room is the only key the two paths share.
+      await safeStep("retirePendingMarkers", callId, () => retirePendingMarkers(callId, roomId));
 
       // Step 1: stop audio routing (mode → NORMAL, clearCommunicationDevice)
       await safeStep("stopAudioRouting", callId, () => nativeCallBridge.stopAudioRouting());

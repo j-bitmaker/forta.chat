@@ -27,6 +27,7 @@ const mockStopAudioRouting: Mock = vi.fn().mockResolvedValue(undefined);
 const mockReportCallEnded: Mock = vi.fn().mockResolvedValue(undefined);
 const mockForceStopAudio: Mock = vi.fn().mockResolvedValue(undefined);
 const mockCloseAllPeerConnections: Mock = vi.fn().mockResolvedValue(undefined);
+const mockRetirePendingMarkers: Mock = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("@/shared/lib/native-calls", () => ({
   nativeCallBridge: {
@@ -34,6 +35,7 @@ vi.mock("@/shared/lib/native-calls", () => ({
     reportCallEnded: mockReportCallEnded,
     forceStopAudio: mockForceStopAudio,
   },
+  retirePendingMarkers: mockRetirePendingMarkers,
 }));
 
 const mockDismissCallUI: Mock = vi.fn().mockResolvedValue(undefined);
@@ -74,6 +76,40 @@ describe("finalizeCall — central call cleanup", () => {
     expect(mockReportCallEnded).toHaveBeenCalledWith("callId-1");
     expect(mockDismissCallUI).toHaveBeenCalledOnce();
     expect(mockCloseAllPeerConnections).toHaveBeenCalledOnce();
+  });
+
+  it("retires the call's pending answer/reject markers, with the room", async () => {
+    // Without this the marker outlives the call and matches the NEXT invite
+    // from the same room: the redial is auto-answered without a ringer, or
+    // declined unheard. Both were seen on the Samsung bench, 2026-09-09.
+    // finalizeCall is the one place every termination path passes through.
+    // The room has to travel with the callId — a connection created from a
+    // push is keyed by an event_id that never equals the Matrix callId, so
+    // the room is the only key both arrival paths share.
+    const { finalizeCall } = await import("./finalize-call");
+    await finalizeCall("hangup", "callId-markers", "!room:matrix.org");
+
+    expect(mockRetirePendingMarkers).toHaveBeenCalledWith("callId-markers", "!room:matrix.org");
+  });
+
+  it("retires the markers on every termination path, not just hangup", async () => {
+    const { finalizeCall } = await import("./finalize-call");
+    for (const reason of ["reject", "sdk-ended", "error", "ice-failed"] as const) {
+      await finalizeCall(reason, `callId-${reason}`, "!room:matrix.org");
+      expect(mockRetirePendingMarkers).toHaveBeenCalledWith(`callId-${reason}`, "!room:matrix.org");
+    }
+  });
+
+  it("retires the markers before the slower native steps", async () => {
+    // The bridge arms its ordering guard inside retirePendingMarkers. Running
+    // it after stopAudioRouting (which can wait up to 500ms on its own) would
+    // leave a redial arriving in between with nothing to wait for.
+    const { finalizeCall } = await import("./finalize-call");
+    await finalizeCall("hangup", "callId-first", "!room:matrix.org");
+
+    expect(mockRetirePendingMarkers.mock.invocationCallOrder[0]).toBeLessThan(
+      mockStopAudioRouting.mock.invocationCallOrder[0],
+    );
   });
 
   it("preserves cleanup ordering: stopAudio → reportEnded → dismissUI → closePeers", async () => {

@@ -240,6 +240,12 @@ export function createIOSNativeCallAdapter(): NativeCallNativePlugin {
       }
     },
 
+    async retirePendingMarkers(_opts) {
+      // Nothing stored to retire: iOS derives both pending states from live
+      // CallKit calls rather than from markers, so they go away with the call
+      // itself. Android's stored markers are what outlive it.
+    },
+
     async reportOutgoingCall(_opts) {
       // No CallKit outgoing-call surface in @capgo/capacitor-incoming-call-kit
       // v8. Calls placed from in-app are tracked only by our Vue UI; the

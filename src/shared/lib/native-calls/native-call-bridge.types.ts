@@ -103,6 +103,20 @@ export interface NativeCallNativePlugin {
     /** See `getPendingAnswer`. */
     atMs?: number | null;
   }>;
+  /**
+   * Retire both markers for a call JS has finished with, so neither can
+   * reach the next invite from that room. Matched on callId OR roomId — a
+   * connection created from a push is keyed by an event_id that never equals
+   * the Matrix callId, so the room is the only key both paths share.
+   */
+  retirePendingMarkers(options: {
+    callId: string;
+    /**
+     * Omitted when another call JS knows about is still live in that room, so
+     * native never widens a retire past what JS can vouch for.
+     */
+    roomId?: string;
+  }): Promise<void>;
   reportOutgoingCall(options: {
     callId: string;
     callerName: string;

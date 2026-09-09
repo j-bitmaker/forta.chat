@@ -425,6 +425,32 @@ class CallConnection(
         }
 
         /**
+         * Retires both markers for a call JS has finished with.
+         *
+         * A marker only carries a decision across a process that was not alive
+         * to act on it. Once JS has finalized the call it has acted, and
+         * anything left behind reaches the next invite from that room through
+         * the roomId fallback: a queued answer picks it up with no ringer at
+         * all, a queued reject declines it unheard. Both were seen on the
+         * bench (Samsung SM-A528B, 2026-09-09).
+         *
+         * Matched on callId OR roomId, and the room is the load-bearing half:
+         * a connection created from a push is keyed by the push's call_id,
+         * which this homeserver fills with the event_id, so it can never equal
+         * the Matrix callId a finalize carries. On the push path — the primary
+         * ringer surface — callId alone would retire nothing.
+         *
+         * [roomId] arrives only when JS can vouch that no other call it knows
+         * about is live in that room, so this can never erase a marker a newer
+         * call still needs. JS owns that judgement because only it knows which
+         * calls it is handling.
+         */
+        fun retirePendingMarkersForCall(callId: String?, roomId: String?) {
+            pendingAnswerRef.updateAndGet { it.clearedFor(callId, roomId) }
+            pendingRejectRef.updateAndGet { it.clearedFor(callId, roomId) }
+        }
+
+        /**
          * Backstop for a connection nobody ever resolves. Longer than the 30 s
          * deadline in [IncomingRinger] so that, when the ringer does run, its
          * own auto-reject still wins and the user keeps the UI they are
@@ -599,6 +625,14 @@ class CallConnection(
         onEnded?.invoke(callId)
     }
 
+    /**
+     * Answer marker only, matched on either key, run natively at teardown.
+     * Not to be confused with the companion's
+     * [CallConnection.retirePendingMarkersForCall], which retires BOTH markers
+     * on JS's behalf once it has finalized a call, and bounds its room match
+     * by time. This one stays: it is the backstop for the path where JS is
+     * dead or wedged and no finalize will ever come.
+     */
     private fun clearPendingFor(cid: String, rid: String) {
         // Answer markers only, as before: we are declining, so a pending
         // accept for this call must go, while a pending reject is the thing
