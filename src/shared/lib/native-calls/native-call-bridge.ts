@@ -182,7 +182,10 @@ export async function consumePendingRejectCallId(
  * retire below: is there another call in this room that could still own a
  * marker?
  */
-const liveCalls = new Map<string, { roomId?: string; at: number }>();
+const liveCalls = new Map<string, { roomId?: string; at: number; seq: number }>();
+
+/** Announcement order, so "announced before this one" needs no clock. */
+let liveCallSeq = 0;
 
 /**
  * A call that never finalizes would otherwise pin its room forever. Six hours
@@ -199,7 +202,7 @@ function noteCallSeen(callId: string | undefined, roomId?: string): void {
   for (const [id, entry] of liveCalls) {
     if (now - entry.at > LIVE_CALL_MAX_AGE_MS) liveCalls.delete(id);
   }
-  if (!liveCalls.has(callId)) liveCalls.set(callId, { roomId, at: now });
+  if (!liveCalls.has(callId)) liveCalls.set(callId, { roomId, at: now, seq: ++liveCallSeq });
 }
 
 /**
@@ -224,7 +227,21 @@ function noteCallSeen(callId: string | undefined, roomId?: string): void {
  */
 export async function retirePendingMarkers(callId: string, roomId?: string): Promise<void> {
   if (!callId && !roomId) return;
+  const own = callId ? liveCalls.get(callId) : undefined;
   if (callId) liveCalls.delete(callId);
+  // A push-delivered call is announced twice: once by the push handler under
+  // `call_id`, which this homeserver fills with the event_id, and again under
+  // the Matrix callId once /sync delivers the invite. Only the second id can
+  // ever reach a finalize, so the first twin would sit in the map and make its
+  // room look busy for hours — disabling the room match on exactly the path
+  // that needs it. Sweeping the room's entries announced BEFORE the one being
+  // finalized clears the twin and leaves anything newer alone. Order, not a
+  // clock: the two announcements can land in the same millisecond.
+  if (roomId && own) {
+    for (const [id, entry] of liveCalls) {
+      if (entry.roomId === roomId && entry.seq < own.seq) liveCalls.delete(id);
+    }
+  }
   // Match on the room only while no OTHER call JS knows about is live in it.
   // A marker cannot belong to a call that does not exist, and this is what
   // stops one finished call from erasing the marker of a newer one in the

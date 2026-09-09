@@ -49,6 +49,7 @@ async function loadBridge(answer: Mock, reject: Mock, mocks: BridgeMocks = {}) {
           }),
           requestAudioPermission: vi.fn().mockResolvedValue({ granted: true }),
           ensureIncomingCallVisible: vi.fn().mockResolvedValue(undefined),
+          reportIncomingCall: vi.fn().mockResolvedValue(undefined),
         };
       }
       return new Proxy({}, { get: () => vi.fn().mockResolvedValue({}) });
@@ -250,6 +251,26 @@ describe('markers retire with the call they belong to', () => {
     // Native is not even asked to widen the retire to the room.
     expect(retire).toHaveBeenCalledWith({ callId: 'the-older-call', roomId: undefined });
     await expect(mod.consumePendingAnswerCallId('the-newer-call', ROOM)).resolves.toBe(true);
+  });
+
+  it('does not let the push-announced twin pin the room', async () => {
+    // The push handler reports the call under `call_id`, which this homeserver
+    // fills with the event_id — an id no finalize can ever carry. Left in the
+    // live-call map it would make the room read as busy for hours, and the
+    // room match would never engage again on the very path that needs it.
+    const retire = vi.fn().mockResolvedValue(undefined);
+    const mod = await loadBridge(noMarker(), noMarker(), { retirePendingMarkers: retire });
+    await mod.nativeCallBridge.reportIncomingCall({
+      callId: PUSH_EVENT_ID,
+      callerName: 'test3823818',
+      roomId: ROOM,
+      hasVideo: false,
+    });
+    await seen(mod, MATRIX_CALL_ID); // /sync delivers the same call, real id
+
+    await mod.retirePendingMarkers(MATRIX_CALL_ID, ROOM);
+
+    expect(retire).toHaveBeenCalledWith({ callId: MATRIX_CALL_ID, roomId: ROOM });
   });
 
   it('widens to the room again once the newer call is over too', async () => {
