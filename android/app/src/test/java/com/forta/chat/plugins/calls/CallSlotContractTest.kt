@@ -60,6 +60,58 @@ class CallSlotContractTest {
         assertTrue("decline must go through CallSlotPolicy.owns:\n$decline", decline.contains("CallSlotPolicy.owns(connection.callId, callId)"))
     }
 
+    // -------------------------------------------------------------------------
+    // Task removal. Swiping the app away destroys the WebView but not the
+    // process: Telecom keeps it alive for the un-disconnected connection, and
+    // the connection plus the pending markers are the only two call resources
+    // that live in process statics rather than in a Service. Left behind, the
+    // ACTIVE slot makes every later call in that process unringable and parks
+    // the device in MODE_IN_COMMUNICATION.
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun taskRemoval_disconnectsTheSlot_soTheNextCallIsNotAnsweredBusy() {
+        val body = functionBody(service, "fun\\s+releaseOnTaskRemoved\\s*\\(")
+        assertTrue("must disconnect the live connection:\n$body", body.contains(".onDisconnect()"))
+    }
+
+    @Test
+    fun taskRemoval_neverRejects_becauseARejectMarkerWouldEatTheNextInvite() {
+        // onReject writes pendingReject, which the next invite from this room
+        // would replay and decline unheard — the bug already recorded in
+        // docs/manual-verification.md. DisconnectCause.LOCAL is also honest:
+        // we are the side that went away.
+        val body = functionBody(service, "fun\\s+releaseOnTaskRemoved\\s*\\(")
+        assertTrue("must not use onReject on the task-removal path:\n$body", !body.contains("onReject"))
+    }
+
+    @Test
+    fun taskRemoval_leavesARingingConnectionToTheRingTimeout() {
+        // The slot and CallForegroundService.instance are two independently
+        // mutated statics, so they can briefly disagree: call A ends and vacates
+        // the slot, call B rings in, and only then is A's service torn down.
+        // Releasing there would cut off a ring with DisconnectCause.LOCAL — no
+        // reject marker, nothing told to the caller. armRingTimeout already owns
+        // an unanswered ring.
+        val body = functionBody(service, "fun\\s+releaseOnTaskRemoved\\s*\\(")
+        assertTrue("a ringing connection must be left alone:\n$body", body.contains("Connection.STATE_RINGING"))
+        val guard = body.indexOf("Connection.STATE_RINGING")
+        val disconnect = body.indexOf(".onDisconnect()")
+        assertTrue("the ringing check must come before the disconnect:\n$body", guard in 0 until disconnect)
+    }
+
+    @Test
+    fun taskRemoval_retiresBothMarkers_outsideTheDisconnectGuard() {
+        val body = functionBody(service, "fun\\s+releaseOnTaskRemoved\\s*\\(")
+        val retire = body.indexOf("CallConnection.retirePendingMarkersForCall(")
+        assertTrue("both markers must be retired:\n$body", retire >= 0)
+        // onDisconnect short-circuits on its `released` latch and then clears
+        // nothing, and its clearPendingFor covers only the answer half — so the
+        // retire cannot ride inside the runCatching that wraps it.
+        val guardEnd = body.indexOf(".onFailure")
+        assertTrue("the retire must sit after the onDisconnect runCatching:\n$body", guardEnd in 0 until retire)
+    }
+
     private fun functionBody(src: String, signaturePattern: String): String {
         val match = Regex("$signaturePattern[^{]*\\{").find(src)
             ?: error("Could not find /$signaturePattern/ in source")

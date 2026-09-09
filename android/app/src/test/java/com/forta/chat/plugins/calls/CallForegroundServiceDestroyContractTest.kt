@@ -260,6 +260,76 @@ class CallForegroundServiceDestroyContractTest {
         )
     }
 
+    // -------------------------------------------------------------------------
+    // Telecom slot. 00ddc636 gave every stranded call resource an owner except
+    // the two that do not live in this service: the Telecom connection and the
+    // pending answer/reject markers, both reachable only through process-global
+    // statics. A swipe-out left the connection ACTIVE, which parks the device in
+    // MODE_IN_COMMUNICATION and makes every later call in the process unringable
+    // (ensureIncomingCallVisible skips a non-null slot; onCreateIncomingConnection
+    // answers BUSY for an ACTIVE one) — and left the answer marker behind, which
+    // the next app start replayed into an unattended auto-answer.
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun onTaskRemoved_releasesTheTelecomSlot_soTheNextCallCanRing() {
+        val block = extractFunctionBody("onTaskRemoved")
+        assertTrue(
+            "onTaskRemoved() must release the Telecom connection, or every later " +
+                "call in this process is answered BUSY and never rings:\n$block",
+            block.contains("CallConnectionService.releaseOnTaskRemoved("),
+        )
+    }
+
+    @Test
+    fun onTaskRemoved_releasesTheSlotLast_soTheNestedTeardownFindsNothingToDo() {
+        // releaseOnTaskRemoved -> onDisconnect -> CallTeardown.endCall(DISCONNECT).
+        // With the router already down and `instance` already null that nested
+        // decide() returns no actions; run it earlier and it emits
+        // STOP_FOREGROUND_SERVICE, i.e. a startService() into a service that is
+        // mid-destruction — which Android 12+ answers with a throw or a fresh
+        // service instance.
+        val block = extractFunctionBody("onTaskRemoved")
+        val release = block.indexOf("releaseOnTaskRemoved(")
+        assertTrue("releaseOnTaskRemoved() not found:\n$block", release >= 0)
+        assertTrue(
+            "the slot release must come after forceStop():\n$block",
+            block.indexOf(".forceStop()") in 0 until release,
+        )
+        assertTrue(
+            "the slot release must come after `instance = null`:\n$block",
+            block.indexOf("instance = null") in 0 until release,
+        )
+    }
+
+    @Test
+    fun supersededInstance_leavesTheTelecomSlotAlone() {
+        // If a newer instance owns liveness there is a newer call, and
+        // onCreate{Incoming,Outgoing}Connection already displaced the old
+        // connection — so there is nothing stranded to release, and releasing
+        // would disconnect the live call.
+        val block = extractFunctionBody("onTaskRemoved")
+        val guardReturn = block.indexOf("return")
+        assertTrue("the superseded branch must return early:\n$block", guardReturn >= 0)
+        assertTrue(
+            "the slot release must sit after the superseded early return:\n$block",
+            guardReturn < block.indexOf("releaseOnTaskRemoved("),
+        )
+    }
+
+    @Test
+    fun onDestroy_leavesTheTelecomSlot_soANormalTeardownKeepsItsOwnDisconnect() {
+        // Deliberate asymmetry with onTaskRemoved. onDestroy also runs on the
+        // ordinary end of a call, where finalizeCall/reportCallEnded already own
+        // the disconnect; releasing here would race them for the DisconnectCause.
+        // Task removal is the only path where the JS owner is provably gone.
+        val block = extractFunctionBody("onDestroy")
+        assertTrue(
+            "onDestroy() must not release the Telecom slot:\n$block",
+            !block.contains("releaseOnTaskRemoved("),
+        )
+    }
+
     /**
      * Extract the body of a top-level `override fun <name>(...)` block from the
      * Kotlin source. Brace-counts so nested blocks (if/try/runCatching) do not

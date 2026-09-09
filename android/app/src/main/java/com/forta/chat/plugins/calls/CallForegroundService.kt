@@ -353,6 +353,20 @@ class CallForegroundService : Service() {
         // onDestroy setting it null again is an idempotent no-op.
         instance = null
 
+        // Last, and only here. Telecom's connection and the pending answer/
+        // reject markers are the two call resources that do not live in this
+        // service, so nothing above reaches them; left alone they park the
+        // device in MODE_IN_COMMUNICATION and make every later call in this
+        // process unringable.
+        //
+        // After `instance = null` and the audio teardown on purpose:
+        // onDisconnect re-enters CallTeardown.endCall(DISCONNECT), and with the
+        // router already down and liveness already cleared that nested
+        // decide() returns no actions — instead of STOP_FOREGROUND_SERVICE,
+        // which would be a startService() into a service that is mid-destruction.
+        runCatching { CallConnectionService.releaseOnTaskRemoved() }
+            .onFailure { Log.w(TAG, "releaseOnTaskRemoved in onTaskRemoved threw", it) }
+
         super.onTaskRemoved(rootIntent)
         // stopSelf so the OS finalises the service (and runs onDestroy) instead
         // of leaving a zombie service record holding the audio mode.

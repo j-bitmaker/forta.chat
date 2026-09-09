@@ -80,6 +80,55 @@ class CallConnectionService : ConnectionService() {
             return true
         }
 
+        /**
+         * End the call because the user swiped our task away.
+         *
+         * Every other stranded resource already got an owner in 00ddc636 —
+         * the audio router, the peer connections, the foreground service. The
+         * two that were missed are the two that do not live in a Service at
+         * all: the Telecom connection and the pending markers, both reachable
+         * only through process-global statics. A task removal destroys the
+         * WebView, so Matrix signalling is gone and the call genuinely cannot
+         * continue; leaving the connection ACTIVE instead parks Telecom in
+         * MODE_IN_COMMUNICATION and makes every later call in this process
+         * unringable — `ensureIncomingCallVisible` skips on a non-null slot and
+         * `onCreateIncomingConnection` answers BUSY for an ACTIVE one.
+         *
+         * `onDisconnect`, never `onReject`: onReject writes a pendingReject
+         * marker, which the next invite from this room would replay and decline
+         * unheard. DisconnectCause.LOCAL is also the honest cause — we are the
+         * side that went away.
+         *
+         * A RINGING connection is left alone. The foreground service only
+         * exists for an answered or dialled call (`WebRTCPlugin.launchCallUI`
+         * is its only starter), but the slot and the service are two
+         * independently mutated statics, so they can briefly disagree: call A
+         * ends and vacates the slot, call B rings in, and A's service is torn
+         * down only afterwards. Releasing then would cut off a ring with
+         * DisconnectCause.LOCAL — no reject marker, nothing told to the caller.
+         * `armRingTimeout` already owns an unanswered ring, so leaving it is
+         * both safe and bounded. Checking the state makes that guarantee
+         * structural instead of resting on the two statics staying in step.
+         *
+         * @return true when a connection was actually released.
+         */
+        fun releaseOnTaskRemoved(): Boolean {
+            val connection = currentConnection ?: return false
+            if (connection.state == Connection.STATE_RINGING) {
+                Log.d(TAG, "Task removed while a call was ringing — leaving it to the ring timeout")
+                return false
+            }
+            Log.w(TAG, "Task removed while a connection was live — disconnecting ${connection.callId}")
+            runCatching { connection.onDisconnect() }
+                .onFailure { Log.w(TAG, "task-removed release threw", it) }
+            // Outside the runCatching on purpose: onDisconnect short-circuits on
+            // its `released` latch and then clears nothing, and its
+            // clearPendingFor covers only the answer half. The connection is
+            // being destroyed either way, so no live call can still own these.
+            CallConnection.retirePendingMarkersForCall(connection.callId, connection.roomId)
+            return true
+        }
+
         fun dismissIncomingCallNotification(context: Context) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             nm.cancel(INCOMING_CALL_NOTIFICATION_ID)
