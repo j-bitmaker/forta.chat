@@ -22,8 +22,13 @@ export type {
   MediaCacheBlobRow,
   MediaCacheCategory,
   CallProvider,
+  LocalAiChat,
+  LocalAiMessage,
+  AiMessageStatus,
 } from "./schema";
 export { CallProvidersRepository } from "./call-providers-repository";
+export { AiChatRepository } from "./ai-chat-repository";
+export { AiMessageRepository } from "./ai-message-repository";
 export { DecryptionWorker } from "./decryption-worker";
 export { ListenedRepository } from "./listened-repository";
 export { SearchCacheRepository } from "./search-cache-repository";
@@ -62,6 +67,8 @@ import { RoomRepository } from "./room-repository";
 import { ChannelRepository } from "./channel-repository";
 import { UserRepository } from "./user-repository";
 import { CallProvidersRepository } from "./call-providers-repository";
+import { AiChatRepository } from "./ai-chat-repository";
+import { AiMessageRepository } from "./ai-message-repository";
 import { SyncEngine } from "./sync-engine";
 import { EventWriter } from "./event-writer";
 import { DecryptionWorker } from "./decryption-worker";
@@ -77,6 +84,11 @@ export interface ChatDbKit {
   channels: ChannelRepository;
   users: UserRepository;
   callProviders: CallProvidersRepository;
+  /** AI-chat repositories — `local-ai` Mode B integration. Not part of the
+   *  Matrix/SyncEngine pipeline, exposed here only because `ChatDatabase` is
+   *  the shared per-user Dexie instance (see schema.ts §"Local AI chats"). */
+  aiChats: AiChatRepository;
+  aiMessages: AiMessageRepository;
   syncEngine: SyncEngine;
   eventWriter: EventWriter;
   decryptionWorker: DecryptionWorker;
@@ -138,6 +150,8 @@ export function initChatDb(
   const channels = new ChannelRepository(db);
   const users = new UserRepository(db);
   const callProviders = new CallProvidersRepository(db);
+  const aiMessages = new AiMessageRepository(db);
+  const aiChats = new AiChatRepository(db, aiMessages);
   const listened = new ListenedRepository(db);
   const searchCache = new SearchCacheRepository(db);
   const syncEngine = new SyncEngine(db, messages, rooms, getRoomCrypto, onChange);
@@ -146,7 +160,7 @@ export function initChatDb(
     const crypto = await getRoomCrypto(roomId);
     if (!crypto) return undefined;
     return { decryptEvent: (raw: unknown) => crypto.decryptEvent(raw as Record<string, unknown>) };
-  }, rooms);
+  }, rooms, fetchRawEventFromServer);
 
   // --- Event-driven decryption retry triggers ---
   const debouncedRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -176,6 +190,10 @@ export function initChatDb(
     for (const timer of debouncedRetryTimers.values()) clearTimeout(timer);
     debouncedRetryTimers.clear();
     decryptionWorker.dispose();
+    // Stop SyncEngine's 30s watchdog interval — without this, every user
+    // switch / logout leaves the previous SyncEngine's watchdog ticking
+    // forever against a closed Dexie handle (caught, but never stops).
+    syncEngine.dispose();
   };
 
   // Snapshot genuinely stranded "syncing" ops BEFORE the queue starts —
@@ -258,7 +276,7 @@ export function initChatDb(
     setTimeout(runDeferredRecovery, DEFERRED_RECOVERY_SETTLE_MS);
   });
 
-  currentKit = { db, messages, rooms, channels, users, callProviders, syncEngine, eventWriter, decryptionWorker, listened, searchCache, retryRoomDecryption: retryRoomDebounced, runDeferredRecovery, dispose: disposeRetryTriggers };
+  currentKit = { db, messages, rooms, channels, users, callProviders, aiChats, aiMessages, syncEngine, eventWriter, decryptionWorker, listened, searchCache, retryRoomDecryption: retryRoomDebounced, runDeferredRecovery, dispose: disposeRetryTriggers };
   currentUserId = userId;
 
   return currentKit;

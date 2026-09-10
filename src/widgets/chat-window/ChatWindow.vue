@@ -2,10 +2,11 @@
 import { useChatStore, MessageType } from "@/entities/chat";
 import { useAuthStore } from "@/entities/auth";
 import { useAudioPlayback } from "@/features/messaging/model/use-audio-playback";
-import { useFileDownload } from "@/features/messaging/model/use-file-download";
+import { useFileDownload, revokeFileUrlsOutsideRoom } from "@/features/messaging/model/use-file-download";
 import { getChatDb, isChatDbReady, useLiveQuery, type CallProvider } from "@/shared/lib/local-db";
 import { ChannelView } from "@/features/channels";
 import { useChannelStore } from "@/entities/channel";
+import { useAiChatStore } from "@/entities/ai-chat";
 import { MessageList, MessageInput } from "@/features/messaging";
 import SelectionBar from "@/features/messaging/ui/SelectionBar.vue";
 import ForwardPicker from "@/features/messaging/ui/ForwardPicker.vue";
@@ -31,6 +32,7 @@ const chatStore = useChatStore();
 const authStore = useAuthStore();
 const userStore = useUserStore();
 const channelStore = useChannelStore();
+const aiChatStore = useAiChatStore();
 const emit = defineEmits<{ back: [] }>();
 
 const isChannelView = computed(() => channelStore.activeChannelAddress !== null);
@@ -84,7 +86,10 @@ playback.setOnEnded(async (endedMessageId: string, roomId: string) => {
 });
 
 watch(() => chatStore.activeRoomId, (roomId) => {
-  if (roomId) channelStore.clearActiveChannel();
+  if (roomId) {
+    channelStore.clearActiveChannel();
+    aiChatStore.selectChat(null);
+  }
 });
 
 // Stop audio when switching rooms — prevents invisible playback
@@ -93,6 +98,13 @@ watch(() => chatStore.activeRoomId, (_newId, oldId) => {
   if (oldId && playback.currentRoomId.value === oldId) {
     playback.stop();
   }
+});
+
+// Free the decrypted media of the chat being left. The shared blob-URL cache
+// is otherwise only cleared when the last useFileDownload() consumer unmounts,
+// which on a long session means every photo ever opened stays pinned in RAM.
+watch(() => chatStore.activeRoomId, (roomId) => {
+  revokeFileUrlsOutsideRoom(roomId);
 });
 
 const peerKeysMissing = computed(() => {

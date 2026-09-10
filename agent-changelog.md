@@ -1,5 +1,9 @@
 # Agent Changelog
 
+> **Historical log of agent review cycles (2026-03-23).** Point-in-time findings and fixes —
+> not current product status. For living architecture see `CLAUDE.md`, `docs/architecture-data-flow.md`.
+> Example: “NO push notification system” below is obsolete; push lives in `src/shared/lib/push/`.
+
 ## Cycle 1 — 2026-03-23 20:20 GMT+5
 
 ### Deep Codebase Sweep Results
@@ -70,7 +74,7 @@ Scanned 10+ core files. Found **10 issues** (2 HIGH, 5 MEDIUM, 3 LOW).
 ### UI Layer Scan Results
 - Room list: RecycleScroller with prefetch (good), but re-sorts O(n log n) on every user update
 - Routing: auth guard works, but redirect param unused after login, no deep linking
-- Notifications: **NO push notification system** — only basic toast
+- Notifications: **NO push notification system** — only basic toast *(historical: push has since been implemented, see `src/shared/lib/push/push-service.ts`; this file records a point-in-time scan, not current status)*
 - Theme: well-implemented, CSS vars, no flicker, reduced motion support
 - Accessibility: 41 ARIA attrs found, but gaps in room list items and aria-live for messages
 

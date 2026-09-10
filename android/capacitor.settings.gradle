@@ -5,6 +5,9 @@ project(':capacitor-android').projectDir = new File('../node_modules/@capacitor/
 include ':capacitor-community-file-opener'
 project(':capacitor-community-file-opener').projectDir = new File('../node_modules/@capacitor-community/file-opener/android')
 
+include ':capacitor-community-sqlite'
+project(':capacitor-community-sqlite').projectDir = new File('../node_modules/@capacitor-community/sqlite/android')
+
 include ':capacitor-app'
 project(':capacitor-app').projectDir = new File('../node_modules/@capacitor/app/android')
 
@@ -38,6 +41,12 @@ project(':capacitor-share').projectDir = new File('../node_modules/@capacitor/sh
 include ':capacitor-status-bar'
 project(':capacitor-status-bar').projectDir = new File('../node_modules/@capacitor/status-bar/android')
 
+include ':capgo-capacitor-device-info'
+project(':capgo-capacitor-device-info').projectDir = new File('../node_modules/@capgo/capacitor-device-info/android')
+
+include ':capgo-capacitor-downloader'
+project(':capgo-capacitor-downloader').projectDir = new File('../node_modules/@capgo/capacitor-downloader/android')
+
 include ':capgo-capacitor-incoming-call-kit'
 project(':capgo-capacitor-incoming-call-kit').projectDir = new File('../node_modules/@capgo/capacitor-incoming-call-kit/android')
 
@@ -46,3 +55,6 @@ project(':capgo-capacitor-share-target').projectDir = new File('../node_modules/
 
 include ':capgo-capacitor-webview-version-checker'
 project(':capgo-capacitor-webview-version-checker').projectDir = new File('../node_modules/@capgo/capacitor-webview-version-checker/android')
+
+include ':llama-cpp-pro'
+project(':llama-cpp-pro').projectDir = new File('../node_modules/llama-cpp-pro/android')
