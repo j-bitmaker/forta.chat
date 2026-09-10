@@ -16,10 +16,19 @@ const OLD_CALL = '1789002434417pyhl9z3azvtR556V';
 const NEW_CALL = '1789002456340bHi7Fz1DUPFPFOt4';
 const OTHER_ROOM = '!QqvSkKmzUfPtNbxWyE:matrix.pocketnet.app';
 const PUSH_EVENT_ID = '$ZM8kQ5-push-event-id';
+const OTHER_PUSH_EVENT_ID = '$aLm1Wk-other-push-event-id';
 
 type Listeners = Record<string, (payload: { callId: string; roomId?: string }) => void>;
 
-async function wireBridge(currentCallId: string | undefined, currentRoom = ROOM) {
+async function wireBridge(
+  currentCallId: string | undefined,
+  currentRoom = ROOM,
+  nativeAnswerMarker: { callId: string | null; roomId: string | null; atMs: number } = {
+    callId: null,
+    roomId: null,
+    atMs: 0,
+  },
+) {
   const listeners: Listeners = {};
   vi.resetModules();
   vi.doMock('@capacitor/core', () => ({
@@ -30,7 +39,7 @@ async function wireBridge(currentCallId: string | undefined, currentRoom = ROOM)
             listeners[event] = handler;
             return Promise.resolve({ remove: vi.fn() });
           }),
-          getPendingAnswer: vi.fn().mockResolvedValue({ callId: null, roomId: null, atMs: 0 }),
+          getPendingAnswer: vi.fn().mockResolvedValue(nativeAnswerMarker),
           getPendingReject: vi.fn().mockResolvedValue({ callId: null, roomId: null, atMs: 0 }),
         },
         { get: (t: Record<string, unknown>, p: string) => t[p] ?? vi.fn().mockResolvedValue({}) },
@@ -51,15 +60,19 @@ async function wireBridge(currentCallId: string | undefined, currentRoom = ROOM)
     useCallStore: () => ({ matrixCall: { callId: currentCallId, roomId: ROOM } }),
   }));
 
+  let held = currentCallId;
   const callService = {
     answerCall: vi.fn(),
     rejectCall: vi.fn() as Mock,
     hangup: vi.fn() as Mock,
-    currentCall: () => ({ callId: currentCallId, roomId: currentRoom }),
+    currentCall: () => ({ callId: held, roomId: currentRoom }),
+    setCurrent: (callId: string | undefined) => {
+      held = callId;
+    },
   };
-  const { nativeCallBridge } = await import('./native-call-bridge');
-  await nativeCallBridge.wire(callService);
-  return { listeners, callService };
+  const bridgeModule = await import('./native-call-bridge');
+  await bridgeModule.nativeCallBridge.wire(callService);
+  return { listeners, callService, bridgeModule };
 }
 
 describe('native call-lifecycle events are scoped to the call they name', () => {
@@ -123,5 +136,70 @@ describe('native call-lifecycle events are scoped to the call they name', () => 
     listeners.callDeclined({ callId: NEW_CALL, roomId: ROOM });
 
     expect(callService.rejectCall).toHaveBeenCalled();
+  });
+
+  it('leaves the current call alone once JS knows which connection is its own', async () => {
+    // JS adopted its call from a marker whose id IS the SDK call's id, which
+    // proves the connection behind it is keyed the same way. A push-keyed
+    // teardown from the same room therefore belongs to some other connection —
+    // the same-room overlap the room fallback alone cannot see.
+    const { listeners, callService, bridgeModule } = await wireBridge(NEW_CALL, ROOM, {
+      callId: NEW_CALL,
+      roomId: ROOM,
+      atMs: Date.now(),
+    });
+    expect(await bridgeModule.consumePendingAnswerCallId(NEW_CALL, ROOM)).toBe(true);
+
+    listeners.callEnded({ callId: PUSH_EVENT_ID, roomId: ROOM });
+
+    expect(callService.hangup).not.toHaveBeenCalled();
+  });
+
+  it('never learns a native key from a room-only match', async () => {
+    // The room branch is a guess: the marker may be a leftover from another
+    // connection in this room whose invite never reached JS. Believing it would
+    // bind the WRONG key and then withhold this call's own teardown for the
+    // rest of its life — JS holding a call Telecom has ended is the worse
+    // failure by a wide margin, so an unprovable correlation records nothing
+    // and the room fallback stays in charge.
+    const { listeners, callService, bridgeModule } = await wireBridge(NEW_CALL, ROOM, {
+      callId: PUSH_EVENT_ID,
+      roomId: ROOM,
+      atMs: Date.now(),
+    });
+    expect(await bridgeModule.consumePendingAnswerCallId(NEW_CALL, ROOM)).toBe(true);
+
+    listeners.callEnded({ callId: OTHER_PUSH_EVENT_ID, roomId: ROOM });
+
+    expect(callService.hangup).toHaveBeenCalled();
+  });
+
+  it('still ends the call when the event names the connection JS adopted', async () => {
+    const { listeners, callService, bridgeModule } = await wireBridge(NEW_CALL, ROOM, {
+      callId: NEW_CALL,
+      roomId: ROOM,
+      atMs: Date.now(),
+    });
+    expect(await bridgeModule.consumePendingAnswerCallId(NEW_CALL, ROOM)).toBe(true);
+
+    listeners.callEnded({ callId: NEW_CALL, roomId: ROOM });
+
+    expect(callService.hangup).toHaveBeenCalled();
+  });
+
+  it('does not apply one call\'s native key to the next call JS holds', async () => {
+    // The binding is read only for the call it was recorded against, so a
+    // finished call cannot make the next one look like a different connection.
+    const { listeners, callService, bridgeModule } = await wireBridge(OLD_CALL, ROOM, {
+      callId: OLD_CALL,
+      roomId: ROOM,
+      atMs: Date.now(),
+    });
+    expect(await bridgeModule.consumePendingAnswerCallId(OLD_CALL, ROOM)).toBe(true);
+    callService.setCurrent(NEW_CALL);
+
+    listeners.callEnded({ callId: OTHER_PUSH_EVENT_ID, roomId: ROOM });
+
+    expect(callService.hangup).toHaveBeenCalled();
   });
 });

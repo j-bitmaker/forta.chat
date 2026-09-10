@@ -92,6 +92,60 @@ function missingStamp(): number | null {
 let markerRetireInFlight: Promise<void> = Promise.resolve();
 
 /**
+ * The key the native side knows JS's current call by, when JS was *told* it.
+ *
+ * A connection created from a push is keyed by the push's `call_id` — the
+ * event_id on this homeserver — so its lifecycle events carry an id that can
+ * never be compared with anything the SDK holds, and the room is all that is
+ * left to correlate on. That collapses when two calls share a room, and the
+ * connection key does not.
+ *
+ * Written ONLY from an exact id match, never from a room match. A room match
+ * is a guess between "this marker was written for the call I am adopting" and
+ * "this marker is a leftover from another connection in the same room inside
+ * the 60 s window" — and the two are indistinguishable. Recording a guess here
+ * would be far worse than the gap it closes: {@link nativeCallEventAppliesTo}
+ * treats a known key as decisive, so one wrong binding withholds that call's
+ * own teardown for the rest of its life — JS believing a call is live after
+ * Telecom ended it is the "stuck in call mode" state that dominates the bug
+ * reports. An exact id match is not a guess: markers are written under the
+ * connection's own id, so a marker whose id equals the SDK call's id proves
+ * the connection behind that call is keyed the same way.
+ *
+ * One entry, because JS holds one call at a time, and it is only ever read for
+ * the call it was recorded against — so a binding left over from a finished
+ * call is inert rather than wrong, and needs no separate expiry.
+ *
+ * A consequence of the exact-match rule: both fields always hold the same
+ * string, so what is really recorded is "this call's connection is keyed by
+ * its own Matrix id". The pair is kept because that is the question the reader
+ * of {@link nativeCallEventAppliesTo} is asking, and because a rule that could
+ * one day prove a different key would slot in here without touching either
+ * call site.
+ */
+let nativeKeyBinding: { callId: string; nativeKey: string } | null = null;
+
+/**
+ * Record that native knows `matrixCallId` as `nativeKey`.
+ *
+ * Refuses anything but an exact match, so a caller cannot hand over a
+ * room-correlated guess by accident. See the note above.
+ */
+function rememberNativeKey(
+  matrixCallId: string | null | undefined,
+  nativeKey: string | null | undefined,
+): void {
+  if (!matrixCallId || !nativeKey || matrixCallId !== nativeKey) return;
+  nativeKeyBinding = { callId: matrixCallId, nativeKey };
+}
+
+/** The native key for `matrixCallId`, or undefined when JS was never told it. */
+function nativeKeyFor(matrixCallId: string | null | undefined): string | undefined {
+  if (!matrixCallId || nativeKeyBinding?.callId !== matrixCallId) return undefined;
+  return nativeKeyBinding.nativeKey;
+}
+
+/**
  * Bumped on every arm of {@link NativeCallBridge.waitForMatrixCallAndAnswer} and
  * on every retire of the answer marker that drives one. Only the newest
  * generation may answer.
@@ -137,6 +191,10 @@ export async function consumePendingAnswerCallId(
 ): Promise<boolean> {
   const matchAndClear = (marker: PendingCallMarker | null): boolean => {
     if (!marker || !matchesPendingCallMarker(marker, { callId, roomId })) return false;
+    // Only an exact id match tells us anything about the connection behind
+    // this call; the room branch above is a guess and rememberNativeKey
+    // refuses it. See the note on nativeKeyBinding.
+    rememberNativeKey(callId, marker.callId);
     pendingAnswer = null;
     // Whoever consumed this marker answers the call themselves, so a wait armed
     // for the same decision is redundant — and redundant is not harmless. The
@@ -358,8 +416,11 @@ class NativeCallBridge {
     event: string,
     target: NativeCallEventTarget,
   ): boolean {
-    const current: NativeCallEventTarget =
-      this.callService?.currentCall() ?? { callId: undefined };
+    const held = this.callService?.currentCall() ?? { callId: undefined };
+    const current: NativeCallEventTarget = {
+      ...held,
+      nativeKey: nativeKeyFor(held.callId),
+    };
     if (nativeCallEventAppliesTo(target, current)) return true;
     console.log(
       '[NativeCallBridge] ' + event + ' names ' + target.callId + ' in ' +
@@ -602,6 +663,10 @@ class NativeCallBridge {
           !!current?.roomId &&
           current.roomId === roomId;
         if (current && (matchById || matchByRoom)) {
+          // Same rule as consumePendingAnswerCallId: only the exact-id arm of
+          // this match says anything about the connection behind the call, and
+          // rememberNativeKey drops the room-matched case on its own.
+          rememberNativeKey(current.callId, callId);
           console.log(
             '[NativeCallBridge] matrixCall ready, answering (matchById=' +
               matchById + ', matchByRoom=' + matchByRoom + '):',

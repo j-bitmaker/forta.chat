@@ -6,6 +6,7 @@ const OTHER_ROOM = "!QqvSkKmzUfPtNbxWyE:matrix.pocketnet.app";
 const OLD_CALL = "1789002434417pyhl9z3azvtR556V";
 const NEW_CALL = "1789002456340bHi7Fz1DUPFPFOt4";
 const PUSH_EVENT_ID = "$JZBoLpZm0kQeVEyGqPHqyFEjcYVQaSGZ";
+const OTHER_PUSH_EVENT_ID = "$aLm1WkYb7cQdRfTgXhUjNpVsZeCyBoIm";
 
 describe("nativeCallEventAppliesTo", () => {
   it("applies when the event names the call JS is holding", () => {
@@ -66,14 +67,62 @@ describe("nativeCallEventAppliesTo", () => {
     expect(nativeCallEventAppliesTo({ callId: OLD_CALL, roomId: ROOM }, { callId: "" })).toBe(true);
   });
 
-  it("lets a same-room push-keyed event through — the documented residual", () => {
-    // Two calls overlapping in ONE room, the finished one push-keyed: nothing
-    // in the payload separates them. Pinned so the gap is a decision on record
-    // rather than something a later reader has to rediscover.
+  it("lets a same-room push-keyed event through when JS never learned its own native key", () => {
+    // Two calls overlapping in ONE room, the finished one push-keyed, and JS
+    // with no key for its own call either — which is what a push-created live
+    // call looks like, since its key cannot be compared with the SDK's id.
+    // Nothing in the payload separates them. Pinned so the remaining gap is a
+    // decision on record rather than something a later reader has to
+    // rediscover.
     expect(
       nativeCallEventAppliesTo(
         { callId: PUSH_EVENT_ID, roomId: ROOM },
         { callId: NEW_CALL, roomId: ROOM },
+      ),
+    ).toBe(true);
+  });
+
+  it("withholds a same-room push-keyed event once JS knows its own native key", () => {
+    // The same overlap, but JS adopted its call from a native marker and so
+    // knows which connection is its own. A teardown from any other connection
+    // is then provably not about it — this is the case that used to hang up
+    // the newer call on a redial.
+    expect(
+      nativeCallEventAppliesTo(
+        { callId: PUSH_EVENT_ID, roomId: ROOM },
+        { callId: NEW_CALL, roomId: ROOM, nativeKey: OTHER_PUSH_EVENT_ID },
+      ),
+    ).toBe(false);
+  });
+
+  it("applies a push-keyed event that names the very connection JS holds", () => {
+    expect(
+      nativeCallEventAppliesTo(
+        { callId: PUSH_EVENT_ID, roomId: ROOM },
+        { callId: NEW_CALL, roomId: ROOM, nativeKey: PUSH_EVENT_ID },
+      ),
+    ).toBe(true);
+  });
+
+  it("trusts the native key over the room", () => {
+    // Both name one connection; a room that disagrees is native telling us
+    // something inconsistent, and ending a call that is already over is the
+    // cheaper mistake.
+    expect(
+      nativeCallEventAppliesTo(
+        { callId: PUSH_EVENT_ID, roomId: OTHER_ROOM },
+        { callId: NEW_CALL, roomId: ROOM, nativeKey: PUSH_EVENT_ID },
+      ),
+    ).toBe(true);
+  });
+
+  it("never lets a known native key contradict a comparable pair of Matrix ids", () => {
+    // The tight rule stays first: an event that carries a real Matrix callId
+    // is decided by that id, whatever key the connection was created under.
+    expect(
+      nativeCallEventAppliesTo(
+        { callId: NEW_CALL, roomId: ROOM },
+        { callId: NEW_CALL, roomId: ROOM, nativeKey: PUSH_EVENT_ID },
       ),
     ).toBe(true);
   });
