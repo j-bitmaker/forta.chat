@@ -516,16 +516,23 @@ class CallConnection(
 ) : Connection() {
 
     companion object {
-        var onAnswered: ((String) -> Unit)? = null
         /**
-         * Both carry the room as well as the id, because the id alone does not
-         * always identify the call. A connection created from a push is keyed by
-         * the push payload's `call_id`, which this homeserver fills with the
-         * event_id — it can never equal the Matrix callId JS holds, so JS has no
-         * way to tell whether such an event is about the call it is showing or
-         * about a previous one. With the room it can at least refuse an event
-         * from somewhere else. (`onAnswered` reads the room off the marker
-         * `onAnswer` has just written, so it needs no parameter.)
+         * All three carry the room as well as the id.
+         *
+         * `onAnswered` used to carry only the id, and its listener read the
+         * room out of `CallConnection.pendingAnswer` — a global that belongs to
+         * whichever call last wrote one. On the path where the activity answers
+         * without a Telecom connection, the marker for THIS call is written a
+         * few statements later, so the listener could pair the tapped call's id
+         * with a previous call's room and arm the JS answer wait against it.
+         */
+        var onAnswered: ((String, String) -> Unit)? = null
+        /**
+         * The id alone does not always identify the call: a connection created
+         * from a push is keyed by the push payload's `call_id`, which this
+         * homeserver fills with the event_id, so it can never equal the Matrix
+         * callId JS holds. With the room JS can at least refuse an event that
+         * belongs somewhere else.
          */
         var onRejected: ((String, String) -> Unit)? = null
         var onEnded: ((String, String) -> Unit)? = null
@@ -706,7 +713,7 @@ class CallConnection(
         // screen the user never asked for.
         pendingAnswer = PendingCallMarker.of(callId, roomId, System.currentTimeMillis())
         if (onAnswered != null) {
-            onAnswered?.invoke(callId)
+            onAnswered?.invoke(callId, roomId)
         } else {
             Log.w("CallConnection", "onAnswer: JS listener not wired, queued for replay")
         }

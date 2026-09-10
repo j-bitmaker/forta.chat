@@ -128,9 +128,59 @@ class IncomingCallAcceptGuardTest {
         )
     }
 
-    private fun extractOverrideBody(source: String, name: String): String {
-        val match = Regex("override\\s+fun\\s+$name\\s*\\([^)]*\\)\\s*\\{").find(source)
-            ?: error("Could not find override fun $name")
+    @Test
+    fun `accept must not answer a call the slot does not hold`() {
+        // This activity is launched by FCM independently of Telecom, so it can
+        // be on screen for a call `onCreateIncomingConnection` refused as BUSY
+        // — and the slot then holds the conversation the user is having. The
+        // decline button and the auto-reject have both been guarded against
+        // that since 1adc0949/dac97dcb; accept reached for the slot unchecked.
+        //
+        // Answering the wrong connection does more than fail to answer this
+        // call: `onAnswer` writes a FRESH pendingAnswer marker for the call in
+        // the slot and arms the JS answer wait for its room, which is how a
+        // later invite from that room gets picked up with no ringer at all.
+        // Comments first: this body documents both call paths in prose, and a
+        // plain indexOf would measure the explanation rather than the code.
+        val body = withoutComments(extractPrivateBody(activity, "accept"))
+        val guardAt = body.indexOf("IncomingAcceptPolicy.mayAnswerSlot(")
+        val answerAt = body.indexOf("connection.onAnswer()")
+        assertTrue(
+            "accept() must ask IncomingAcceptPolicy before answering the slot " +
+                "(guard=$guardAt, answer=$answerAt):\n$body",
+            guardAt in 0 until answerAt,
+        )
+        // The state is the load-bearing half and it must come from the slot,
+        // not from anything the surface remembers: an id-only guard passes for
+        // a push-keyed slot, which is the common shape on this homeserver.
+        assertTrue(
+            "the guard must be fed the slot's own state:\n$body",
+            Regex("mayAnswerSlot\\(\\s*it\\.state").containsMatchIn(body),
+        )
+        assertTrue(
+            "a slot that is not this call must still notify JS with THIS callId " +
+                "and THIS room, so the call the user tapped is the one answered " +
+                "and the wait is armed against the right room:\n$body",
+            Regex("onAnswered\\?\\.invoke\\(callId,").containsMatchIn(body),
+        )
+    }
+
+    /** Drops `//` comment tails so an assertion measures code, not prose. */
+    private fun withoutComments(body: String): String =
+        body.lines().joinToString("\n") { line ->
+            val at = line.indexOf("//")
+            if (at >= 0) line.substring(0, at) else line
+        }
+
+    private fun extractPrivateBody(source: String, name: String): String =
+        extractBody(source, "private", name)
+
+    private fun extractOverrideBody(source: String, name: String): String =
+        extractBody(source, "override", name)
+
+    private fun extractBody(source: String, keyword: String, name: String): String {
+        val match = Regex("$keyword\\s+fun\\s+$name\\s*\\([^)]*\\)\\s*\\{").find(source)
+            ?: error("Could not find $keyword fun $name")
         var depth = 1
         var i = match.range.last + 1
         val start = i

@@ -384,7 +384,22 @@ class IncomingCallActivity : Activity() {
         //     to pick up later via getPendingAnswer.
         //   - CallConnection.onAnswered direct invoke as fallback when
         //     we bypassed Telecom.
-        val connection = CallConnectionService.currentConnection
+        val slot = CallConnectionService.currentConnection
+        // The same shape of guard the decline path carries, and for the same
+        // reason: FCM launches this activity independently of Telecom, so it can
+        // be on screen for a call `onCreateIncomingConnection` refused as BUSY,
+        // and the slot then holds the conversation the user is having.
+        // Answering that connection would not answer the call on screen at all
+        // — and `onAnswer` would write a fresh pendingAnswer marker for the
+        // OTHER call and arm the JS answer wait for its room, which is how a
+        // later invite from that room gets picked up with no ringer.
+        //
+        // The state is what carries this. An id check cannot: CallSlotPolicy
+        // treats a slot keyed by a push event id as unkeyed so Telecom can
+        // always be ended, and on this homeserver that is the common shape.
+        val connection = slot?.takeIf {
+            IncomingAcceptPolicy.mayAnswerSlot(it.state, it.callId, callId)
+        }
         if (connection != null) {
             // Telecom throws from a state transition on a connection it has
             // already destroyed — which the ring backstop now makes reachable
@@ -394,8 +409,19 @@ class IncomingCallActivity : Activity() {
             // the Telecom handoff is past saving.
             tryStep("connection.onAnswer") { connection.onAnswer() }
         } else {
-            Log.w(TAG, "No ConnectionService connection, notifying JS directly")
-            CallConnection.onAnswered?.invoke(callId)
+            if (slot != null) {
+                Log.w(
+                    TAG,
+                    "accept: slot holds ${slot.callId} in state ${slot.state}, " +
+                        "not this ringer's $callId — answering via JS",
+                )
+            } else {
+                Log.w(TAG, "No ConnectionService connection, notifying JS directly")
+            }
+            // Either way the call the user tapped is the one JS is told about,
+            // and it carries its own room — the listener must not have to guess
+            // it from a global marker another call may own.
+            CallConnection.onAnswered?.invoke(callId, intent.getStringExtra("roomId") ?: "")
         }
 
         // Belt-and-braces: ensure the pending-answer markers are set on

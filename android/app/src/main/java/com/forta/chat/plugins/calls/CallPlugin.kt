@@ -55,7 +55,7 @@ class CallPlugin : Plugin() {
      * without stealing a newer instance's.
      */
     private var installedCallbacks:
-        Triple<(String) -> Unit, (String, String) -> Unit, (String, String) -> Unit>? = null
+        Triple<(String, String) -> Unit, (String, String) -> Unit, (String, String) -> Unit>? = null
 
     override fun load() {
         try {
@@ -74,18 +74,22 @@ class CallPlugin : Plugin() {
             CallTeardown.endCall(context, CallTeardownPolicy.Reason.COLD_START, null)
         }.onFailure { Log.w(TAG, "cold-start teardown sweep threw", it) }
 
-        val onAnswered: (String) -> Unit = { callId ->
+        val onAnswered: (String, String) -> Unit = { callId, roomId ->
             notifyListeners("callAnswered", JSObject().apply {
                 put("callId", callId)
                 // Include roomId: on this homeserver the push payload has
                 // the push event_id in place of the Matrix content.call_id,
-                // so JS can't correlate by callId alone. By the time this
-                // callback fires CallConnection.onAnswer has already set
-                // the pending-answer marker's room, so read it here. A plain
-                // read, not a take: onAnswer wrote this marker two statements
-                // ago on this same thread, and getPendingAnswer consumes it
-                // separately for the cold-start path.
-                put("roomId", CallConnection.pendingAnswer.roomId ?: "")
+                // so JS can't correlate by callId alone.
+                //
+                // It arrives as a parameter rather than being read out of
+                // `CallConnection.pendingAnswer`. That global belongs to
+                // whichever call last wrote a marker, and on the path where
+                // IncomingCallActivity answers with no Telecom connection the
+                // marker for THIS call is written a few statements after the
+                // callback fires — so the read could pair the tapped call's id
+                // with a previous call's room, and JS would arm its answer wait
+                // against that room.
+                put("roomId", roomId)
             })
         }
         // Both carry the room for the same reason callAnswered does: a
