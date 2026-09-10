@@ -2,6 +2,7 @@ import { computed } from "vue";
 import { en } from "./locales/en";
 import { ru } from "./locales/ru";
 import { useLocaleStore } from "@/entities/locale";
+import { detectBrowserLocale } from "./detect-locale";
 import type { TranslationKey } from "./locales/en";
 
 const messages = { en, ru } as const;
@@ -31,7 +32,8 @@ export function useI18n() {
 
 /**
  * Standalone translation function for non-Vue contexts (services, workers).
- * Reads locale from localStorage directly — no Pinia dependency.
+ * Reads locale from localStorage directly — no Pinia dependency. With nothing
+ * saved it follows the device language, as the locale store does.
  */
 export function tRaw(key: TranslationKey, params?: Record<string, string | number>): string {
   let locale: string = "en";
@@ -39,6 +41,8 @@ export function tRaw(key: TranslationKey, params?: Record<string, string | numbe
     const raw = localStorage.getItem("forta-chat:locale");
     if (raw) {
       try { locale = JSON.parse(raw); } catch { locale = raw; }
+    } else {
+      locale = detectBrowserLocale();
     }
   } catch { /* fallback to en */ }
   const dict = messages[locale as keyof typeof messages] ?? messages.en;
