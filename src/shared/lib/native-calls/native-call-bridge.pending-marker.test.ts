@@ -572,3 +572,64 @@ describe("the room fallback inside a running wait", () => {
     }
   });
 });
+
+describe("retiring an answer marker stops the wait it was driving", () => {
+  const OTHER_CALL_ID = "1788984290557dSfOceinVzLEuz9Z";
+
+  // The wait polls for 30 s and a push-keyed marker keeps the room fallback
+  // open the whole time, so a wait whose decision has already been acted on can
+  // still adopt the next invite in that room. finalizeCall retires the markers
+  // as its step 0; the wait has to die with them.
+  it("does not adopt a later call in the room after the marker is retired", async () => {
+    const fresh = markerAged(3_000);
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      const callService = { answerCall: vi.fn(), rejectCall: vi.fn(), hangup: vi.fn() };
+      let live: { callId: string; roomId: string } | null = null;
+      const mod = await loadBridge(fresh, noMarker(), { matrixCall: () => live });
+
+      await mod.nativeCallBridge.wire(callService);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(callService.answerCall).not.toHaveBeenCalled();
+
+      await mod.retirePendingMarkers(PUSH_EVENT_ID, ROOM);
+
+      live = { callId: OTHER_CALL_ID, roomId: ROOM };
+      await vi.advanceTimersByTimeAsync(900);
+
+      expect(callService.answerCall).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The path that actually runs for most calls. handleIncomingCall consumes the
+  // marker as soon as the invite arrives, which nulls the slot — so the retire
+  // in finalizeCall finds nothing to mark spent and cannot cancel anything. The
+  // consume has to do it, or the wait outlives the decision it was replaying.
+  it("stops the wait when the marker is consumed rather than retired", async () => {
+    const fresh = markerAged(3_000);
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      const callService = { answerCall: vi.fn(), rejectCall: vi.fn(), hangup: vi.fn() };
+      let live: { callId: string; roomId: string } | null = null;
+      const mod = await loadBridge(fresh, noMarker(), { matrixCall: () => live });
+
+      await mod.nativeCallBridge.wire(callService);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(callService.answerCall).not.toHaveBeenCalled();
+
+      // handleIncomingCall's consume: matches the push-keyed marker by room and
+      // answers that call itself.
+      expect(await mod.consumePendingAnswerCallId(MATRIX_CALL_ID, ROOM)).toBe(true);
+
+      // A different call turns up in the same room. The wait must be gone.
+      live = { callId: OTHER_CALL_ID, roomId: ROOM };
+      await vi.advanceTimersByTimeAsync(900);
+
+      expect(callService.answerCall).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

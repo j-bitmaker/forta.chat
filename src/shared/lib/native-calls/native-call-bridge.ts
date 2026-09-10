@@ -90,6 +90,26 @@ function missingStamp(): number | null {
 let markerRetireInFlight: Promise<void> = Promise.resolve();
 
 /**
+ * Bumped on every arm of {@link NativeCallBridge.waitForMatrixCallAndAnswer} and
+ * on every retire of the answer marker that drives one. Only the newest
+ * generation may answer.
+ */
+let answerWaitGeneration = 0;
+
+/**
+ * Stop the wait an answer marker was driving.
+ *
+ * A wait exists to replay a decision the user already made on the native ringer.
+ * Once that marker is retired the decision has been acted on, so a wait still
+ * polling for the rest of its 30 s can only adopt a call the user never accepted.
+ * That is reachable rather than theoretical: a push-keyed id keeps the room
+ * fallback open, so the next invite in the same room matches.
+ */
+function cancelAnswerWait(): void {
+  answerWaitGeneration++;
+}
+
+/**
  * Decide whether the given Matrix call is the one the user already
  * accepted via the native ringer, and consume the marker on match.
  *
@@ -116,6 +136,15 @@ export async function consumePendingAnswerCallId(
   const matchAndClear = (marker: PendingCallMarker | null): boolean => {
     if (!marker || !matchesPendingCallMarker(marker, { callId, roomId })) return false;
     pendingAnswer = null;
+    // Whoever consumed this marker answers the call themselves, so a wait armed
+    // for the same decision is redundant — and redundant is not harmless. The
+    // wait matches against the marker it captured when it armed, not against
+    // this slot, so it would go on matching by room for the rest of its 30 s
+    // and could adopt a later call in that room that nobody accepted. This is
+    // the common path, not the edge case: handleIncomingCall consumes the
+    // marker for essentially every incoming call, which leaves nothing for the
+    // retire in finalizeCall to find.
+    cancelAnswerWait();
     return true;
   };
 
@@ -260,7 +289,12 @@ export async function retirePendingMarkers(callId: string, roomId?: string): Pro
   const spent = (marker: PendingCallMarker | null): boolean =>
     !!marker &&
     ((!!callId && marker.callId === callId) || (!!byRoom && marker.roomId === byRoom));
-  if (spent(pendingAnswer)) pendingAnswer = null;
+  if (spent(pendingAnswer)) {
+    pendingAnswer = null;
+    // Precisely scoped: `spent` already decided this marker belongs to the
+    // call being retired, so a wait armed for a different call is untouched.
+    cancelAnswerWait();
+  }
   if (spent(pendingReject)) pendingReject = null;
   if (!isNative) return;
   const done = NativeCall.retirePendingMarkers({ callId, roomId: byRoom }).catch((e: unknown) => {
@@ -274,8 +308,6 @@ export async function retirePendingMarkers(callId: string, roomId?: string): Pro
 
 class NativeCallBridge {
   private callService: any = null;
-  /** Bumped on every arm of {@link waitForMatrixCallAndAnswer}; only the newest may answer. */
-  private answerWaitGeneration = 0;
   /**
    * WEE-16: signal aborted by stop/forceStop so any in-flight
    * `startAudioRouting` retry bails immediately. Without this, a user
@@ -463,7 +495,7 @@ class NativeCallBridge {
     // 30 s and could still fire on a later, unrelated one. In the Samsung
     // swipe-away repro the poll armed at 23:04:41.913 answered at 23:04:52.503:
     // eleven seconds and a different call later.
-    const generation = ++this.answerWaitGeneration;
+    const generation = ++answerWaitGeneration;
     const MAX_WAIT_MS = 30_000;
     const POLL_MS = 300;
     // Don't even attempt the invite-recovery scan for the first
@@ -486,7 +518,7 @@ class NativeCallBridge {
       // has already re-emitted Call.incoming, handleIncomingCall consumes the
       // same module-level marker through consumePendingAnswerCallId and
       // answers from there, independently of any wait.
-      if (generation !== this.answerWaitGeneration) return;
+      if (generation !== answerWaitGeneration) return;
       try {
         const { useCallStore } = await import('@/entities/call');
         const store = useCallStore();
