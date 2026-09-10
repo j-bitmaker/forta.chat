@@ -472,6 +472,8 @@ class NativeRTCPeerConnection extends EventTarget {
 
   private _senders: RTCRtpSender[] = [];
   private _localStreams: MediaStream[] = [];
+  // An addTrack negotiationneeded is waiting for its microtask.
+  private _negotiationNeededQueued = false;
 
   addTrack(track: MediaStreamTrack, ..._streams: MediaStream[]): RTCRtpSender {
     // Save reference to local streams for SDP msid rewriting
@@ -505,7 +507,15 @@ class NativeRTCPeerConnection extends EventTarget {
     // 2. Mid-call track additions (ICE already connected) — e.g. voice→video upgrade
     // Skip ONLY during incoming call setup (remote description set but ICE not yet connected)
     // to avoid unwanted renegotiation that breaks ICE establishment.
+    // One event per batch of addTrack calls, as a browser fires it: the SDK
+    // adds a video call's audio and video tracks in one loop, and an event per
+    // track made it send a second offer (m.call.negotiate) before the callee
+    // answered — the callee's answer then failed against the connection that
+    // early offer had already made stable.
+    if (this._negotiationNeededQueued) return sender;
+    this._negotiationNeededQueued = true;
     queueMicrotask(() => {
+      this._negotiationNeededQueued = false;
       if (this._closed) return;
       const iceConnected = this._iceConnectionState === "connected" || this._iceConnectionState === "completed";
       if (this._remoteDescription && !iceConnected) {

@@ -624,4 +624,64 @@ describe("NativeRTCPeerConnection proxy", () => {
       pc.close();
     });
   });
+
+  describe("negotiationneeded from addTrack", () => {
+    // A browser fires one negotiationneeded per batch of changes. The SDK adds
+    // a video call's audio and video tracks in one loop; firing once per track
+    // made it send a second offer (m.call.negotiate) before the callee
+    // answered, and the callee's own answer then failed against a connection
+    // that early offer had already made stable.
+    const countNegotiationNeeded = (pc: RTCPeerConnection) => {
+      const seen = { count: 0 };
+      pc.addEventListener("negotiationneeded", () => {
+        seen.count += 1;
+      });
+      return seen;
+    };
+
+    it("fires once when the SDK adds a video call's audio and video tracks together", async () => {
+      const pc = new window.RTCPeerConnection();
+      await tick();
+      await tick();
+      const seen = countNegotiationNeeded(pc);
+      const stream = new MediaStream();
+
+      pc.addTrack({ kind: "audio", enabled: true } as MediaStreamTrack, stream);
+      pc.addTrack({ kind: "video", enabled: true } as MediaStreamTrack, stream);
+      await tick();
+
+      expect(seen.count).toBe(1);
+      pc.close();
+    });
+
+    it("fires again for a track added later, as in a voice-to-video upgrade", async () => {
+      const pc = new window.RTCPeerConnection();
+      await tick();
+      await tick();
+      const seen = countNegotiationNeeded(pc);
+      const stream = new MediaStream();
+
+      pc.addTrack({ kind: "audio", enabled: true } as MediaStreamTrack, stream);
+      await tick();
+      pc.addTrack({ kind: "video", enabled: true } as MediaStreamTrack, stream);
+      await tick();
+
+      expect(seen.count).toBe(2);
+      pc.close();
+    });
+
+    it("stays silent while answering: remote offer set, ICE not yet connected", async () => {
+      const pc = new window.RTCPeerConnection();
+      await tick();
+      await tick();
+      await pc.setRemoteDescription({ type: "offer", sdp: "v=0\r\n" });
+      const seen = countNegotiationNeeded(pc);
+
+      pc.addTrack({ kind: "audio", enabled: true } as MediaStreamTrack, new MediaStream());
+      await tick();
+
+      expect(seen.count).toBe(0);
+      pc.close();
+    });
+  });
 });
