@@ -20,6 +20,7 @@ class IncomingCallSurfaceContractTest {
     private val activity by lazy { read("java/com/forta/chat/plugins/calls/IncomingCallActivity.kt") }
     private val pushPlugin by lazy { read("java/com/forta/chat/plugins/push/PushDataPlugin.kt") }
     private val manifest by lazy { read("AndroidManifest.xml") }
+    private val callPlugin by lazy { read("java/com/forta/chat/plugins/calls/CallPlugin.kt") }
 
     @Test
     fun incomingCallScreen_routesTheVolumeRocker_toTheRingerStream() {
@@ -49,6 +50,28 @@ class IncomingCallSurfaceContractTest {
     @Test
     fun manifest_declaresTheFullScreenIntentPermission() {
         assertTrue(manifest.contains("android.permission.USE_FULL_SCREEN_INTENT"))
+    }
+
+    @Test
+    fun aDestroyedCallPlugin_stopsAnsweringTelecomCallbacks() {
+        // CallConnection.onAnswered/onRejected/onEnded are companion-object
+        // statics. A plugin instance that outlives its Bridge keeps receiving
+        // native Accept/Decline and pushes them into a torn-down WebView, instead
+        // of letting onAnswer's "queued for replay" marker path take over. Newly
+        // reachable now that a dead renderer can trigger MainActivity.recreate().
+        val body = functionBody(callPlugin, "override\\s+fun\\s+handleOnDestroy\\s*\\(")
+        for (name in listOf("onAnswered", "onRejected", "onEnded")) {
+            assertTrue(
+                "handleOnDestroy must clear CallConnection.$name:\n$body",
+                body.contains("CallConnection.$name = null"),
+            )
+        }
+        assertTrue(
+            "each clear must be guarded by identity — during a recreate the new " +
+                "instance may already have installed its own, and clearing those " +
+                "would silence a live plugin:\n$body",
+            Regex("===").findAll(body).count() >= 3,
+        )
     }
 
     private fun functionBody(src: String, signaturePattern: String): String {

@@ -49,6 +49,14 @@ class CallPlugin : Plugin() {
 
     private var audioRouter: AudioRouter? = null
 
+    /**
+     * Exactly the three callbacks this plugin instance installed on
+     * [CallConnection]'s companion. Kept so [handleOnDestroy] can clear its own
+     * without stealing a newer instance's.
+     */
+    private var installedCallbacks:
+        Triple<(String) -> Unit, (String) -> Unit, (String) -> Unit>? = null
+
     override fun load() {
         try {
             CallConnectionService.registerPhoneAccount(context)
@@ -66,7 +74,7 @@ class CallPlugin : Plugin() {
             CallTeardown.endCall(context, CallTeardownPolicy.Reason.COLD_START, null)
         }.onFailure { Log.w(TAG, "cold-start teardown sweep threw", it) }
 
-        CallConnection.onAnswered = { callId ->
+        val onAnswered: (String) -> Unit = { callId ->
             notifyListeners("callAnswered", JSObject().apply {
                 put("callId", callId)
                 // Include roomId: on this homeserver the push payload has
@@ -80,16 +88,20 @@ class CallPlugin : Plugin() {
                 put("roomId", CallConnection.pendingAnswer.roomId ?: "")
             })
         }
-        CallConnection.onRejected = { callId ->
+        val onRejected: (String) -> Unit = { callId ->
             notifyListeners("callDeclined", JSObject().apply {
                 put("callId", callId)
             })
         }
-        CallConnection.onEnded = { callId ->
+        val onEnded: (String) -> Unit = { callId ->
             notifyListeners("callEnded", JSObject().apply {
                 put("callId", callId)
             })
         }
+        CallConnection.onAnswered = onAnswered
+        CallConnection.onRejected = onRejected
+        CallConnection.onEnded = onEnded
+        installedCallbacks = Triple(onAnswered, onRejected, onEnded)
 
         // Shared AudioRouter instance — same one CallActivity attaches its
         // UI listener to via setUiListener. Prior to Session 01 CallPlugin
@@ -135,6 +147,27 @@ class CallPlugin : Plugin() {
      * Safe to call unconditionally from JS — it's a no-op when a ringer is
      * already present.
      */
+    /**
+     * Telecom's callbacks are process-global statics; this plugin instance is not.
+     * When the activity goes away — the OS reclaiming it mid-call, or
+     * `MainActivity.recreate()` recovering from a dead WebView renderer — leaving
+     * them pointed here sends a native Accept into a Bridge that is being torn
+     * down, instead of letting it take the marker-replay path `onAnswer` already
+     * prepared for exactly this case ("JS listener not wired, queued for replay").
+     *
+     * Cleared by identity: during a recreate the incoming instance may already
+     * have installed its own, and clearing those would silence a live plugin.
+     */
+    override fun handleOnDestroy() {
+        installedCallbacks?.let { (answered, rejected, ended) ->
+            if (CallConnection.onAnswered === answered) CallConnection.onAnswered = null
+            if (CallConnection.onRejected === rejected) CallConnection.onRejected = null
+            if (CallConnection.onEnded === ended) CallConnection.onEnded = null
+        }
+        installedCallbacks = null
+        super.handleOnDestroy()
+    }
+
     @PluginMethod
     fun ensureIncomingCallVisible(call: PluginCall) {
         val alreadyVisible = IncomingCallActivity.currentInstance != null ||

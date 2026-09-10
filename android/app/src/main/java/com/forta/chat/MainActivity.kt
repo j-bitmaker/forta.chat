@@ -6,14 +6,20 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
+import android.util.Log
 import android.view.View
 import android.view.WindowManager
+import android.webkit.RenderProcessGoneDetail
+import android.webkit.WebView
+import android.view.ViewGroup
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import android.view.View.LAYOUT_DIRECTION_LTR
 import com.getcapacitor.BridgeActivity
+import com.getcapacitor.WebViewListener
 import com.forta.chat.plugins.tor.TorPlugin
 import com.forta.chat.plugins.calls.CallPlugin
 import com.forta.chat.plugins.filetransfer.TorFilePlugin
@@ -31,7 +37,87 @@ import kotlinx.coroutines.launch
 
 class MainActivity : BridgeActivity() {
 
+    companion object {
+        private const val TAG = "MainActivity"
+
+        /**
+         * Monotonic stamp of the last renderer-death recovery, shared by every
+         * activity instance in this process: an instance field would be reset by
+         * the very [recreate] it is meant to rate-limit.
+         */
+        @Volatile
+        private var lastRecoveryAtMs: Long? = null
+    }
+
     private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    /**
+     * Keeps a dead render process from taking the whole app down with it.
+     *
+     * Capacitor asks its `WebViewListener`s and, with none registered, answers
+     * Android's `onRenderProcessGone` with `false` — "not handled", i.e. kill the
+     * process. See [WebViewRecoveryPolicy] for why that is the wrong answer after
+     * a call-time swipe-away, and what each decision means.
+     */
+    private val renderProcessRecovery = object : WebViewListener() {
+        override fun onRenderProcessGone(
+            webView: WebView?,
+            detail: RenderProcessGoneDetail?,
+        ): Boolean {
+            val decision = WebViewRecoveryPolicy.decide(
+                isCurrentWebView = webView != null && webView === bridge?.webView,
+                activityAlive = !isFinishing && !isDestroyed,
+                msSinceLastRecovery = lastRecoveryAtMs?.let { SystemClock.elapsedRealtime() - it },
+            )
+            Log.w(
+                TAG,
+                "WebView render process gone (didCrash=" +
+                    "${runCatching { detail?.didCrash() }.getOrNull()}) -> $decision",
+            )
+            // Android forbids *using* a WebView whose renderer is gone. Who
+            // destroys it depends on whether anyone else still will.
+            return when (decision) {
+                RenderProcessRecovery.RECREATE_ACTIVITY -> {
+                    lastRecoveryAtMs = SystemClock.elapsedRealtime()
+                    // Deliberately not destroyed here. recreate() tears this
+                    // activity down through onDetachedFromWindow, and Capacitor's
+                    // Bridge destroys the WebView there with no guard of its own —
+                    // destroying it first would make that a second destroy. It
+                    // would also leave every plugin's notifyListeners posting into
+                    // a destroyed view for the rest of the teardown, and
+                    // Capacitor's legacy reply path does that outside any
+                    // try/catch. A live WebView with a dead renderer merely
+                    // swallows those; a destroyed one throws.
+                    webView?.removeCallbacks(reinjectAll)
+                    runCatching { recreate() }
+                        .onFailure { Log.w(TAG, "recreate() after renderer death threw", it) }
+                    true
+                }
+                RenderProcessRecovery.DISCARD_STALE -> {
+                    // The activity that owned this one is already gone, so nothing
+                    // else is coming to clean it up.
+                    discardDeadWebView(webView)
+                    true
+                }
+                RenderProcessRecovery.LET_SYSTEM_KILL -> {
+                    discardDeadWebView(webView)
+                    false
+                }
+            }
+        }
+    }
+
+    private fun discardDeadWebView(webView: WebView?) {
+        if (webView == null) return
+        runCatching {
+            // Drop our own pending work first. injectAllCssVars leaves a 500 ms
+            // re-inject queued on this very view, and letting it land on a
+            // destroyed WebView would turn a recovered crash into a fresh one.
+            webView.removeCallbacks(reinjectAll)
+            (webView.parent as? ViewGroup)?.removeView(webView)
+            webView.destroy()
+        }.onFailure { Log.w(TAG, "discarding the dead WebView threw", it) }
+    }
 
     // Cached inset values (dp) for re-injection after page loads
     private var insetTop = 0
@@ -103,6 +189,9 @@ class MainActivity : BridgeActivity() {
         registerPlugin(PushDataPlugin::class.java)
         registerPlugin(LocalePlugin::class.java)
         registerPlugin(SaveMediaPlugin::class.java)
+        // Must precede super.onCreate: that is where the Bridge — and with it
+        // the WebViewClient that consults these listeners — is built.
+        bridgeBuilder.addWebViewListener(renderProcessRecovery)
         super.onCreate(savedInstanceState)
 
         // Lock-screen accept: see liftKeyguardForCallAccept.
@@ -243,7 +332,12 @@ class MainActivity : BridgeActivity() {
             })();
         """.trimIndent()
 
-        webView.post { if (!isFinishing && !isDestroyed) webView.evaluateJavascript(js, null) }
+        webView.post {
+            if (isFinishing || isDestroyed) return@post
+            // The WebView may have been destroyed by the renderer-death
+            // recovery between this post and its delivery.
+            runCatching { webView.evaluateJavascript(js, null) }
+        }
         // 500ms safety-net re-inject: some OEM WebViews (Xiaomi/MIUI,
         // Infinix, MOBI) do not reliably re-dispatch window insets after
         // IME toggles or internal WebView resets. This backup re-inject
