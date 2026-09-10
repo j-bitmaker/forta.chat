@@ -169,6 +169,52 @@ export function createIOSNativeCallAdapter(): NativeCallNativePlugin {
     { roomId: string; callerName: string; hasVideo: boolean }
   >();
 
+  /**
+   * When this adapter first saw a call in a state that makes it a marker,
+   * keyed by `callId` and that state.
+   *
+   * The marker match falls back to `roomId` when the ids cannot be compared,
+   * and that fallback is bounded by the marker's age — the rule that stopped a
+   * stale reject from declining a later call from the same room unheard. It
+   * needs a write time, and iOS had none to give: CallKit records carry no
+   * timestamp, and `matchesPendingCallMarker` reads a missing stamp as "this
+   * platform cannot tell", leaving the room fallback open for ever. That is
+   * not a theoretical gap here — unlike Android's, these getters are a live
+   * read rather than read-and-clear, so CallKit hands the same accepted or
+   * ended call back on every peek for as long as it keeps the record.
+   *
+   * First observation is the honest approximation available: it trails the
+   * user's tap by however long the app took to reach this code, which on the
+   * cold-start path these markers exist for is seconds. Keyed by state as well
+   * as id because accepting a call and later ending it are two decisions, and
+   * the reject marker must not inherit the accept's moment.
+   */
+  const markerFirstSeen = new Map<string, number>();
+
+  /** Stamp for `callId` in `state`, minted once and stable thereafter. */
+  function markerStamp(callId: string, state: string): number {
+    const key = state + ':' + callId;
+    const seen = markerFirstSeen.get(key);
+    if (seen !== undefined) return seen;
+    const now = Date.now();
+    markerFirstSeen.set(key, now);
+    return now;
+  }
+
+  /**
+   * Drop stamps for calls CallKit no longer reports.
+   *
+   * Without this every call the process ever saw stays here for its lifetime,
+   * and the map is the only thing that decides whether a marker looks fresh.
+   */
+  function forgetVanishedCalls(live: IncomingCallRecord[]): void {
+    const alive = new Set(live.map((c) => c.callId));
+    for (const key of [...markerFirstSeen.keys()]) {
+      const callId = key.slice(key.indexOf(':') + 1);
+      if (!alive.has(callId)) markerFirstSeen.delete(key);
+    }
+  }
+
   return {
     async reportIncomingCall(opts) {
       knownCalls.set(opts.callId, {
@@ -205,6 +251,7 @@ export function createIOSNativeCallAdapter(): NativeCallNativePlugin {
     async getPendingAnswer() {
       try {
         const { calls } = await IncomingCallKit.getActiveCalls();
+        forgetVanishedCalls(calls);
         // First accepted (cold-start) call wins. CallKit can't have
         // more than one "accepted" call at a time on iOS without
         // CallGrouping, which we don't enable.
@@ -213,7 +260,11 @@ export function createIOSNativeCallAdapter(): NativeCallNativePlugin {
         const roomIdRaw = accepted.extra?.roomId;
         const roomId =
           typeof roomIdRaw === 'string' && roomIdRaw.length > 0 ? roomIdRaw : null;
-        return { callId: accepted.callId, roomId };
+        return {
+          callId: accepted.callId,
+          roomId,
+          atMs: markerStamp(accepted.callId, accepted.state),
+        };
       } catch (e) {
         console.warn('[NativeCallBridge.iOS] getPendingAnswer failed:', e);
         return { callId: null, roomId: null };
@@ -228,12 +279,17 @@ export function createIOSNativeCallAdapter(): NativeCallNativePlugin {
       // user; that's enough to send Matrix the rejection.
       try {
         const { calls } = await IncomingCallKit.getActiveCalls();
+        forgetVanishedCalls(calls);
         const declined = calls.find((c) => c.state === 'ended');
         if (!declined) return { callId: null, roomId: null };
         const roomIdRaw = declined.extra?.roomId;
         const roomId =
           typeof roomIdRaw === 'string' && roomIdRaw.length > 0 ? roomIdRaw : null;
-        return { callId: declined.callId, roomId };
+        return {
+          callId: declined.callId,
+          roomId,
+          atMs: markerStamp(declined.callId, declined.state),
+        };
       } catch (e) {
         console.warn('[NativeCallBridge.iOS] getPendingReject failed:', e);
         return { callId: null, roomId: null };
