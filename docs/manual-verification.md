@@ -650,9 +650,19 @@
   ```
 
   До правки этот же прогон давал `arm` и через 116 мс `onDisconnect` того же
-  callId. Замечание: прогон сделан на сборке **до** ужесточения гонки
-  (главный лупер + проверка состояния) — оно вынесено отдельной записью выше,
-  сам путь «слот RINGING → освобождён → новый звонок звонит» им не меняется.
+  callId. Повторено 2026-09-10 на сборке **после** ужесточения гонки (главный
+  лупер + `mayReleaseUnpresented`) — освобождение по-прежнему срабатывает, слот
+  был RINGING:
+
+  ```
+  12:48:19.223 W/CallPlugin: releasing an unpresented slot 17890336720117RNZJYviWfKvNUBe
+  12:48:19.236 [NativeCallBridge] callEnded names 17890336720117RNZJYviWfKvNUBe
+               in !XfcsFwyJkEXLRTnPzc…, but JS holds … — ignoring
+  12:48:19.294 onCreateIncomingConnection: callId=1789033693915hQX5VJmcjoBM5pZP
+  12:48:19.543 D/IncomingRinger: arm callId=1789033693915hQX5VJmcjoBM5pZP
+  ```
+
+  Ни одного `onDisconnect`/`onReject` по новому callId до конца лога (22 с).
 
 
 ### Смахивание приложения завершает звонок в Telecom, и следующий звонок звонит
