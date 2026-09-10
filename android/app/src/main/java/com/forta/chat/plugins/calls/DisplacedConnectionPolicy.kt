@@ -62,4 +62,30 @@ object DisplacedConnectionPolicy {
      * @return true when the connection is still merely ringing
      */
     fun mayReleaseUnpresented(state: Int): Boolean = state == Connection.STATE_RINGING
+
+    /**
+     * Whether a new incoming registration names the call already ringing in the
+     * slot, which then has to stay rather than be displaced.
+     *
+     * One call can reach Telecom twice. While the app is alive, the FCM service
+     * rings a call push natively and forwards it to JS, which reports the same
+     * call again; both registrations carry the push's `call_id`. Displacing the
+     * first tears it down through `onDisconnect`, and the `callEnded` that sends
+     * names the call still ringing — JS cannot tell it from a real end and hangs
+     * up whatever call it holds by then.
+     *
+     * Exact id only. A push keyed by the event_id and a JS report keyed by the
+     * Matrix callId of one call stay two registrations: matching them by room
+     * would also keep a stale ring in place of a caller's quick redial from the
+     * same room.
+     *
+     * @param slotCallId the callId of the connection in the slot
+     * @param slotState that connection's `Connection.getState()`
+     * @param incomingCallId the callId of the registration being created
+     * @return true when the slot already rings for exactly this call
+     */
+    fun isSameRingingCall(slotCallId: String?, slotState: Int, incomingCallId: String?): Boolean =
+        !slotCallId.isNullOrEmpty() &&
+            slotCallId == incomingCallId &&
+            slotState == Connection.STATE_RINGING
 }

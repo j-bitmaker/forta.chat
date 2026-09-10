@@ -70,4 +70,38 @@ class DisplacedConnectionPolicyTest {
         assertFalse(DisplacedConnectionPolicy.mayReleaseUnpresented(Connection.STATE_DISCONNECTED))
         assertFalse(DisplacedConnectionPolicy.mayReleaseUnpresented(Connection.STATE_NEW))
     }
+
+    @Test
+    fun `a second registration of the call already ringing is the same call`() {
+        // Measured on the Samsung 2026-09-10: with the app alive in the
+        // background one call push reaches Telecom twice — FCM rings natively
+        // and the push forwarded to JS reports the call again. Displacing the
+        // first connection fired callEnded into JS for the call still ringing.
+        assertTrue(
+            DisplacedConnectionPolicy.isSameRingingCall(
+                "1789063215601vJG9diMjapJ0caug", Connection.STATE_RINGING, "1789063215601vJG9diMjapJ0caug",
+            )
+        )
+    }
+
+    @Test
+    fun `a different callId is another call and still displaces the ringing one`() {
+        assertFalse(DisplacedConnectionPolicy.isSameRingingCall("old-call", Connection.STATE_RINGING, "new-call"))
+    }
+
+    @Test
+    fun `a missing callId on either side never counts as the same call`() {
+        assertFalse(DisplacedConnectionPolicy.isSameRingingCall("", Connection.STATE_RINGING, ""))
+        assertFalse(DisplacedConnectionPolicy.isSameRingingCall(null, Connection.STATE_RINGING, "call"))
+        assertFalse(DisplacedConnectionPolicy.isSameRingingCall("call", Connection.STATE_RINGING, null))
+    }
+
+    @Test
+    fun `a same-id connection that no longer rings is not kept in place of the new one`() {
+        // Only a live ring is worth keeping: a finished connection presents
+        // nothing, and an established one is answered busy before this is asked.
+        assertFalse(DisplacedConnectionPolicy.isSameRingingCall("call", Connection.STATE_DISCONNECTED, "call"))
+        assertFalse(DisplacedConnectionPolicy.isSameRingingCall("call", Connection.STATE_ACTIVE, "call"))
+        assertFalse(DisplacedConnectionPolicy.isSameRingingCall("call", Connection.STATE_NEW, "call"))
+    }
 }

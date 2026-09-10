@@ -260,6 +260,31 @@ class CallConnectionService : ConnectionService() {
                 runCatching { busy.destroy() }
                 return busy
             }
+            // One call reaches Telecom twice while the app is alive: the FCM
+            // service rings the push natively and JS, handed the same push,
+            // reports the call again milliseconds later — before Telecom counts
+            // the first as ringing, after which it refuses a second registration
+            // on its own. Displacing the connection that already rings would
+            // send callEnded for that very call into JS, so keep it and refuse
+            // the duplicate. Presenting the ringer again is a no-op while it is
+            // up (same callId) and brings it back where a later duplicate slips
+            // through.
+            if (DisplacedConnectionPolicy.isSameRingingCall(previous.callId, previous.state, callId)) {
+                Log.w(TAG, "Duplicate incoming registration for $callId — keeping the connection that already rings")
+                if (roomId.isNotEmpty()) {
+                    runCatching {
+                        com.forta.chat.FortaFirebaseMessagingService
+                            .dismissPushCallNotification(applicationContext, roomId)
+                    }
+                }
+                runCatching { showIncomingCallUI(callId, callerName, hasVideo, roomId) }
+                    .onFailure { Log.e(TAG, "[callee-crash-guard] showIncomingCallUI failed", it) }
+                val duplicate = Connection.createFailedConnection(
+                    DisconnectCause(DisconnectCause.CANCELED, "duplicate-incoming")
+                )
+                runCatching { duplicate.destroy() }
+                return duplicate
+            }
         }
 
         // WEE-31: Telecom contract requires us to return a Connection here.

@@ -948,6 +948,39 @@
      обязан завершить звонок, аудиорежим вернуться в `MODE_NORMAL`.
 - Статус: ☐ не проверено
 
+### Повторная регистрация звонящего вызова не завершает его в JS
+- Коммит: <этот>
+- Почему нужен человек: дубль рождается только при живом JS и настоящем FCM.
+  Сервис пуша звонит нативно и передаёт тот же пуш в JS, а JS регистрирует
+  звонок в Telecom ещё раз — через миллисекунды, пока Telecom не посчитал
+  первый звонящим (позже он отказывает второй регистрации сам). Юнит-тесты
+  закрывают правило (`DisplacedConnectionPolicyTest`, `isSameRingingCall`) и
+  проводку (`DuplicateIncomingRegistrationContractTest`; без ветки в
+  `onCreateIncomingConnection` падают все три), но гонку двух регистраций на
+  JVM не собрать.
+- На чём: реальный аппарат, сборка с `android/app/google-services.json`
+  (проверялось на Samsung SM-A528B).
+- Шаги:
+  1. `adb logcat -v time > run.log &`. Приложение открыто и залогинено, затем
+     Home — процесс остаётся жив.
+  2. Позвонить с веба, дождаться рингера.
+     **Ожидается:** две строки `onCreateIncomingConnection: callId=<id>` и
+     `Duplicate incoming registration for <id> — keeping the connection that
+     already rings`; **нет** `Displacing a stale connection` и **нет**
+     `[NativeCallBridge] Call ended natively: <id>` до нажатия.
+     **Раньше:** вторая регистрация вытесняла первую →
+     `CallTeardown endCall reason=DISCONNECT` → `Call ended natively` для
+     звонка, который ещё звонит. JS не клал трубку только потому, что
+     `setMatrixCall` к этому моменту ещё не выполнился (его отделяет секундная
+     проверка других вкладок).
+  3. «Отклонить» на рингере — у веба отказ; в логе `Call declined: <id>` и
+     `sendEvent of type m.call.reject`.
+  4. Повторить шаги 1–2 и «Принять» — разговор соединяется.
+  5. Контроль, что одиночная регистрация не задета: смахнуть приложение из
+     «недавних» (JS мёртв), позвонить — одна `onCreateIncomingConnection`,
+     строки `Duplicate incoming registration` нет, отказ доходит до веба.
+- Статус: ☐ не проверено
+
 ---
 
 ## Проверено
