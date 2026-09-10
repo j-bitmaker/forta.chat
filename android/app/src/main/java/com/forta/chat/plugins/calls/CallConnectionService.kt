@@ -369,6 +369,9 @@ class CallConnectionService : ConnectionService() {
             }
         }
         currentConnection = connection
+        // Telecom took audio focus for this call before creating it; if the call
+        // service already heard that as an interruption and muted the mic, undo it.
+        CallForegroundService.onTelecomTookCall()
         return connection
     }
 

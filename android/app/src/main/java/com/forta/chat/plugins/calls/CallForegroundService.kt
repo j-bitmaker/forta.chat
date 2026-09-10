@@ -142,12 +142,26 @@ class CallForegroundService : Service() {
             instance?.requestAudioFocus()
                 ?: Log.w("WebRTCAudio", "reRequestAudioFocus: service not running")
         }
+
+        /**
+         * Telecom has created the Connection for the call being dialled. It took
+         * audio focus for that call before creating it, and the focus listener
+         * usually hears that loss first and mutes the mic; undo it, or the call
+         * goes out silent until hangup. A no-op when nothing was muted. See
+         * [FocusLossMute].
+         */
+        fun onTelecomTookCall() {
+            instance?.releaseFocusLossMute("Telecom took the outgoing call")
+        }
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var audioManager: AudioManager? = null
     private var audioFocusRequest: AudioFocusRequest? = null
     private var savedVoiceCallVolume: Int = -1
+    // The one mic mute the focus listener owns. Main thread only: the focus
+    // listener and Telecom's connection callbacks both run there.
+    private val focusLossMute = FocusLossMute()
     // WEE-45: NotificationCompat.CallStyle.forOngoingCall throws
     // IllegalArgumentException when the Person it wraps has an empty
     // name. On a second call right after the first one stopped, the
@@ -593,9 +607,14 @@ class CallForegroundService : Service() {
                 }
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                // D-09: Mute local mic
-                Log.d("WebRTCAudio", "Focus: TRANSIENT_LOSS — muting mic")
-                WebRTCPlugin.manager?.setAudioEnabled(false)
+                // D-09: Mute local mic — unless the focus went to Telecom for our
+                // own call, which is the call itself, not an interruption.
+                if (focusLossMute.onTransientLoss(telecomOwnsCall = CallConnectionService.currentConnection != null)) {
+                    Log.d("WebRTCAudio", "Focus: TRANSIENT_LOSS — muting mic")
+                    WebRTCPlugin.manager?.setAudioEnabled(false)
+                } else {
+                    Log.d("WebRTCAudio", "Focus: TRANSIENT_LOSS while our Telecom call is up — mic stays on")
+                }
             }
             AudioManager.AUDIOFOCUS_GAIN -> {
                 // D-09: Restore volume + unmute
@@ -607,7 +626,7 @@ class CallForegroundService : Service() {
                         0
                     )
                 }
-                WebRTCPlugin.manager?.setAudioEnabled(true)
+                releaseFocusLossMute("focus regained")
             }
             AudioManager.AUDIOFOCUS_LOSS -> {
                 // D-09: Permanent loss — log warning, don't drop the call
@@ -617,6 +636,16 @@ class CallForegroundService : Service() {
                 Log.d("WebRTCAudio", "Focus: unknown change=$focusChange")
             }
         }
+    }
+
+    /**
+     * Undo the mute a transient focus loss applied — and only that one, so a
+     * mute the user chose survives focus coming back.
+     */
+    private fun releaseFocusLossMute(reason: String) {
+        if (!focusLossMute.release()) return
+        Log.d("WebRTCAudio", "Unmuting the mic a focus loss muted: $reason")
+        WebRTCPlugin.manager?.setAudioEnabled(true)
     }
 
     private fun requestAudioFocus() {
@@ -685,6 +714,10 @@ class CallForegroundService : Service() {
             }
             savedVoiceCallVolume = -1
         }
+        // The call is over, and this instance may serve the next one. Not in
+        // requestAudioFocus: CallActivity.onResume re-requests on every return
+        // to the call, and a mute still in force must stay undoable.
+        focusLossMute.clear()
     }
 
     // -----------------------------------------------------------------------
