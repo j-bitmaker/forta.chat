@@ -129,7 +129,7 @@ describe('markers seeded by wire()', () => {
   // once at boot and keeps them in module state, so a later consume resolves
   // against that copy rather than peeking at native again. The stamp has to
   // survive that hop or the marker silently becomes ageless.
-  const callService = { answerCall: vi.fn(), rejectCall: vi.fn(), hangup: vi.fn() };
+  const callService = { answerCall: vi.fn(), rejectCall: vi.fn(), hangup: vi.fn(), currentCall: () => ({ callId: undefined }) };
 
   it('ages out a stale reject marker that wire() carried over', async () => {
     const stale = markerAged(5 * 60_000 + 37_000);
@@ -171,7 +171,7 @@ describe('markers seeded by wire()', () => {
 });
 
 describe('markers retire with the call they belong to', () => {
-  const callService = { answerCall: vi.fn(), rejectCall: vi.fn(), hangup: vi.fn() };
+  const callService = { answerCall: vi.fn(), rejectCall: vi.fn(), hangup: vi.fn(), currentCall: () => ({ callId: undefined }) };
 
   /** What handleIncomingCall does: tell native about a call JS now knows. */
   const seen = (mod: Awaited<ReturnType<typeof loadBridge>>, callId: string) =>
@@ -371,6 +371,7 @@ describe("wire() replaying a queued answer", () => {
     answerCall: vi.fn(),
     rejectCall: vi.fn(),
     hangup: vi.fn(),
+    currentCall: () => ({ callId: undefined }),
   });
 
   it("does not answer anything on a marker that outlived its invite", async () => {
@@ -436,6 +437,7 @@ describe("wire() replaying a queued answer", () => {
       answerCall: vi.fn(),
       rejectCall: vi.fn(),
       hangup: vi.fn(),
+      currentCall: () => ({ callId: undefined }),
     });
     stale.mockResolvedValue({ callId: null, roomId: null, atMs: 0 });
 
@@ -449,6 +451,7 @@ describe("the queued-answer waiter", () => {
     answerCall: vi.fn(),
     rejectCall: vi.fn(),
     hangup: vi.fn(),
+    currentCall: () => ({ callId: undefined }),
   });
 
   it("does not adopt a different call from the same room", async () => {
@@ -532,7 +535,7 @@ describe("the room fallback inside a running wait", () => {
     const nearlyStale = markerAged(PENDING_MARKER_ROOM_TTL_MS - 500);
     vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
     try {
-      const callService = { answerCall: vi.fn(), rejectCall: vi.fn(), hangup: vi.fn() };
+      const callService = { answerCall: vi.fn(), rejectCall: vi.fn(), hangup: vi.fn(), currentCall: () => ({ callId: undefined }) };
       let live: { callId: string; roomId: string } | null = null;
       const mod = await loadBridge(nearlyStale, noMarker(), { matrixCall: () => live });
 
@@ -557,7 +560,7 @@ describe("the room fallback inside a running wait", () => {
     const fresh = markerAged(3_000);
     vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
     try {
-      const callService = { answerCall: vi.fn(), rejectCall: vi.fn(), hangup: vi.fn() };
+      const callService = { answerCall: vi.fn(), rejectCall: vi.fn(), hangup: vi.fn(), currentCall: () => ({ callId: undefined }) };
       let live: { callId: string; roomId: string } | null = null;
       const mod = await loadBridge(fresh, noMarker(), { matrixCall: () => live });
 
@@ -584,7 +587,7 @@ describe("retiring an answer marker stops the wait it was driving", () => {
     const fresh = markerAged(3_000);
     vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
     try {
-      const callService = { answerCall: vi.fn(), rejectCall: vi.fn(), hangup: vi.fn() };
+      const callService = { answerCall: vi.fn(), rejectCall: vi.fn(), hangup: vi.fn(), currentCall: () => ({ callId: undefined }) };
       let live: { callId: string; roomId: string } | null = null;
       const mod = await loadBridge(fresh, noMarker(), { matrixCall: () => live });
 
@@ -611,7 +614,7 @@ describe("retiring an answer marker stops the wait it was driving", () => {
     const fresh = markerAged(3_000);
     vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
     try {
-      const callService = { answerCall: vi.fn(), rejectCall: vi.fn(), hangup: vi.fn() };
+      const callService = { answerCall: vi.fn(), rejectCall: vi.fn(), hangup: vi.fn(), currentCall: () => ({ callId: undefined }) };
       let live: { callId: string; roomId: string } | null = null;
       const mod = await loadBridge(fresh, noMarker(), { matrixCall: () => live });
 

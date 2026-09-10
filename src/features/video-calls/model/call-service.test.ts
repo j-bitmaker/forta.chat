@@ -457,6 +457,45 @@ describe('call-service permission flow', () => {
     });
   });
 
+  describe('currentCall()', () => {
+    // Read by the native bridge to decide whether a callEnded/callDeclined is
+    // about the call JS is holding. It only means anything while it reports the
+    // same call `hangup`/`rejectCall` would act on — both read
+    // `callStore.matrixCall` fresh on every invocation, so this must too. A
+    // cached ref here would put the guard back to comparing against a stale id,
+    // which is the state that let the wrong call be torn down.
+    it('reports the call hangup and rejectCall would act on', async () => {
+      mockCallStore.matrixCall = { callId: 'call-a', roomId: '!a:matrix.org' };
+
+      const { useCallService } = await import('./call-service');
+
+      expect(useCallService().currentCall()).toEqual({
+        callId: 'call-a',
+        roomId: '!a:matrix.org',
+      });
+    });
+
+    it('follows the store rather than caching what it saw first', async () => {
+      mockCallStore.matrixCall = { callId: 'call-a', roomId: '!a:matrix.org' };
+
+      const { useCallService } = await import('./call-service');
+      const service = useCallService();
+      expect(service.currentCall().callId).toBe('call-a');
+
+      mockCallStore.matrixCall = { callId: 'call-b', roomId: '!b:matrix.org' };
+
+      expect(service.currentCall().callId).toBe('call-b');
+    });
+
+    it('reports an undefined callId when JS holds no call', async () => {
+      mockCallStore.matrixCall = null;
+
+      const { useCallService } = await import('./call-service');
+
+      expect(useCallService().currentCall().callId).toBeUndefined();
+    });
+  });
+
   describe('outgoing ringback gating (#866 / WEE-54)', () => {
     function captureOnState() {
       const stateCall = mockOn.mock.calls.find((c: unknown[]) => c[0] === 'State');

@@ -74,17 +74,132 @@ class IncomingCallSurfaceContractTest {
     }
 
     @Test
-    fun ensureIncomingCallVisible_neverRejectsOrDisconnectsTheSlotItself() {
-        // Displacing is onCreateIncomingConnection's job and it already does it
-        // under DisplacedConnectionPolicy. A second owner here would be the
-        // "two teardown owners" bug that CallTeardown was built to end.
+    fun ensureIncomingCallVisible_releasesAnUnpresentedSlotBeforeOfferingTheCall() {
+        // Relying on onCreateIncomingConnection to displace the orphan does not
+        // work: Telecom refuses addNewIncomingCall while this app holds a RINGING
+        // self-managed call and fails it before the ConnectionService is asked at
+        // all. Measured on a Samsung SM-A528B — "WAITING_CALL, [[Call id=TC@40,
+        // state=RINGING]]" then "CREATE_CONNECTION_FAILED", and the phone stayed
+        // silent.
         val body = functionBody(callPlugin, "fun\\s+ensureIncomingCallVisible\\s*\\(")
+        val releaseAt = body.indexOf("CallConnectionService.releaseUnpresentedConnection()")
+        val reportAt = body.indexOf("reportIncomingCall(call)")
         assertTrue(
-            "ensureIncomingCallVisible must not tear the slot down itself:\n$body",
-            !body.contains("onDisconnect()") &&
-                !body.contains("onReject()") &&
-                !body.contains("CallTeardown."),
+            "the orphan must be released before the call is offered " +
+                "(release=$releaseAt, report=$reportAt):\n$body",
+            releaseAt >= 0 && reportAt >= 0 && releaseAt < reportAt,
         )
+        assertTrue(
+            "the release must go through the connection's single owner, not a " +
+                "teardown invented here:\n$body",
+            !body.contains("onReject()") && !body.contains("CallTeardown."),
+        )
+    }
+
+    @Test
+    fun releasingAnUnpresentedConnection_disconnectsAndNeverRejects() {
+        // onReject writes a pendingReject marker, and the very next invite from
+        // this room is the call being cleared for — it would be declined unheard.
+        val body = functionBody(
+            read("java/com/forta/chat/plugins/calls/CallConnectionService.kt"),
+            "fun\\s+releaseUnpresentedNow\\s*\\(",
+        )
+        assertTrue("must disconnect:\n$body", body.contains("connection.onDisconnect()"))
+        assertTrue("must never reject:\n$body", !body.contains("onReject()"))
+        val disconnectAt = body.indexOf("connection.onDisconnect()")
+        val retireAt = body.indexOf("retirePendingMarkersForCall(")
+        assertTrue(
+            "the marker retire must follow the disconnect and sit outside its " +
+                "runCatching — onDisconnect short-circuits on its released latch " +
+                "and then clears nothing:\n$body",
+            retireAt > disconnectAt && !insideRunCatching(body, retireAt),
+        )
+        assertTrue(
+            "retire by callId only: sweeping the room would take the incoming " +
+                "call's own markers with it:\n$body",
+            Regex("retirePendingMarkersForCall\\(connection\\.callId,\\s*null\\)")
+                .containsMatchIn(body),
+        )
+    }
+
+    @Test
+    fun releasingAnUnpresentedConnection_refusesAnythingButARing() {
+        // Telecom answers a self-managed call on its own from a Bluetooth
+        // headset, Android Auto or the system call UI, none of which touch our
+        // activity — and onAnswer does not latch `released`. So a connection
+        // that went RINGING -> ACTIVE between the caller's decision and this
+        // release would be disconnected mid-conversation. The state rule itself
+        // is tested in DisplacedConnectionPolicyTest; this pins the wiring.
+        val body = functionBody(
+            read("java/com/forta/chat/plugins/calls/CallConnectionService.kt"),
+            "fun\\s+releaseUnpresentedNow\\s*\\(",
+        )
+        val guardAt = body.indexOf("mayReleaseUnpresented(connection.state)")
+        val disconnectAt = body.indexOf("connection.onDisconnect()")
+        assertTrue(
+            "the state must be re-checked, on this thread, before disconnecting " +
+                "(guard=$guardAt, disconnect=$disconnectAt):\n$body",
+            guardAt in 0 until disconnectAt,
+        )
+        assertTrue(
+            "the slot must be re-read here rather than passed in from the " +
+                "thread that formed the belief:\n$body",
+            body.contains("val connection = currentConnection ?: return false"),
+        )
+    }
+
+    @Test
+    fun releasingAnUnpresentedConnection_runsOnTheMainLooper() {
+        // Both ways the caller's belief can go stale — Telecom's onAnswer and
+        // the connection's own 45 s onReject backstop — are delivered on the
+        // main looper. Deciding on Capacitor's plugin thread and acting on the
+        // decision afterwards is the race; running the whole thing as one main
+        // -looper message is what serializes it against them.
+        val body = functionBody(
+            read("java/com/forta/chat/plugins/calls/CallConnectionService.kt"),
+            "fun\\s+releaseUnpresentedConnection\\s*\\(",
+        )
+        assertTrue(
+            "the release must be posted to the main looper:\n$body",
+            body.contains("Handler(Looper.getMainLooper()).post"),
+        )
+        assertTrue(
+            "a caller already on the main looper must not deadlock on itself:\n$body",
+            body.contains("Looper.myLooper() == Looper.getMainLooper()"),
+        )
+        assertTrue(
+            "the wait must be bounded — a plugin thread parked on the main " +
+                "looper for ever is worse than a call that does not ring:\n$body",
+            body.contains("done.await(UNPRESENTED_RELEASE_TIMEOUT_MS"),
+        )
+    }
+
+    /**
+     * True when [at] falls inside a `runCatching { … }` block of [body].
+     *
+     * Counts braces from the `runCatching` keyword instead of looking for the
+     * next `}`, which stops constraining anything the moment the lambda grows a
+     * nested block.
+     */
+    private fun insideRunCatching(body: String, at: Int): Boolean {
+        var i = body.indexOf("runCatching")
+        while (i >= 0) {
+            val open = body.indexOf("{", i)
+            if (open < 0 || open > at) return false
+            var depth = 0
+            var j = open
+            while (j < body.length) {
+                if (body[j] == '{') depth++
+                if (body[j] == '}') {
+                    depth--
+                    if (depth == 0) break
+                }
+                j++
+            }
+            if (at in open..j) return true
+            i = body.indexOf("runCatching", j)
+        }
+        return false
     }
 
     @Test

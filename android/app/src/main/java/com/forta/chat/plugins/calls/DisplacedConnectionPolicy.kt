@@ -35,4 +35,31 @@ object DisplacedConnectionPolicy {
      */
     fun mayRelease(state: Int): Boolean =
         state != Connection.STATE_ACTIVE && state != Connection.STATE_HOLDING
+
+    /**
+     * Whether a connection nothing presents may be released to clear the slot
+     * for a new incoming call.
+     *
+     * Stricter than [mayRelease] on purpose. That one answers "is anyone
+     * talking on it", which is the right question when Telecom hands us a
+     * second call and one of the two has to yield. This one is asked about a
+     * connection we believe is stranded — nothing on screen, nothing audible —
+     * and the belief was formed a moment earlier, on another thread. Between
+     * the two, Telecom can answer the call on its own from a Bluetooth headset,
+     * Android Auto or the system call UI, none of which touch our activity: the
+     * connection goes RINGING -> ACTIVE and `onAnswer` does not latch
+     * `released`, so nothing downstream would stop the disconnect from cutting
+     * off a call the user had just taken. It also catches a connection torn
+     * down meanwhile by one of the off-looper paths — those set the disconnected
+     * state before vacating the slot, so a stale-looking slot reads as
+     * DISCONNECTED here rather than RINGING.
+     *
+     * So: only a connection still ringing may be released this way. Anything
+     * else either became a real call or is already being torn down by the path
+     * that owns it.
+     *
+     * @param state the connection's `Connection.getState()`
+     * @return true when the connection is still merely ringing
+     */
+    fun mayReleaseUnpresented(state: Int): Boolean = state == Connection.STATE_RINGING
 }

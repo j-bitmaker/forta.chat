@@ -55,7 +55,7 @@ class CallPlugin : Plugin() {
      * without stealing a newer instance's.
      */
     private var installedCallbacks:
-        Triple<(String) -> Unit, (String) -> Unit, (String) -> Unit>? = null
+        Triple<(String) -> Unit, (String, String) -> Unit, (String, String) -> Unit>? = null
 
     override fun load() {
         try {
@@ -88,14 +88,22 @@ class CallPlugin : Plugin() {
                 put("roomId", CallConnection.pendingAnswer.roomId ?: "")
             })
         }
-        val onRejected: (String) -> Unit = { callId ->
+        // Both carry the room for the same reason callAnswered does: a
+        // push-created connection is keyed by the push payload's call_id, which
+        // this homeserver fills with the event_id, so its callId can never equal
+        // the Matrix callId JS holds. Without the room JS cannot tell an event
+        // about the call on screen from one about a call that already ended, and
+        // acts on whichever call it happens to be holding.
+        val onRejected: (String, String) -> Unit = { callId, roomId ->
             notifyListeners("callDeclined", JSObject().apply {
                 put("callId", callId)
+                put("roomId", roomId)
             })
         }
-        val onEnded: (String) -> Unit = { callId ->
+        val onEnded: (String, String) -> Unit = { callId, roomId ->
             notifyListeners("callEnded", JSObject().apply {
                 put("callId", callId)
+                put("roomId", roomId)
             })
         }
         CallConnection.onAnswered = onAnswered
@@ -185,10 +193,18 @@ class CallPlugin : Plugin() {
         }
         if (slot != null) {
             // Nothing presents this connection — no activity, no armed ringer —
-            // so it is an orphan holding the single slot. reportIncomingCall's
-            // onCreateIncomingConnection displaces it on the way in; say so in
-            // the log, because "no ringer present" alone reads like an empty slot.
-            Log.w(TAG, "ensureIncomingCallVisible: displacing an unpresented slot ${slot.callId}")
+            // so it is an orphan holding the single slot. It has to go before we
+            // offer the new call: Telecom refuses addNewIncomingCall outright
+            // while this app holds a RINGING self-managed call, failing it before
+            // onCreateIncomingConnection (where displacement lives) ever runs.
+            Log.w(TAG, "ensureIncomingCallVisible: releasing an unpresented slot ${slot.callId}")
+            // A refusal is not a reason to give up on the new call: the slot may
+            // have been vacated by its own teardown in the meantime, in which
+            // case Telecom will accept the call anyway. Worth logging, because
+            // it is also what a connection that went live under us looks like.
+            if (!CallConnectionService.releaseUnpresentedConnection()) {
+                Log.w(TAG, "ensureIncomingCallVisible: the unpresented slot was not released")
+            }
         }
         Log.d(TAG, "ensureIncomingCallVisible: no ringer present, launching")
         // Delegate to the existing reportIncomingCall path so we share the

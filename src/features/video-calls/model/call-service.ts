@@ -1982,12 +1982,27 @@ export function useCallService() {
     }
   }
 
+  /**
+   * The call `hangup`/`rejectCall` would act on right now.
+   *
+   * Read by the native bridge to scope `callEnded`/`callDeclined` to the call
+   * they name: both commands below act on `callStore.matrixCall`, so the
+   * bridge must be able to see the same value they will. The room travels with
+   * the id because a push-created connection's id can never be compared with a
+   * Matrix one.
+   */
+  function currentCall(): { callId: string | undefined; roomId?: string } {
+    const call = callStore.matrixCall as MatrixCall | null;
+    return { callId: call?.callId, roomId: call?.roomId };
+  }
+
   return {
     startCall,
     handleIncomingCall,
     answerCall,
     rejectCall,
     hangup,
+    currentCall,
     toggleMute,
     toggleCamera,
     toggleScreenShare,

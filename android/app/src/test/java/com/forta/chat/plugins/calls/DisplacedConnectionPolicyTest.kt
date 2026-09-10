@@ -45,4 +45,29 @@ class DisplacedConnectionPolicyTest {
             assertTrue("state $state should be releasable", DisplacedConnectionPolicy.mayRelease(state))
         }
     }
+
+    @Test
+    fun `an unpresented slot is released only while it is still ringing`() {
+        assertTrue(DisplacedConnectionPolicy.mayReleaseUnpresented(Connection.STATE_RINGING))
+    }
+
+    @Test
+    fun `a slot answered under us is never released as unpresented`() {
+        // The race this closes: the caller decides a connection is stranded on
+        // Capacitor's plugin thread, and before the release runs Telecom answers
+        // it from a Bluetooth headset, Android Auto or the system call UI —
+        // none of which touch our activity, and onAnswer does not latch
+        // `released`. Disconnecting then cuts off a call the user just took.
+        assertFalse(DisplacedConnectionPolicy.mayReleaseUnpresented(Connection.STATE_ACTIVE))
+    }
+
+    @Test
+    fun `neither a dialing nor a held slot is released as unpresented`() {
+        // Both belong to a path that owns their teardown; only an incoming ring
+        // can be stranded with nothing presenting it.
+        assertFalse(DisplacedConnectionPolicy.mayReleaseUnpresented(Connection.STATE_DIALING))
+        assertFalse(DisplacedConnectionPolicy.mayReleaseUnpresented(Connection.STATE_HOLDING))
+        assertFalse(DisplacedConnectionPolicy.mayReleaseUnpresented(Connection.STATE_DISCONNECTED))
+        assertFalse(DisplacedConnectionPolicy.mayReleaseUnpresented(Connection.STATE_NEW))
+    }
 }

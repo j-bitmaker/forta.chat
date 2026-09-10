@@ -16,6 +16,8 @@ import type {
   InviteThrottleSnapshot,
   NativeCallNativePlugin,
 } from './native-call-bridge.types';
+import { nativeCallEventAppliesTo } from './native-call-event-scope';
+import type { NativeCallEventTarget } from './native-call-event-scope';
 import { createIOSNativeCallAdapter } from './native-call-bridge.ios';
 import { withRetry } from './with-retry';
 
@@ -306,8 +308,31 @@ export async function retirePendingMarkers(callId: string, roomId?: string): Pro
   await done;
 }
 
+/**
+ * What the bridge needs from the call service.
+ *
+ * Typed rather than `any` because the guard below reads `currentCall` off this
+ * field: an accessor lost to a rename would leave the optional chain returning
+ * undefined, which reads as "JS holds nothing" and silently restores the
+ * unscoped teardown this guard exists to prevent. The `wire()` contract can
+ * only police its own call site; the field type polices every use.
+ */
+interface BridgeCallService {
+  answerCall: () => void;
+  rejectCall: () => void;
+  hangup: () => void;
+  /**
+   * The call `rejectCall`/`hangup` would act on right now, with an undefined
+   * `callId` when JS holds none. Required, not optional: an absent accessor
+   * would silently restore the unscoped teardown rather than fail a call site.
+   */
+  currentCall: () => NativeCallEventTarget;
+  /** Android only — the native CallActivity's video toggle. */
+  setLocalVideoMuted?: (muted: boolean) => void;
+}
+
 class NativeCallBridge {
-  private callService: any = null;
+  private callService: BridgeCallService | null = null;
   /**
    * WEE-16: signal aborted by stop/forceStop so any in-flight
    * `startAudioRouting` retry bails immediately. Without this, a user
@@ -319,7 +344,32 @@ class NativeCallBridge {
    */
   private audioRoutingAbort: AbortController | null = null;
 
-  async wire(callService: { answerCall: () => void; rejectCall: () => void; hangup: () => void }): Promise<void> {
+  /**
+   * True when a native call-lifecycle event may act on the call JS holds now.
+   *
+   * The listeners below command `callService`, which acts on
+   * `callStore.matrixCall` — so the id is read off that same service, in the
+   * same synchronous turn as the command. Anything looser (a dynamic store
+   * import, a value cached at wire time) reintroduces the window this guard
+   * exists to close: on the Samsung the wrong call was torn down 3 ms after
+   * being offered.
+   */
+  private eventNamesCurrentCall(
+    event: string,
+    target: NativeCallEventTarget,
+  ): boolean {
+    const current: NativeCallEventTarget =
+      this.callService?.currentCall() ?? { callId: undefined };
+    if (nativeCallEventAppliesTo(target, current)) return true;
+    console.log(
+      '[NativeCallBridge] ' + event + ' names ' + target.callId + ' in ' +
+        target.roomId + ', but JS holds ' + current.callId + ' in ' +
+        current.roomId + ' — ignoring',
+    );
+    return false;
+  }
+
+  async wire(callService: BridgeCallService): Promise<void> {
     if (!isNative) return;
     this.callService = callService;
 
@@ -346,13 +396,15 @@ class NativeCallBridge {
       this.waitForMatrixCallAndAnswer(callId, roomId, pendingAnswer);
     });
 
-    await NativeCall.addListener('callDeclined', ({ callId }) => {
+    await NativeCall.addListener('callDeclined', ({ callId, roomId }) => {
       console.log('[NativeCallBridge] Call declined:', callId);
+      if (!this.eventNamesCurrentCall('callDeclined', { callId, roomId })) return;
       this.callService?.rejectCall();
     });
 
-    await NativeCall.addListener('callEnded', ({ callId }) => {
+    await NativeCall.addListener('callEnded', ({ callId, roomId }) => {
       console.log('[NativeCallBridge] Call ended natively:', callId);
+      if (!this.eventNamesCurrentCall('callEnded', { callId, roomId })) return;
       this.callService?.hangup();
     });
 
@@ -458,7 +510,7 @@ class NativeCallBridge {
       // Native CallActivity video toggle → SDK renegotiation
       await NativeWebRTC.addListener('onNativeVideoToggle', ({ enabled }) => {
         console.log('[NativeCallBridge] Native video toggle:', enabled);
-        this.callService?.setLocalVideoMuted(!enabled);
+        this.callService?.setLocalVideoMuted?.(!enabled);
       });
     }
   }

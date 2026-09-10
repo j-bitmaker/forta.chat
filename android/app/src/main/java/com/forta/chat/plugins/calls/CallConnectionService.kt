@@ -16,6 +16,8 @@ import java.util.concurrent.atomic.AtomicReference
 import android.telecom.*
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import com.forta.chat.R
 
@@ -23,6 +25,12 @@ class CallConnectionService : ConnectionService() {
 
     companion object {
         private const val TAG = "CallConnectionService"
+        /**
+         * How long [releaseUnpresentedConnection] waits for the main looper.
+         * Generous next to the work it guards (a state read and a disconnect)
+         * and still far below any user-perceptible delay in offering the call.
+         */
+        private const val UNPRESENTED_RELEASE_TIMEOUT_MS = 2_000L
         const val INCOMING_CALL_NOTIFICATION_ID = 9999
         // Written from the main thread (Telecom callbacks) and read from
         // Capacitor's plugin thread (reportCallEnded / reportCallConnected) —
@@ -77,6 +85,94 @@ class CallConnectionService : ConnectionService() {
             // and stops ringing on their side too.
             runCatching { connection.onReject() }
                 .onFailure { Log.w(TAG, "stale-ring release threw", it) }
+            return true
+        }
+
+        /**
+         * Release a connection nothing presents, so a new incoming call can be
+         * added at all.
+         *
+         * Telecom refuses `addNewIncomingCall` while this app already holds a
+         * RINGING self-managed call: it fails the request itself, before the
+         * ConnectionService is consulted, so the displacement inside
+         * [onCreateIncomingConnection] never gets the chance to run. Measured on
+         * a Samsung SM-A528B — the new call is aborted the moment it is offered:
+         *
+         *     TC@41: WAITING_CALL, [[Call id=TC@40, state=RINGING …]]
+         *     TC@41: CREATE_CONNECTION_FAILED
+         *     Call: handleCreateConnectionFailure … Code: (CANCELED)
+         *
+         * Callers must have established that nothing presents this connection —
+         * see [IncomingSurfacePolicy]. A connection someone can see or hear is
+         * not ours to release here.
+         *
+         * `onDisconnect`, never `onReject`, for the same reason as
+         * [releaseOnTaskRemoved] and with more at stake: onReject writes a
+         * pendingReject marker, and the very next invite from this room is the
+         * call we are clearing the way for — it would be declined unheard.
+         */
+        fun releaseUnpresentedConnection(): Boolean {
+            // Decide and act in one main-looper message. The caller formed its
+            // "nothing presents this connection" belief on Capacitor's plugin
+            // thread, and the way that belief turns dangerous is `onAnswer`,
+            // which runs *only* on the main looper — Telecom delivers it there
+            // (a Bluetooth headset, Android Auto or the system call UI can
+            // answer without ever touching our activity) and so does the
+            // activity's own Accept button. Deciding on one thread and
+            // disconnecting on the other loses a live call, because `onAnswer`
+            // does not latch `released` and nothing further down would stop it.
+            //
+            // Teardown, unlike answering, does reach us off this looper
+            // (`releaseStaleRingingConnection` from a plugin method, the FCM
+            // handler from Firebase's thread). Those need no serialization: both
+            // `onReject` and `onDisconnect` call `setDisconnected` before they
+            // vacate the slot, so a slot still readable here always carries the
+            // already-updated state and the re-check below refuses it.
+            if (Looper.myLooper() == Looper.getMainLooper()) return releaseUnpresentedNow()
+            val outcome = AtomicBoolean(false)
+            val done = CountDownLatch(1)
+            Handler(Looper.getMainLooper()).post {
+                outcome.set(releaseUnpresentedNow())
+                done.countDown()
+            }
+            // Bounded, and false on timeout: the caller is about to ask Telecom
+            // to ring a new call, which Telecom refuses while this connection
+            // holds the slot. Reporting failure is honest; blocking a plugin
+            // thread indefinitely on the main looper is not.
+            if (!done.await(UNPRESENTED_RELEASE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                Log.w(TAG, "Unpresented release did not reach the main thread in time")
+                return false
+            }
+            return outcome.get()
+        }
+
+        /** Body of [releaseUnpresentedConnection]; main thread only. */
+        private fun releaseUnpresentedNow(): Boolean {
+            // Re-read rather than trusting the caller's snapshot: onReject and
+            // onDisconnect vacate the slot, so a null here means the connection
+            // is already gone and there is nothing to clear.
+            val connection = currentConnection ?: return false
+            if (!DisplacedConnectionPolicy.mayReleaseUnpresented(connection.state)) {
+                Log.w(
+                    TAG,
+                    "Unpresented slot ${connection.callId} is no longer ringing " +
+                        "(state=${connection.state}) — leaving it alone",
+                )
+                return false
+            }
+            Log.w(TAG, "Releasing an unpresented connection: ${connection.callId}")
+            runCatching { connection.onDisconnect() }
+                .onFailure { Log.w(TAG, "unpresented release threw", it) }
+            // Outside the runCatching, as in releaseOnTaskRemoved: onDisconnect
+            // short-circuits on its `released` latch and then clears nothing.
+            // Reached only after the guards above, so this connection was still
+            // ringing and still in the slot a moment ago on this same thread —
+            // the teardown above is ours, and the markers being retired are the
+            // ones it just orphaned, not a reject marker another path wrote.
+            // Keyed by callId alone — this connection's markers are written under
+            // its own id, and sweeping the room would take the incoming call's
+            // markers with them (see 1c994c32).
+            CallConnection.retirePendingMarkersForCall(connection.callId, null)
             return true
         }
 
@@ -421,8 +517,18 @@ class CallConnection(
 
     companion object {
         var onAnswered: ((String) -> Unit)? = null
-        var onRejected: ((String) -> Unit)? = null
-        var onEnded: ((String) -> Unit)? = null
+        /**
+         * Both carry the room as well as the id, because the id alone does not
+         * always identify the call. A connection created from a push is keyed by
+         * the push payload's `call_id`, which this homeserver fills with the
+         * event_id — it can never equal the Matrix callId JS holds, so JS has no
+         * way to tell whether such an event is about the call it is showing or
+         * about a previous one. With the room it can at least refuse an event
+         * from somewhere else. (`onAnswered` reads the room off the marker
+         * `onAnswer` has just written, so it needs no parameter.)
+         */
+        var onRejected: ((String, String) -> Unit)? = null
+        var onEnded: ((String, String) -> Unit)? = null
 
         /**
          * "The user answered / declined before JS was running" markers, read
@@ -641,7 +747,7 @@ class CallConnection(
         runCatching { CallTeardown.endCall(context, CallTeardownPolicy.Reason.REJECT, callId) }
             .onFailure { Log.w("CallConnection", "teardown after reject threw", it) }
         pendingReject = PendingCallMarker.of(callId, roomId, System.currentTimeMillis())
-        onRejected?.invoke(callId)
+        onRejected?.invoke(callId, roomId)
     }
 
     override fun onDisconnect() {
@@ -671,7 +777,7 @@ class CallConnection(
         // when JS has already stopped the router (the normal hangup).
         runCatching { CallTeardown.endCall(context, CallTeardownPolicy.Reason.DISCONNECT, callId) }
             .onFailure { Log.w("CallConnection", "teardown after disconnect threw", it) }
-        onEnded?.invoke(callId)
+        onEnded?.invoke(callId, roomId)
     }
 
     /**

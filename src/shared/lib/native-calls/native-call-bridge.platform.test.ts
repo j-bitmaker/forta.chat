@@ -115,6 +115,7 @@ describe('nativeCallBridge.wire() — platform gate', () => {
       answerCall: vi.fn(),
       rejectCall: vi.fn(),
       hangup: vi.fn(),
+      currentCall: () => ({ callId: undefined }),
     });
     expect(nativeWebRTCAddListenerSpy).not.toHaveBeenCalled();
   });
@@ -132,6 +133,7 @@ describe('nativeCallBridge.wire() — platform gate', () => {
       answerCall: vi.fn(),
       rejectCall: vi.fn(),
       hangup: vi.fn(),
+      currentCall: () => ({ callId: undefined }),
     });
     // Should subscribe to all three CallKit events (mapped from
     // Android's callAnswered/callDeclined/callEnded).
@@ -156,6 +158,7 @@ describe('nativeCallBridge.wire() — platform gate', () => {
       answerCall: vi.fn(),
       rejectCall: vi.fn(),
       hangup: vi.fn(),
+      currentCall: () => ({ callId: undefined }),
     });
     const events = nativeWebRTCAddListenerSpy.mock.calls.map((c: unknown[]) => c[0]);
     expect(events).toEqual(
@@ -176,6 +179,7 @@ describe('nativeCallBridge.wire() — platform gate', () => {
       answerCall: vi.fn(),
       rejectCall: vi.fn(),
       hangup: vi.fn(),
+      currentCall: () => ({ callId: undefined }),
     });
     expect(ickAddListenerSpy).not.toHaveBeenCalled();
     expect(nativeCallAddListenerSpy).not.toHaveBeenCalled();
@@ -284,6 +288,7 @@ describe('cold-start accept replay (iOS)', () => {
       answerCall: answerSpy,
       rejectCall: vi.fn(),
       hangup: vi.fn(),
+      currentCall: () => ({ callId: undefined }),
     });
 
     expect(getActiveCallsForBridgeSpy).toHaveBeenCalled();

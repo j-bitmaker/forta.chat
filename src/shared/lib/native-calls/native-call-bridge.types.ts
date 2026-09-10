@@ -178,13 +178,20 @@ export interface NativeCallNativePlugin {
     event: 'callAnswered',
     cb: (data: { callId: string; roomId?: string }) => void,
   ): Promise<PluginListenerHandle>;
+  /**
+   * `roomId` for the same reason `callAnswered` carries one: a connection
+   * created from a push is keyed by the push payload's `call_id`, which this
+   * homeserver fills with the event_id, so its `callId` can never equal the
+   * SDK's. The room is then the only way to tell an event about the call on
+   * screen from one about a call that already ended.
+   */
   addListener(
     event: 'callDeclined',
-    cb: (data: { callId: string }) => void,
+    cb: (data: { callId: string; roomId?: string }) => void,
   ): Promise<PluginListenerHandle>;
   addListener(
     event: 'callEnded',
-    cb: (data: { callId: string }) => void,
+    cb: (data: { callId: string; roomId?: string }) => void,
   ): Promise<PluginListenerHandle>;
   addListener(
     event: 'audioDevicesChanged',
