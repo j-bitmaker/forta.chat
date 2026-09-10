@@ -760,3 +760,23 @@
   Воспроизведено 3 раза из 3; в сценарии с отвеченным звонком, где
   `onTaskRemoved` срабатывает и процесс умирает штатно, этого нет. Пока
   приложение не поднято, входящие по `/sync` не доходят.
+
+- Перепроверено 2026-09-10 на сборке, которая несёт освобождение осиротевшего
+  слота и сверку событий по callId: обе правки трогают тот же слот и тот же
+  retire меток, поэтому регрессия прогонялась целиком.
+
+  ```
+  12:56:14     onAnswer (принято тапом по btn_accept)
+  12:56:26.430 ActivityManagerService.removeTask
+  12:56:26.821 D/CallConnection: onDisconnect            ← 391 мс
+  12:56:26.824 CallTeardown: endCall reason=DISCONNECT callId=…pxgxtIqnl2JkYLG4
+  12:56:34.778 CallTeardown: endCall reason=COLD_START … otherCallLive=false
+  12:56:44     перезвон: onCreateIncomingConnection + IncomingRinger arm
+  ```
+
+  Ни одного `answerCall: begin` без тапа, ни `Pre-accepted`, ни `Pre-rejected`
+  — то есть и `d8a52a0d` (перезвон звонит, а не снимается сам) держится.
+  Замечание для стенда: тап по «Принять» надо брать из иерархии
+  (`uiautomator dump`, `id/btn_accept`), а ждать ответа — по `onAnswer: callId=`;
+  паттерн вида `"CallConnection: onAnswer"` не совпадает никогда, потому что
+  logcat печатает `D/CallConnection(<pid>):`.
