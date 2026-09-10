@@ -1,5 +1,6 @@
 package com.forta.chat.plugins.calls
 
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -104,16 +105,49 @@ class PendingMarkerStampContractTest {
             "clearPendingFor must drop the marker whole, not one field:\n$clear",
             clear.contains("it.clearedFor(cid, rid)"),
         )
-        for (seed in listOf("seedPendingAnswerIfEmpty", "seedPendingRejectIfEmpty")) {
+        for (seed in listOf("seedPendingAnswer", "seedPendingReject")) {
             assertTrue(
                 "$seed must be the only belt-and-braces write, stamped:\n$activity",
                 activity.contains("CallConnection.$seed("),
+            )
+            // The guard used to be `if (it.isEmpty)`, which cannot tell the
+            // authoritative write for THIS call from a marker another call
+            // left standing — and silently dropped the decision the user had
+            // just made. The rule is a pure function so it can be tested.
+            val body = functionBody(service, "fun\\s+$seed\\s*\\(")
+            assertTrue(
+                "$seed must decide through PendingCallMarker.seeded:\n$body",
+                body.contains("PendingCallMarker.seeded("),
             )
         }
         assertTrue(
             "the belt-and-braces writes must stamp the clock:\n$activity",
             activity.contains("PendingCallMarker.of(callId, roomIdForPending, System.currentTimeMillis())"),
         )
+    }
+
+    @Test
+    fun noRingerPathWipesTheMarkersOfEveryOtherCall() {
+        // A blanket `pendingAnswer = NONE` reads as defence-in-depth and is
+        // the opposite: this screen is shown by FCM independently of Telecom,
+        // so it is routinely up for a DIFFERENT call than the one whose answer
+        // is still queued for replay — a call answered from a headset or the
+        // system call UI before JS was running. Declining the second one, or
+        // the caller of the second one hanging up, then threw away the record
+        // of the answer the user had already given, and JS never learned about
+        // it. Every clear here must name the call it belongs to.
+        assertFalse(
+            "no path in the ringer may assign the answer marker wholesale:\n$activity",
+            activity.contains("CallConnection.pendingAnswer = PendingCallMarker.NONE"),
+        )
+        for (fn in listOf("decline", "dismissByRemote")) {
+            val body = functionBody(activity, "private\\s+fun\\s+$fn\\s*\\(")
+            assertTrue(
+                "$fn must retire the marker by the call it names:\n$body",
+                Regex("retirePendingAnswerForCall\\((callId|shownCallId), null\\)")
+                    .containsMatchIn(body),
+            )
+        }
     }
 
     @Test

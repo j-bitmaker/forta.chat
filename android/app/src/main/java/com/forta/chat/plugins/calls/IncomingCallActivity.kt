@@ -432,7 +432,7 @@ class IncomingCallActivity : Activity() {
         // the push-side call_id doesn't match the Matrix call.callId,
         // so the roomId in particular must be present.
         val roomIdForPending = intent.getStringExtra("roomId")
-        CallConnection.seedPendingAnswerIfEmpty(
+        CallConnection.seedPendingAnswer(
             PendingCallMarker.of(callId, roomIdForPending, System.currentTimeMillis()),
         )
 
@@ -509,8 +509,28 @@ class IncomingCallActivity : Activity() {
 
         // Defence-in-depth: clear accept markers (we're declining, not
         // accepting) and set reject markers if Telecom path was bypassed.
-        CallConnection.pendingAnswer = PendingCallMarker.NONE
-        CallConnection.seedPendingRejectIfEmpty(
+        //
+        // Scoped to THIS call. A blanket wipe also erased a marker another
+        // call was still waiting on, and the reachable case is the one this
+        // screen is built for: an answer taken over Bluetooth or the system
+        // call UI before JS was running queues a marker for replay, then a
+        // second caller's ringer appears over the conversation (Telecom
+        // refuses it BUSY, FCM shows it anyway), and declining that one threw
+        // away the record of the answer the user had already given. The
+        // established-call guard above does not cover it — it compares ids and
+        // steps aside for a *different* call by design.
+        //
+        // By callId alone, for the same reason CallPlugin.reportCallConnected
+        // retires that way: every writer of a marker for one call uses that
+        // call's own id, and only JS can judge whether a room-wide clear is
+        // safe. A marker the Telecom connection wrote under a different id is
+        // already retired by its own onReject above.
+        //
+        // Answer half only: onReject above may have just written the
+        // authoritative reject marker, and clearing that here would leave the
+        // seed below to rewrite it from this screen's extras instead.
+        CallConnection.retirePendingAnswerForCall(callId, null)
+        CallConnection.seedPendingReject(
             PendingCallMarker.of(callId, roomIdForPending, System.currentTimeMillis()),
         )
 
@@ -545,8 +565,11 @@ class IncomingCallActivity : Activity() {
         Log.d(TAG, "Remote hangup — dismissing")
         cleanup()
         // Clear accept markers so a stale invite can't re-trigger
-        // the JS fast-path after the caller has cancelled.
-        CallConnection.pendingAnswer = PendingCallMarker.NONE
+        // the JS fast-path after the caller has cancelled — but only for the
+        // call this screen was showing. dismissIfShowing() is a blanket
+        // "someone hung up", and a blanket clear behind it took out a marker
+        // another call was still waiting on.
+        CallConnection.retirePendingAnswerForCall(shownCallId, null)
         CallConnectionService.dismissIncomingCallNotification(this)
         intent.getStringExtra("roomId")?.let { rId ->
             FortaFirebaseMessagingService.dismissPushCallNotification(this, rId)

@@ -574,16 +574,18 @@ class CallConnection(
 
         /**
          * Belt-and-braces write for the paths where Telecom never ran (a region
-         * that rate-limits addNewIncomingCall, say): fills the marker in only
-         * when the authoritative path left none.
+         * that rate-limits addNewIncomingCall, say, or a call it refused as
+         * BUSY because this app already holds one): defers to the
+         * authoritative marker for the same call and replaces one another call
+         * left standing. See [PendingCallMarker.seeded].
          */
-        fun seedPendingAnswerIfEmpty(marker: PendingCallMarker) {
-            pendingAnswerRef.updateAndGet { if (it.isEmpty) marker else it }
+        fun seedPendingAnswer(marker: PendingCallMarker) {
+            pendingAnswerRef.updateAndGet { PendingCallMarker.seeded(it, marker) }
         }
 
-        /** @see seedPendingAnswerIfEmpty */
-        fun seedPendingRejectIfEmpty(marker: PendingCallMarker) {
-            pendingRejectRef.updateAndGet { if (it.isEmpty) marker else it }
+        /** @see seedPendingAnswer */
+        fun seedPendingReject(marker: PendingCallMarker) {
+            pendingRejectRef.updateAndGet { PendingCallMarker.seeded(it, marker) }
         }
 
         /**
@@ -610,6 +612,20 @@ class CallConnection(
         fun retirePendingMarkersForCall(callId: String?, roomId: String?) {
             pendingAnswerRef.updateAndGet { it.clearedFor(callId, roomId) }
             pendingRejectRef.updateAndGet { it.clearedFor(callId, roomId) }
+        }
+
+        /**
+         * The answer half of [retirePendingMarkersForCall], for a surface that
+         * is declining rather than finishing: the accept marker for this call
+         * must go, and the reject marker is the thing being recorded.
+         *
+         * Scoped like the pair above and for the same reason — the ringer is
+         * routinely on screen for a different call than the one whose answer
+         * is queued, so "drop every accept marker" throws away a decision the
+         * user already made on another call.
+         */
+        fun retirePendingAnswerForCall(callId: String?, roomId: String?) {
+            pendingAnswerRef.updateAndGet { it.clearedFor(callId, roomId) }
         }
 
         /**

@@ -66,6 +66,77 @@ class PendingCallMarkerTest {
 
     private val matrixCallId = "1788970536304tw7II5UU5wJ1O0sv"
 
+    // ---------------------------------------------------------------------
+    // seeded(): which marker survives the belt-and-braces write
+    // ---------------------------------------------------------------------
+
+    @Test
+    fun seeded_writesIntoAnEmptySlot() {
+        val fresh = PendingCallMarker.of("call-a", room, now)
+
+        assertSame(fresh, PendingCallMarker.seeded(PendingCallMarker.NONE, fresh))
+    }
+
+    @Test
+    fun seeded_keepsTheAuthoritativeMarkerForTheSameCall() {
+        // The connection's own write ran first and carries the room Telecom
+        // knows; the activity's copy must not restamp it.
+        val authoritative = PendingCallMarker.of("call-a", room, now)
+        val fromTheActivity = PendingCallMarker.of("call-a", room, now + 40)
+
+        assertSame(authoritative, PendingCallMarker.seeded(authoritative, fromTheActivity))
+    }
+
+    @Test
+    fun seeded_replacesAMarkerLeftBehindByAnotherCall() {
+        // This is the window the guard used to lose. A marker is only cleared
+        // by the call it belongs to; while that call is still live in Telecom
+        // its marker stands, and the next call the user acts on natively —
+        // the one Telecom refused, which is why the seed runs at all — found
+        // the slot occupied and wrote nothing. The decision the user just made
+        // was dropped in favour of one made for a different call.
+        val leftBehind = PendingCallMarker.of("call-a", room, now - 5_000)
+        val whatTheUserJustDid = PendingCallMarker.of("call-b", "!second:server", now)
+
+        assertSame(
+            whatTheUserJustDid,
+            PendingCallMarker.seeded(leftBehind, whatTheUserJustDid),
+        )
+    }
+
+    @Test
+    fun seeded_treatsADifferentIdInTheSameRoomAsADifferentCall() {
+        // A redial into the same room is the common shape of the stale marker,
+        // and the ids are what separate them. Both writes for one call come
+        // from the same source (the push's call_id, or the Matrix callId), so
+        // an id mismatch here is a different call, not the same call keyed two
+        // ways.
+        val previousCallInThisRoom = PendingCallMarker.of("call-a", room, now - 5_000)
+        val theRedial = PendingCallMarker.of("call-b", room, now)
+
+        assertSame(theRedial, PendingCallMarker.seeded(previousCallInThisRoom, theRedial))
+    }
+
+    @Test
+    fun seeded_fallsBackToTheRoomWhenOneSideHasNoId() {
+        // A path that never learned the call_id still names the call by room,
+        // and must not overwrite the marker that does have the id.
+        val withId = PendingCallMarker.of("call-a", room, now)
+        val roomOnly = PendingCallMarker.of(null, room, now + 40)
+
+        assertSame(withId, PendingCallMarker.seeded(withId, roomOnly))
+        assertSame(roomOnly, PendingCallMarker.seeded(roomOnly, PendingCallMarker.of(null, room, now + 80)))
+    }
+
+    @Test
+    fun seeded_neverWipesAStandingMarkerWithNothingToSay() {
+        // `of("", null, now)` collapses to NONE, and seeding that used to be
+        // impossible only because the old guard refused to write at all.
+        val standing = PendingCallMarker.of("call-a", room, now)
+
+        assertSame(standing, PendingCallMarker.seeded(standing, PendingCallMarker.of("", null, now)))
+    }
+
     @Test
     fun clearedFor_dropsTheWholeMarkerWhenTheCallIdMatches() {
         val marker = PendingCallMarker.of("call-a", room, now)
