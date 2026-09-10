@@ -109,7 +109,10 @@ function onFetch(event) {
     };
 
     if (request.method !== 'GET' && request.method !== 'HEAD') {
-      fetchInit.body = request.body;
+      // request.body is a ReadableStream, and Chrome rejects a stream body
+      // without `duplex` — every Tor-routed POST/PUT failed that way. Send the
+      // bytes rather than a streamed upload to the local HTTP/1.1 proxy.
+      fetchInit.body = await request.arrayBuffer();
     }
 
     return fetch(proxyURL, fetchInit)
