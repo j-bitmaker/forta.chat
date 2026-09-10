@@ -170,12 +170,25 @@ class CallPlugin : Plugin() {
 
     @PluginMethod
     fun ensureIncomingCallVisible(call: PluginCall) {
-        val alreadyVisible = IncomingCallActivity.currentInstance != null ||
-            CallConnectionService.currentConnection != null
+        val slot = CallConnectionService.currentConnection
+        val alreadyVisible = IncomingSurfacePolicy.isAlreadyVisibleFor(
+            requestedCallId = call.getString("callId"),
+            activityUp = IncomingCallActivity.currentInstance != null,
+            slotCallId = slot?.callId,
+            slotState = slot?.state,
+            ringingCallId = IncomingRinger.ringingCallId,
+        )
         if (alreadyVisible) {
             Log.d(TAG, "ensureIncomingCallVisible: ringer already up, skip")
             call.resolve()
             return
+        }
+        if (slot != null) {
+            // Nothing presents this connection — no activity, no armed ringer —
+            // so it is an orphan holding the single slot. reportIncomingCall's
+            // onCreateIncomingConnection displaces it on the way in; say so in
+            // the log, because "no ringer present" alone reads like an empty slot.
+            Log.w(TAG, "ensureIncomingCallVisible: displacing an unpresented slot ${slot.callId}")
         }
         Log.d(TAG, "ensureIncomingCallVisible: no ringer present, launching")
         // Delegate to the existing reportIncomingCall path so we share the

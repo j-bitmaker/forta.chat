@@ -53,6 +53,41 @@ class IncomingCallSurfaceContractTest {
     }
 
     @Test
+    fun ensureIncomingCallVisible_decidesPerCall_notPerOccupiedSlot() {
+        val body = functionBody(callPlugin, "fun\\s+ensureIncomingCallVisible\\s*\\(")
+        assertTrue(
+            "the skip must go through IncomingSurfacePolicy — reading the slot " +
+                "directly is what let one stranded connection silence every later " +
+                "call on the /sync route:\n$body",
+            body.contains("IncomingSurfacePolicy.isAlreadyVisibleFor("),
+        )
+        assertTrue(
+            "the requested callId must reach the policy, or it cannot tell the " +
+                "idempotent re-ask from a different call:\n$body",
+            body.contains("requestedCallId = call.getString(\"callId\")"),
+        )
+        assertTrue(
+            "the armed ringer is the discriminator between a real ringer and an " +
+                "orphan, so it must be passed in:\n$body",
+            body.contains("ringingCallId = IncomingRinger.ringingCallId"),
+        )
+    }
+
+    @Test
+    fun ensureIncomingCallVisible_neverRejectsOrDisconnectsTheSlotItself() {
+        // Displacing is onCreateIncomingConnection's job and it already does it
+        // under DisplacedConnectionPolicy. A second owner here would be the
+        // "two teardown owners" bug that CallTeardown was built to end.
+        val body = functionBody(callPlugin, "fun\\s+ensureIncomingCallVisible\\s*\\(")
+        assertTrue(
+            "ensureIncomingCallVisible must not tear the slot down itself:\n$body",
+            !body.contains("onDisconnect()") &&
+                !body.contains("onReject()") &&
+                !body.contains("CallTeardown."),
+        )
+    }
+
+    @Test
     fun aDestroyedCallPlugin_stopsAnsweringTelecomCallbacks() {
         // CallConnection.onAnswered/onRejected/onEnded are companion-object
         // statics. A plugin instance that outlives its Bridge keeps receiving
