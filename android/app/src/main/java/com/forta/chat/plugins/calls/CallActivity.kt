@@ -29,6 +29,7 @@ import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import com.forta.chat.R
 import com.forta.chat.plugins.locale.LocaleHelper
 import com.forta.chat.utils.WindowInsetsHelper
@@ -619,7 +620,15 @@ class CallActivity : Activity(), SensorEventListener {
             check.visibility = if (device == state.active) View.VISIBLE else View.GONE
 
             row.setOnClickListener {
-                audioRouter.setDevice(device)
+                // The router refuses while it is not running — between the
+                // answer and the first audio frame, and again after teardown.
+                // Dismissing regardless left the pick looking applied while
+                // the old route stayed live (O08); the JS control has said so
+                // since F29, this sheet is the surface actually on screen
+                // during a call.
+                if (!audioRouter.setDevice(device)) {
+                    Toast.makeText(this, R.string.call_route_unavailable, Toast.LENGTH_SHORT).show()
+                }
                 popup.dismiss()
             }
             container.addView(row)

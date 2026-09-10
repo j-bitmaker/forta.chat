@@ -21,6 +21,14 @@ class AudioRoutePinContractTest {
 
     private val router by lazy { source("com/forta/chat/plugins/calls/AudioRouter.kt") }
     private val plugin by lazy { source("com/forta/chat/plugins/calls/CallPlugin.kt") }
+    private val activity by lazy { source("com/forta/chat/plugins/calls/CallActivity.kt") }
+
+    private fun resource(relative: String): String {
+        val candidates = listOf("src/main/res/$relative", "android/app/src/main/res/$relative")
+        val resolved = candidates.map { File(it) }.firstOrNull { it.exists() }
+            ?: error("$relative not found. Tried: $candidates from ${File(".").absolutePath}")
+        return resolved.readText()
+    }
 
     @Test
     fun setDevice_refusesWhileInactive_andNeverStartsTheRouter() {
@@ -73,6 +81,43 @@ class AudioRoutePinContractTest {
         val body = functionBody(router, "fun\\s+start\\s*\\(")
         assertTrue("start() must reset pinnedDevice:\n$body", body.contains("pinnedDevice = null"))
     }
+
+    @Test
+    fun nativeSheet_reportsARefusal_insteadOfDismissingSilently() {
+        // The JS control rolls its toggle back and toasts when the router
+        // refuses (O08). The activity's own bottom sheet is the other surface
+        // for the same action — and it is the one on screen during a call —
+        // yet it dropped the Boolean and closed as if the pick had worked.
+        val body = withoutComments(functionBody(activity, "private\\s+fun\\s+showAudioRouteSheet\\s*\\("))
+        assertTrue(
+            "the row listener must branch on setDevice's answer, not discard it:\n$body",
+            Regex("if\\s*\\(\\s*!\\s*audioRouter\\.setDevice\\(device\\)\\s*\\)").containsMatchIn(body),
+        )
+        assertTrue(
+            "a refusal must tell the user something:\n$body",
+            body.contains("R.string.call_route_unavailable"),
+        )
+    }
+
+    @Test
+    fun theRefusalMessage_existsInEveryLocale() {
+        // A missing translation is a silent regression: the toast still shows,
+        // in English, to a Russian user mid-call.
+        for (values in listOf("values", "values-ru")) {
+            val strings = resource("$values/strings.xml")
+            assertTrue(
+                "$values/strings.xml must define call_route_unavailable",
+                strings.contains("name=\"call_route_unavailable\""),
+            )
+        }
+    }
+
+    /** Drops `//` comment tails so an assertion measures code, not prose. */
+    private fun withoutComments(body: String): String =
+        body.lines().joinToString("\n") { line ->
+            val at = line.indexOf("//")
+            if (at >= 0) line.substring(0, at) else line
+        }
 
     private fun functionBody(src: String, signaturePattern: String): String {
         val match = Regex("$signaturePattern[^{]*\\{").find(src)
