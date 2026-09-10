@@ -306,6 +306,52 @@
      в логе `endCall reason=COLD_START … sessionMarkerOpen=true`; режим
      `MODE_NORMAL`.
   4. Redial сразу после завершения: у второго звонка есть звук в обе стороны.
+- Измерено 2026-09-10 на Samsung SM-A528B (Android 14) ↔ веб TEST1, Wi-Fi,
+  сборка `87e8dd1b`. Вместо Pixel — веб, поэтому шаг 2 (FCM) и половина Pixel
+  не проверены. Логи `scratchpad/runs/amode-*` и `amode2-*`, скрипты
+  `scratchpad/run-audio-reset.sh` и `run-audio-reset2.sh`.
+- Шаг 1: 12 звонков, по два на каждый способ завершения. Через 30 с после
+  каждого — `MODE_NORMAL`, все 12 раз:
+
+  | как закончился | `endCall` на Samsung | `audioMode` |
+  |----------------|----------------------|-------------|
+  | положил я | `DISCONNECT` | 3 |
+  | положил собеседник (веб через 8 с) | `DISCONNECT` | 3 |
+  | Samsung звонит, веб не отвечает | `DISCONNECT` после `onRejectReceived()` | 3 |
+  | веб звонит, Samsung не отвечает | `REJECT`, затем `DISCONNECT` | 1 |
+  | отклонил | `REJECT` | 1 |
+  | смахнул из недавних в разговоре | `DISCONNECT` | 3 |
+
+  Без ответа звонок кончается на 30-й секунде, а не на 45-й: исходящий
+  отклоняет рингер веба, входящий — `IncomingRinger` («no answer in 30s …
+  auto-rejecting» → `REJECT`). Во втором входящем JS-таймер сработал на
+  ~130 мс раньше (`[call-service] rejectCall` → `m.call.reject`), и натив
+  закрыл экран как «Remote hangup» → `DISCONNECT`. Смахивание:
+  ```
+  19:28:13.787 CallConnectionService: Task removed while a connection was live — disconnecting 1789057672080M4rGBvM3I4aDSrQI
+  19:28:13.788 CallTeardown: endCall reason=DISCONNECT callId=1789057672080M4rGBvM3I4aDSrQI State(audioMode=3, …)
+  19:28:46.146 CallTeardown: endCall reason=COLD_START callId=null State(audioMode=0, … sessionMarkerOpen=false …) actions=[]
+  ```
+  Ещё 3 попытки второго круга не в счёт: после смахивания приложение
+  открылось на списке чатов, скрипт не нашёл кнопку звонка, и звонков не было.
+- Шаг 3, `kill -9` в принятом входящем разговоре:
+  ```
+  19:41:55.652 Telecom: ServiceDeathRecipient: binderDied: ConnectionService …CallConnectionService died.
+  19:41:55.652 AS.AudioService: SetModeDeathHandler client died
+  19:41:55.655 Telecom: TC@119: SET_DISCONNECTED … Reason: (CS_DEATH)
+  19:41:55.667 ActivityManager: Scheduling restart of crashed service com.forta.chat/.plugins.calls.CallConnectionService in 1000ms for connection
+  19:41:56.707 CallTeardown(19991): endCall reason=COLD_START callId=null State(audioMode=0, otherCallLive=false, foregroundServiceRunning=false, routerActive=false, sessionMarkerOpen=true, ringingCallId=null) actions=[]
+  ```
+  Через 30 с — `MODE_NORMAL`. Строка из шага есть, но режим на Samsung
+  сбросила система: Telecom разорвал звонок по смерти сервиса, `AudioService`
+  снял режим умершего клиента. Новый процесс поднялся как перезапуск упавшего
+  `CallConnectionService`, ещё до ручного открытия, и увидел `audioMode=0` —
+  сбрасывать было нечего. Ветку `forceStop`, которую эмулятор отработал при
+  `audioMode=3`, этот аппарат не проверил.
+- Шаг 4 закрывает серия перезвонов из записи «Разговор переживает завершение
+  предыдущего звонка» (сборка `01fedeed`): 19 из 20 звонков соединились через
+  1,6–2,2 с после `endCall` прошлого, в каждом звук шёл в обе стороны;
+  двадцатый потерян в задержке сервера.
 - Статус: ☐ не проверено
 
 ### Ответ из шторки и с экрана блокировки переживает 30-ю секунду
@@ -361,37 +407,6 @@
   сотовой, последний пункт плана.
 - Статус: ☐ не проверено
 
-### Исходящий видеозвонок с Android соединяется
-- Коммит: <этот>
-- Почему нужен человек: `rtc-peer-connection-proxy.test.ts` доказывает, что два
-  `addTrack` подряд дают один `negotiationneeded`, трек, добавленный позже
-  (повышение до видео), — ещё один, а при ответе на входящий событие не
-  стреляет. Не доказано: что на реальном аппарате SDK больше не шлёт
-  `m.call.negotiate` до ответа и что собеседник принимает видеозвонок с
-  картинкой и звуком в обе стороны.
-- На чём: Android с нативным движком WebRTC (прокси ставится только там),
-  собеседник — веб (Samsung SM-A528B ↔ TEST1).
-- До фикса на том же стенде 2026-09-10 (логи `scratchpad/runs/video-out-*`,
-  `video-out2-*`): все 4 исходящих видеозвонка мёртвые. Прокси стрелял
-  `negotiationneeded` на каждый из двух треков, и SDK вслед за invite через
-  1,2–5,4 с отправлял `m.call.negotiate` со вторым offer. Веб, ещё звоня,
-  применял его и отвечал сам, а нажатие «Принять» падало:
-  `gotCallFeedsForAnswer() failed to create answer: InvalidStateError` — звонок
-  у веба завершался. Телефон через 15–16 с после ответа получал ICE `FAILED` и
-  клал трубку с `ice_failed`; в одном звонке ICE на 0,2 с дошёл до `CONNECTED`,
-  но кадров у веба не было ни в одном. Голосовых это не касалось: один трек —
-  одно событие.
-- Шаги:
-  1. Позвонить с телефона вебу видеозвонком, ответить на вебе.
-  2. В logcat на звонок одна `addTrack: firing negotiationneeded`, одна
-     `sendEvent of type m.call.invite` и ни одной `m.call.negotiate` до ответа
-     веба.
-  3. У веба нет `failed to create answer`; входящие видеокадры и звук растут у
-     веба, входящий звук — у телефона.
-  4. В голосовом звонке включить камеру: перезаключение проходит как раньше
-     (`onSignalingChange: HAVE_LOCAL_OFFER` → `STABLE`, у веба кадры).
-- Статус: ☐ не проверено
-
 ### Одна камера на исходящий видеозвонок
 - Коммит: 4c23a27b
 - Почему нужен человек: `TrackAttachPolicyTest` доказывает правило выбора
@@ -413,6 +428,34 @@
      звонок и по одной `attached video track` на соединение; нет ошибок
      камеры.
   3. Все 6 звонков с картинкой и звуком в обе стороны.
+- Измерено 2026-09-10 на Samsung SM-A528B (Android 14) ↔ веб TEST1, сборка с
+  `87e8dd1b`: до этого коммита исходящий видеозвонок с Android не соединялся
+  вовсе (запись «Исходящий видеозвонок с Android соединяется»). Логи
+  `scratchpad/runs/video-out3-*` и `video-say-*`, скрипт
+  `scratchpad/run-video-out.sh`. Только Samsung→веб, 4 звонка по 20 с.
+- Шаг 2, звонящий Samsung: в каждом звонке ровно одна
+  `Local video started with camera` и одна `attached video track` (соединение
+  одно), `startLocalVideo(reuse)` нет:
+  ```
+  19:14:33.353 NativeWebRTCManager: Local video started with camera: 1 (peerId=, pcs=0)
+  19:14:33.522 NativeWebRTCManager: [pc_1_1789056873369] createPeerConnection: attached video track
+  19:14:57.718 CameraCapturer: Stop capture done
+  19:14:57.720 Camera2Session: Stop camera2 session on camera 1
+  ```
+  Камера открывается раньше соединения (`pcs=0`) и цепляется к нему в
+  `createPeerConnection`. `CameraAccessException` — 0, строк
+  `Camera2Session`/`CameraCapturer` с `error`/`failed` — 0. `notifyError` с
+  кодами 4 и 5 (10–12 на звонок) приходят только через 53–109 мс после
+  `Stop capture done` — кадры, застигнутые остановкой. Строки `CHIUSECASE` —
+  шум HAL Qualcomm, не ошибки. Второй `Stop capture done` в той же
+  миллисекунде пишет `dispose` с `No session open`, а не вторая камера.
+- Шаг 3, Samsung→веб: у веба за 20 с 262–266 декодированных кадров, разрешение
+  доходит до 640×360 (звонок 1) и 960×540 (звонки 2–4). У телефона через 12 с
+  после соединения 243–248 кадров и 34,7–37,5 КБ звука от веба. Звук с
+  телефона в тихой комнате — 1,9–2,0 КБ за 20 с: видеозвонок идёт на громкой
+  связи, шумоподавление Samsung глушит тишину, работает DTX. С `say` рядом с
+  телефоном (звонок 4) — 54,4 КБ за 20 с, 3 795 Б/с, прирост энергии +0,41.
+- Не проверено: Pixel, Pixel→Samsung и видеозвонок, принятый на Samsung.
 - Статус: ☐ не проверено
 
 ### Громкая связь: отказ и пин ручного выбора
@@ -873,6 +916,51 @@
 ---
 
 ## Проверено
+
+### Исходящий видеозвонок с Android соединяется
+- Коммит: `87e8dd1b`
+- Проверено 2026-09-10 на Samsung SM-A528B (Android 14) ↔ веб TEST1, Wi-Fi,
+  сборка с этим коммитом. Логи `scratchpad/runs/video-out3-*`, `video-say-*` и
+  `reneg-fixed-*`, скрипты `scratchpad/run-video-out.sh` и `run-reneg-out.sh`.
+- **До фикса** на том же стенде (логи `video-out-*`, `video-out2-*`): все 4
+  исходящих видеозвонка мёртвые. Прокси стрелял `negotiationneeded` на каждый
+  из двух треков, и SDK вслед за invite через 1,2–5,4 с отправлял
+  `m.call.negotiate` со вторым offer. Веб, ещё звоня, применял его и отвечал
+  сам, а нажатие «Принять» падало:
+  `gotCallFeedsForAnswer() failed to create answer: InvalidStateError` — звонок
+  у веба завершался. Телефон через 15–16 с после ответа получал ICE `FAILED` и
+  клал трубку с `ice_failed`; в одном звонке ICE на 0,2 с дошёл до `CONNECTED`,
+  но кадров у веба не было ни в одном. Голосовых это не касалось: один трек —
+  одно событие.
+- Шаги 1–2, 4 видеозвонка с телефона. В каждом одна
+  `addTrack: firing negotiationneeded`, один invite и ни одного
+  `m.call.negotiate` до ответа; `ice_failed` — 0:
+  ```
+  19:14:33.380 Capacitor/Console: [NativeRTCProxy] addTrack: firing negotiationneeded (iceState=new)
+  19:14:33.907 Capacitor/Console: sendEvent of type m.call.invite in !XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app …
+  19:14:36.846 Capacitor/Console: Call 1789056872277ovCfqMJH4kv4dBaj onAnswerReceived() running …
+  ```
+  Строки `m.call.negotiate` у веба есть только при загрузке, за 6–7 с до
+  первого звонка: `CallEventHandler … discarding possible call event as we
+  don't have a call` — это старые события, не эти звонки.
+- Шаг 3: у веба ни одной `failed to create answer` и `InvalidStateError`,
+  ответы на 4 звонка из 4. За 20 с у веба 262–266 декодированных кадров,
+  разрешение до 960×540. У телефона через 12 с после соединения 243–248 кадров
+  и 34,7–37,5 КБ звука от веба. Звук с телефона проверен речью: в тихой
+  комнате у веба ~100 Б/с (DTX на громкой связи), с `say` рядом с телефоном —
+  3 795 Б/с, прирост энергии +0,41. Подробности — в записи «Одна камера на
+  исходящий видеозвонок».
+- Шаг 4, голосовой звонок с телефона, камера через 13 с после соединения:
+  ```
+  19:50:50.682 NativeWebRTCManager: [pc_4_1789059029939] startLocalVideo: attached video track
+  19:50:51.122 Capacitor/Console: [NativeRTCProxy] addTrack: firing negotiationneeded (iceState=connected)
+  19:50:51.161 NativeWebRTCManager: [pc_4_1789059029939] onSignalingChange: HAVE_LOCAL_OFFER
+  19:50:51.177 Capacitor/Console: sendEvent of type m.call.negotiate in !XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app …
+  19:50:52.852 NativeWebRTCManager: [pc_4_1789059029939] onSignalingChange: STABLE
+  ```
+  Первый кадр у веба через 0,6 с после `STABLE`, за 30 с 374 кадра, разрешение
+  от 320×180 до 960×540. На весь звонок два `negotiationneeded`: при наборе и
+  при включении камеры.
 
 ### Микрофон не глохнет на исходящем звонке
 - Коммит: `01fedeed`
