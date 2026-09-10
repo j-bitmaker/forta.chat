@@ -801,6 +801,25 @@
   3. Известный незакрытый случай — записан здесь, чтобы не искать заново: два
      звонка **в одной комнате** внахлёст, где завершившийся создан из пуша. Их
      нечем различить, событие проходит, и JS кладёт трубку более новому звонку.
+- Измерено 2026-09-10 на Samsung SM-A528B, локальная сборка с
+  `google-services.json` (`scratchpad/runs/push-decline-*`,
+  `push-decline-home-*`):
+  - Предпосылка записи на этом homeserver сейчас не держится: `call_id` в пуше
+    равен Matrix callId (`Call invite: callId=1789062887111e0D8kGYsMSy6q8ZN,
+    eventId=$24trg…`), event_id приходит отдельным полем. Сверка по комнате,
+    ради которой запись заведена, в обоих прогонах не понадобилась — id
+    совпали точно.
+  - Шаг 2, JS мёртв (приложение смахнуто): рингер из FCM, «Отклонить» →
+    `onReject`; после холодного старта `[call-service] Pre-rejected incoming
+    call, calling reject()` и `m.call.reject` через 4,1 с после `onReject`.
+    Строк `— ignoring` нет. Событие в JS не приходило — отказ доехал меткой, а
+    не через слушатель.
+  - Шаг 2, JS жив (Home): `onReject` → `[NativeCallBridge] Call declined:
+    <id>` через 25 мс → `m.call.reject` ещё через 13 мс. Строк `— ignoring`
+    нет. Попутно найден дубль регистрации в Telecom — см. «Повторная
+    регистрация звонящего вызова не завершает его в JS».
+  - Не проверено: сам путь с несравнимыми id (event_id против callId) — на
+    этом homeserver его сейчас не воспроизвести; шаг 3.
 - Статус: ☐ не проверено
 
 ### iOS: метка получает возраст и перестаёт быть вечной
@@ -948,42 +967,54 @@
      обязан завершить звонок, аудиорежим вернуться в `MODE_NORMAL`.
 - Статус: ☐ не проверено
 
-### Повторная регистрация звонящего вызова не завершает его в JS
-- Коммит: <этот>
-- Почему нужен человек: дубль рождается только при живом JS и настоящем FCM.
-  Сервис пуша звонит нативно и передаёт тот же пуш в JS, а JS регистрирует
-  звонок в Telecom ещё раз — через миллисекунды, пока Telecom не посчитал
-  первый звонящим (позже он отказывает второй регистрации сам). Юнит-тесты
-  закрывают правило (`DisplacedConnectionPolicyTest`, `isSameRingingCall`) и
-  проводку (`DuplicateIncomingRegistrationContractTest`; без ветки в
-  `onCreateIncomingConnection` падают все три), но гонку двух регистраций на
-  JVM не собрать.
-- На чём: реальный аппарат, сборка с `android/app/google-services.json`
-  (проверялось на Samsung SM-A528B).
-- Шаги:
-  1. `adb logcat -v time > run.log &`. Приложение открыто и залогинено, затем
-     Home — процесс остаётся жив.
-  2. Позвонить с веба, дождаться рингера.
-     **Ожидается:** две строки `onCreateIncomingConnection: callId=<id>` и
-     `Duplicate incoming registration for <id> — keeping the connection that
-     already rings`; **нет** `Displacing a stale connection` и **нет**
-     `[NativeCallBridge] Call ended natively: <id>` до нажатия.
-     **Раньше:** вторая регистрация вытесняла первую →
-     `CallTeardown endCall reason=DISCONNECT` → `Call ended natively` для
-     звонка, который ещё звонит. JS не клал трубку только потому, что
-     `setMatrixCall` к этому моменту ещё не выполнился (его отделяет секундная
-     проверка других вкладок).
-  3. «Отклонить» на рингере — у веба отказ; в логе `Call declined: <id>` и
-     `sendEvent of type m.call.reject`.
-  4. Повторить шаги 1–2 и «Принять» — разговор соединяется.
-  5. Контроль, что одиночная регистрация не задета: смахнуть приложение из
-     «недавних» (JS мёртв), позвонить — одна `onCreateIncomingConnection`,
-     строки `Duplicate incoming registration` нет, отказ доходит до веба.
-- Статус: ☐ не проверено
-
 ---
 
 ## Проверено
+
+### Повторная регистрация звонящего вызова не завершает его в JS
+- Коммит: `f83b30e7`
+- Проверено 2026-09-10 на Samsung SM-A528B (Android 14) ↔ веб TEST1, Wi-Fi,
+  сборка с этим коммитом и `android/app/google-services.json` (FCM). Логи
+  `scratchpad/runs/push-decline-home2-*`, `push-accept-home2-*` и
+  `push-decline2-*`, скрипт `scratchpad/run-push-decline.sh` — он же считает
+  `onCreateIncoming`, `displaced` (`Displacing a stale connection`) и
+  `duplicate-kept` (`Duplicate incoming registration`).
+- **До фикса** на том же стенде (`push-decline-home-*`, `push-accept-home-*`):
+  при свёрнутом приложении каждый входящий по пушу регистрировался в Telecom
+  дважды, вторая регистрация вытесняла первую, и JS получал завершение звонка,
+  который ещё звонил:
+  ```
+  20:54:48.586 D/CallConnectionService: onCreateIncomingConnection: callId=1789062887111e0D8kGYsMSy6q8ZN, …
+  20:54:48.600 D/CallConnectionService: onCreateIncomingConnection: callId=1789062887111e0D8kGYsMSy6q8ZN, …
+  20:54:48.605 I/CallTeardown: endCall reason=DISCONNECT callId=1789062887111e0D8kGYsMSy6q8ZN …
+  20:54:48.632 I/Capacitor/Console: [NativeCallBridge] Call ended natively: 1789062887111e0D8kGYsMSy6q8ZN
+  20:54:48.839 D/IncomingRinger: arm callId=1789062887111e0D8kGYsMSy6q8ZN
+  ```
+  Трубку JS не положил только потому, что `setMatrixCall` в этот момент ещё
+  ждал секундную проверку других вкладок.
+- Шаги 1–2 (Home, звонок с веба), `push-decline-home2`:
+  ```
+  21:18:15.421 I/FortaPush: Call invite: callId=1789064294161qSa7ruda43EXqiBj, eventId=$Uze1vCIj…
+  21:18:15.575 D/CallConnectionService: onCreateIncomingConnection: callId=1789064294161qSa7ruda43EXqiBj, …
+  21:18:15.605 D/CallConnectionService: onCreateIncomingConnection: callId=1789064294161qSa7ruda43EXqiBj, …
+  21:18:15.605 W/CallConnectionService: Duplicate incoming registration for 1789064294161qSa7ruda43EXqiBj — keeping the connection that already rings
+  21:18:16.255 D/IncomingRinger: arm callId=1789064294161qSa7ruda43EXqiBj
+  ```
+  Счётчики `onCreateIncoming=2 displaced=0 duplicate-kept=1`; `Call ended
+  natively` до нажатия — ни одного. В `push-accept-home2` то же самое:
+  регистрации через 22 мс одна за другой, `duplicate-kept=1`, `displaced=0`.
+- Шаг 3 («Отклонить»): `onReject` в 21:18:26.434 → `[NativeCallBridge] Call
+  declined` через 23 мс → `m.call.reject` ещё через 32 мс; у веба соединение
+  закрылось (`closed/closed`). Строк `— ignoring` нет.
+- Шаг 4 («Принять», `push-accept-home2`): `onAnswer` в 21:20:15.175 → `Call
+  answered` через 21 мс → `reportCallConnected` через 2,5 с; у веба
+  `connected/stable`. Единственный `Call ended natively` — в 21:20:48.088,
+  после того как веб положил трубку.
+- Шаг 5 (приложение смахнуто, JS мёртв), `push-decline2`: одна
+  `onCreateIncomingConnection`, счётчики `onCreateIncoming=1 displaced=0
+  duplicate-kept=0`. «Отклонить» → `onReject` в 21:22:42.118 → холодный старт
+  → `[call-service] Pre-rejected incoming call, calling reject()` и
+  `m.call.reject` через 4,0 с; у веба `closed/closed`.
 
 ### Запросы приложения идут через Tor на Android
 - Коммит: `a9bb63ca`
