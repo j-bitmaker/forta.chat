@@ -24,23 +24,6 @@
 
 ## Ожидают проверки
 
-### Микрофон освобождается после смахивания приложения из «недавних»
-- Коммит: `00ddc636`
-- Почему нужен человек: индикатор доступа к микрофону — системный, рисуется вне
-  приложения. Юнит-тест доказывает, что `closeAllPeerConnections()` вызывается на
-  обоих путях завершения сервиса, но не то, что аудио-HAL действительно отпустил
-  захват.
-- На чём: реальный аппарат с Android 12+ (у более старых нет индикатора).
-- Шаги:
-  1. Позвонить, дождаться соединения.
-  2. Смахнуть приложение из «недавних» прямо во время разговора.
-  3. Индикатор микрофона в статус-баре обязан погаснуть сразу; в
-     Настройки → Конфиденциальность → Панель управления Forta не должен
-     значиться как использующий микрофон.
-  4. Сразу же позвонить снова — звук должен быть в обе стороны (протёкшая
-     дорожка отравляла следующий звонок).
-- Статус: ☐ не проверено
-
 ### Разговор переживает завершение предыдущего звонка
 - Коммит: `00ddc636`
 - Почему нужен человек: проверяется гонка жизненного цикла сервиса — ОС решает,
@@ -424,6 +407,63 @@
   3. Убитый процесс (CI-сборка): смахнуть Forta из недавних, позвонить,
      принять из шторки при выключенном экране — соединяется.
   4. Отклонить из шторки при живом процессе — у звонящего «отклонён» ≤ 3 с.
+- Измерено 2026-09-10 (UTC) на Samsung SM-A528B (Android 14), сборка
+  `f83b30e7` с FCM, процесс жив, звонящий — веб TEST1. Скрипт
+  `scratchpad/run-shade.sh`: во время ринга Home, шторка раскрывается
+  (`cmd statusbar expand-notifications`), кнопка уведомления в SystemUI
+  нажимается через `adb input tap`. Логи `scratchpad/runs/shade-*`, время
+  телефона местное.
+  - Шаг 1 проходит на Samsung. «Ответить» в шторке дошло до рингера через
+    `onNewIntent`, рингтон остановлен через 39 мс, звонок прожил 45 с:
+    ```
+    00:25:11.875 D/IncomingCallActivity: onNewIntent: dispatching action=accept on resident instance
+    00:25:11.875 D/IncomingCallActivity: Accept pressed
+    00:25:11.914 D/IncomingRinger: stop callId=1789075497936ZA6datkny0aIGO8K
+    00:25:11.914 D/CallConnection: onAnswer: callId=1789075497936ZA6datkny0aIGO8K, roomId=!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app
+    00:25:12.240 I/Capacitor/Console: [NativeCallBridge] matrixCall ready, answering (matchById=true, matchByRoom=false): 1789075497936ZA6datkny0aIGO8K
+    ```
+    - У веба `connected/stable` через 6 с после нажатия; за следующие 45 с
+      входящие байты 497 → 106 040, энергия звука 2,66 — звук с телефона идёт.
+    - Через 6 и через 45 с сверху `CallActivity`, режим
+      `MODE_IN_COMMUNICATION`. Веб положил трубку в 00:26:04 (`onDisconnect` →
+      `CallTeardown: endCall reason=DISCONNECT`), после этого `MODE_NORMAL`.
+    - Pixel-половина не закрыта.
+  - Шаг 4 проходит на Samsung: веб узнал об отказе через 615 мс после
+    «Отклонить» в шторке (`onRejectReceived` в консоли веба,
+    2026-09-10T21:26:55.771Z). Время нажатия снято часами того же Mac до
+    `adb input tap`, так что 615 мс — верхняя граница.
+    ```
+    00:26:55.071 D/IncomingCallActivity: onNewIntent: dispatching action=decline on resident instance
+    00:26:55.071 D/IncomingCallActivity: Decline pressed
+    00:26:55.102 D/IncomingRinger: stop callId=1789075603043SyKbQrIfRk0MEnA3
+    00:26:55.103 D/CallConnection: onReject: callId=1789075603043SyKbQrIfRk0MEnA3, roomId=!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app
+    00:26:55.104 I/CallTeardown: endCall reason=REJECT callId=1789075603043SyKbQrIfRk0MEnA3 State(audioMode=1, otherCallLive=false, …)
+    ```
+    После отказа `MODE_NORMAL`.
+  - Шаг 2 проходит на Samsung: экран заблокирован (PIN) и погашен, звонок
+    соединился и 45 с шёл с таймером, без «Соединение…». Скрипт
+    `scratchpad/run-lock.sh`, логи `scratchpad/runs/lock-answer1-*`; блокирует
+    телефон и отвечает владелец.
+    ```
+    01:10:52.229 D/CallConnectionService: onCreateIncomingConnection: callId=1789078251029fRuckoxwKqjG1sOJ, caller=test3823818, …
+    01:10:52.354 I/ActivityTaskManager: Activity requesting to dismiss Keyguard: ActivityRecord{… com.forta.chat/.plugins.calls.IncomingCallActivity …}
+    01:10:53.285 D/IncomingRinger: arm callId=1789078251029fRuckoxwKqjG1sOJ
+    01:11:02.455 D/IncomingCallActivity: Accept pressed
+    01:11:02.473 D/IncomingRinger: stop callId=1789078251029fRuckoxwKqjG1sOJ
+    01:11:02.474 D/CallConnection: onAnswer: callId=1789078251029fRuckoxwKqjG1sOJ, roomId=!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app
+    01:11:02.807 I/Capacitor/Console: [NativeCallBridge] matrixCall ready, answering (matchById=true, matchByRoom=false): …
+    ```
+    - Рингер поднялся поверх блокировки: `IncomingCallActivity` сверху при
+      `isKeyguardShowing=true`. Ответ — кнопкой «Принять» на рингере.
+    - У веба `connected/stable` в 22:11:06.883Z (UTC), через 4,4 с после
+      «Принять». К этому моменту блокировка уже снята
+      (`isKeyguardShowing=false`), сверху `CallActivity`. Чем владелец снял
+      её при ответе (PIN или биометрия), он не помнит.
+    - Каждые 5 с на экране звонка идёт таймер (00:10 → 01:35) и кнопки
+      «Выкл. микрофон», «Вкл. видео», «Динамик телефона»; входящие байты у
+      веба 11 541 → 216 335.
+    - Веб положил трубку в 01:12:43 (`onDisconnect` → `CallTeardown: endCall
+      reason=DISCONNECT`), после этого `MODE_NORMAL`.
 - Статус: ☐ не проверено
 
 ### ICE-кандидаты до answer доходят до соединения
@@ -542,6 +582,26 @@
   14:32:37 — окно отказа к этому моменту давно закрыто. Отказ остаётся
   доказанным только тестами.
   **Остаётся человеку:** слышимость и Bluetooth-гарнитура (шаг 3).
+- Измерено 2026-09-11 на Samsung SM-A528B, сборка `f83b30e7` с FCM (логи
+  `scratchpad/runs/early-pick1-*`, `early-pick2-*`, `early-spk4-*`; время —
+  часы телефона, UTC+3).
+  - Шаг 1. Во время звонка на Android на экране нативная шторка «Аудио». До
+    соединения окно отказа на этом аппарате закрыто: роутер активен раньше,
+    чем экран звонка принимает нажатия, и «Динамик» до соединения
+    применяется (`setDevice: SPEAKER (pinned)` за 822 мс до
+    `reportCallConnected`). Сам отказ достигнут в окне после teardown:
+    `refused: router inactive` и русский тост — выдержка в записи «Нативная
+    шторка выбора звука сообщает об отказе» («Проверено»). Откат
+    JS-переключателя эти прогоны не проверяли.
+  - Шаг 2 — ещё раз на уровне фреймворка, три выбора в одном звонке:
+    ```
+    01:52:12.865 AudioRouter: setDevice: SPEAKER (pinned)
+    01:52:12.868 AS.AudioDeviceBroker: setCommunicationRouteForClient … type:speaker
+    01:52:23.234 AudioRouter: setDevice: EARPIECE (pinned)
+    01:52:23.237 AS.AudioDeviceBroker: setCommunicationRouteForClient … type:earpiece
+    01:52:31.600 AudioRouter: setDevice: SPEAKER (pinned)
+    01:52:31.602 AS.AudioDeviceBroker: setCommunicationRouteForClient … type:speaker
+    ```
 - Статус: ☐ не проверено
 
 ### Факты ICE и Tor в отчёте
@@ -604,7 +664,70 @@
   2. Отчёт из приложения при выключенном разрешении: строка
      `Full-screen intent | REVOKED`.
   3. Во время ринга «громкость −»: индикатор «Звонок», рингтон тише.
-- Статус: ☐ не проверено
+- Измерено 2026-09-10 на Samsung SM-A528B (Android 14), сборка `f83b30e7` с
+  FCM, звонящий — веб TEST1. Логи и скриншоты `scratchpad/runs/volrock1-*`,
+  `scratchpad/runs/fsi-*`; скрипт `scratchpad/run-volume-rocker.sh`.
+  - **Шаг 1 провален: пока экран «Уведомления» открыт, баннер не следует за
+    разрешением.** Кнопка открывает системный экран
+    (`com.android.settings/.Settings$AppManageFullScreenIntentsActivity`), но
+    статус читается только при монтировании (`onMounted` →
+    `detectFullScreenIntent` в `NotificationSettings.vue`), а возврат из
+    системного экрана его не перечитывает. Время UTC, скрипт
+    `scratchpad/run-fsi-retest.sh`, скриншоты `scratchpad/runs/fsiretest-*.png`:
+    ```
+    20:59:23Z владелец выключил разрешение (appops deny)
+    21:00:59Z вернулся в приложение: {"view":true,"banner":false,"status":{"allowed":false,"manageable":true}}
+    21:01:05Z «Уведомления» открыты заново: {"view":true,"banner":true,"status":{"allowed":false,"manageable":true}}
+    21:01:06Z «Разрешить полноэкранные уведомления» → системный экран
+    21:01:39Z владелец включил разрешение (appops allow)
+    21:01:58Z вернулся в приложение: {"view":true,"banner":true,"status":{"allowed":true,"manageable":true}}
+    21:02:07Z через 9 с: {"view":true,"banner":true,"status":{"allowed":true,"manageable":true}}
+    ```
+    - Проба читает DOM (`[data-testid="fsi-banner"]`) через CDP и тут же
+      спрашивает плагин (`PushData.getFullScreenIntentStatus()`).
+    - Ошибка в обе стороны: после выключения баннера нет, после включения он
+      висит с текстом «Android отключил полноэкранные уведомления». Верное
+      состояние появляется только при повторном открытии экрана.
+    - `openFullScreenIntentSettings()` резолвится сразу после `startActivity`;
+      при возврате в логе `Capacitor/AppPlugin: No listeners found for event
+      resume`.
+    - Первая попытка (20:43Z) не засчитана: владелец нажал «Назад» в
+      приложении через 0,7 с после возврата, и экран закрылся до пробы.
+    - Починка — отдельным шагом, отложена владельцем (стадия 7) вместе с
+      шагом 3: перечитывать статус, когда приложение снова становится активным.
+  - Шаг 2 не проверялся: отчёт из приложения сразу публикуется issue на
+    GitHub, и владелец решил его не отправлять. С плагина снято значение, из
+    которого строится строка: при выключенном разрешении
+    `getFullScreenIntentStatus` → `{"allowed":false,"manageable":true}`.
+  - **Шаг 3 провален: во время ринга качелька не меняет громкость и не глушит
+    рингтон.** Приложение открыто, экран не заблокирован, разрешение выдано;
+    сверху `IncomingCallActivity` (поверх него heads-up «Входящий вызов»),
+    `STREAM_RING` = 7.
+    ```
+    23:48:56.498 I/WindowManager: interceptKeyBeforeQueueing: VOLUME key-down while ringing: Silence ringer!
+    23:48:56.521 I/Telecom: Call: Send silence to connection service for call [Call id=TC@169, state=RINGING, tpac=ComponentInfo{com.forta.chat/com.forta.chat.plugins.calls.CallConnectionService}, …]
+    23:48:56.523 I/TelecomFramework: CallConnectionService: silence TC@169_1
+    23:48:56.570 D/AS.AudioService: adjustSuggestedStreamVolume() stream=2, flags=4116, caller=android, volControlStream=-1, userSelect=false
+    23:48:56.579 D/AS.AudioService: adjustStreamVolume() stream=0, dir=0, flags=4116, caller=android
+    23:48:56.601 D/vol.VolumeDialogControl: onVolumeChangedW stream = 0, flags = 4112, lastAudibleStreamVolume = 8, changed = false, showUI = false, dualAudio = false
+    23:49:06.305 I/WindowManager: interceptKeyBeforeQueueing: VOLUME key-down while ringing: Silence ringer!
+    ```
+    - Пока наш self-managed звонок в Telecom в состоянии RINGING, система
+      забирает нажатие качельки раньше окна и вызывает `silenceRinger`. До
+      `AudioService` доходит только отпускание клавиши — с `dir=0`, поэтому
+      `volumeControlStream = STREAM_RING` из `1adc0949` громкость не меняет.
+    - Telecom передаёт `silence` в `CallConnectionService`, но `CallConnection`
+      не переопределяет `onSilence()`, и рингтон играет дальше: до отбоя в
+      23:49:09 в логе нет ни одного `IncomingRinger: stop`.
+    - «Громкость −» (23:48:56) и «громкость +» (23:49:06) не сдвинули ни один
+      поток: `STREAM_RING` 7 → 7 → 7, панель громкости не появилась. На слух
+      не проверено: владелец не слушал.
+    - Для звонка, зарегистрированного в Telecom, ожидание шага невыполнимо:
+      платформа отдаёт качельку на `silenceRinger`, как в штатной звонилке.
+      Починка — отдельным шагом, отложена владельцем (стадия 7): `onSilence()`
+      глушит рингтон и вибрацию, не снимая 30-секундный срок рингера
+      (`IncomingRinger.stop` снимает и его); ожидание шага 3 переписать.
+- Статус: ☐ шаги 1 и 3 провалены 2026-09-10, починка отложена владельцем (стадия 7)
 
 ### Слот Telecom по callId
 - Коммит: dac97dcb
@@ -725,6 +848,46 @@
   `run-push-hangup.sh` и `run-push-kill-repro.sh`): `Killing 25771 … remove
   task` через 3 мс после `notify`, ни `onCreateIncomingConnection`, ни `arm`.
   Фикса нет — подход требует решения.
+- Шаг 6 с заблокированным экраном проверен 2026-09-10 (UTC) на Samsung
+  SM-A528B (Android 14), сборка `f83b30e7` с FCM, звонящий — веб TEST1.
+  Скрипт `scratchpad/run-push-redial-lock.sh`, логи
+  `scratchpad/runs/push-redial-lock-{reject,answer}-*`. Приложение не
+  смахивается из «недавних» — это задевает дефект выше: Home и `am kill`,
+  процесс мёртв, телефон блокирует владелец. Оба звонка каждой пары пришли
+  пушем: A — в мёртвый процесс, B — в процесс, поднятый пушем A. Рингер
+  поднимался поверх блокировки.
+  - **Сторона отказа.** На 30-й секунде рингер сам отклонил A; B через 21 с
+    зазвонил:
+    ```
+    01:15:17.593 I/FortaPush: Call invite: callId=1789078516251WNPN7RSrv2KYhrzU, …
+    01:15:18.111 D/IncomingRinger: arm callId=1789078516251WNPN7RSrv2KYhrzU
+    01:15:48.112 W/IncomingRinger: no answer in 30s for 1789078516251WNPN7RSrv2KYhrzU — auto-rejecting
+    01:15:48.134 D/CallConnection: onReject: callId=1789078516251WNPN7RSrv2KYhrzU, roomId=!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app
+    01:15:54.360 I/Capacitor/Console: [call-service] Pre-rejected incoming call, calling reject(): 1789078516251WNPN7RSrv2KYhrzU
+    01:16:08.908 I/FortaPush: Call invite: callId=17890785682588A5chUn7rfzoyZeL, …
+    01:16:09.122 D/IncomingRinger: arm callId=17890785682588A5chUn7rfzoyZeL
+    ```
+    `Pre-rejected` назвал только A: JS после холодного старта отправил отказ
+    за A по его собственной метке. Для B — `arm`, ни `Pre-rejected`, ни
+    `Pre-accepted`, ни `onAnswer`; веб положил B примерно через 24 с.
+  - **Сторона ответа.** «Принять» на рингере A (`adb input tap`) при
+    заблокированном экране; веб положил A в 01:18:40; B через 13 с зазвонил,
+    а не ответился сам:
+    ```
+    01:18:03.506 D/IncomingRinger: arm callId=17890786812305IsmC4Ol2lkj2x57
+    01:18:13.642 D/CallConnection: onAnswer: callId=17890786812305IsmC4Ol2lkj2x57, roomId=!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app
+    01:18:19.824 I/Capacitor/Console: [call-service] Pre-accepted incoming call, skipping ringer: 17890786812305IsmC4Ol2lkj2x57
+    01:18:21.214 D/Capacitor/Console: sendEvent of type m.call.answer in !XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app …
+    01:18:40.679 I/CallTeardown: endCall reason=DISCONNECT callId=17890786812305IsmC4Ol2lkj2x57 …
+    01:18:53.975 I/FortaPush: Call invite: callId=1789078733276ij6MxAfkf1NqzpnM, …
+    01:18:54.192 D/IncomingRinger: arm callId=1789078733276ij6MxAfkf1NqzpnM
+    ```
+    `Pre-accepted` назвал только A — это его собственный ответ, доведённый
+    JS после холодного старта: от «Принять» до `m.call.answer` 7,6 с, у веба
+    `connected/stable`. Для B — `arm`, ни `onAnswer`, ни `Pre-accepted`; веб
+    положил B примерно через 24 с.
+  - Гашение меток видно на каждом завершении (`To native … pluginId:
+    NativeCall, methodName: retirePendingMarkers`).
 - Статус: ☑ шаги 1-3 проверены на реальном Samsung SM-A528B (Android 14,
   WebView 151) 2026-09-09, звонящий — веб-клиент из той же комнаты, ответ на
   входящий подан через `adb input tap`.
@@ -742,7 +905,8 @@
   В обоих прогонах `roomId` в запросе присутствует — правило «в комнате нет
   другого живого звонка» разрешило широкий матч, а это ровно та ветка, без
   которой гашение было бы инертным на push-пути.
-  Шаг 4 (остаток) и шаг 5 (push) ☐ не проверены.
+  Шаг 4 (остаток) ☐ не проверен. Push-шаг (6 в списке) проверен 2026-09-10
+  с заблокированным экраном на сборке `f83b30e7` с FCM — блок выше.
 
 ### Возраст метки pendingAnswer/pendingReject доезжает до JS
 - Коммит: `e67f3863`
@@ -875,34 +1039,6 @@
   отдаёт звонок с большой задержкой, и 60 с не хватает.
 - Статус: ☐ не проверено
 
-### Нативная шторка выбора звука сообщает об отказе
-- Коммит: `556c8450`
-- Почему нужен человек: тост рисует система, и нужен именно тот момент, когда
-  `AudioRouter` ещё (или уже) не запущен — между ответом и первым аудиокадром,
-  и после teardown. Контрактный тест доказывает только проводку: что ветка
-  отказа есть и что строка переведена.
-- На чём: реальный аппарат (проверялось на Samsung SM-A528B).
-- Шаги:
-  1. Принять звонок и сразу же, до появления «Соединение установлено», открыть
-     шторку «Аудио» и выбрать «Динамик».
-     **Ожидается:** либо маршрут переключается (звук идёт из динамика), либо
-     появляется тост «Не удалось переключить звук. Попробуйте после
-     соединения.» — молча шторка закрываться не должна.
-     **Раньше:** шторка закрывалась в любом случае, галочка оставалась на
-     прежнем устройстве, и пользователь не понимал, нажалось ли вообще (кластер
-     O08).
-  2. То же самое во время установившегося разговора — там маршрут обязан
-     переключиться без тоста.
-  3. На русской локали проверить, что тост по-русски.
-- Измерено 2026-09-10 на Samsung SM-A528B (лог `scratchpad/runs/audio-143137.log`):
-  шаг 2 проходит — три выбора подряд применились (`setDevice: … (pinned)` →
-  `setCommunicationDevice(…): true`), шторка закрылась, тоста не было.
-  Шаг 1 достать не удалось: роутер поднимается через ~1,5 с после `onAnswer`, а
-  самый быстрый тап через adb (`uiautomator dump` + tap) — через ~8 с, окно
-  отказа к этому моменту закрыто. Ветка отказа остаётся доказанной только
-  тестами.
-- Статус: ☐ не проверено
-
 ### Решение на рингере не теряется из-за метки другого звонка
 - Коммит: `f6c12385`
 - Почему нужен человек: состояние собирается только через пуш и только когда
@@ -993,6 +1129,160 @@
 ---
 
 ## Проверено
+
+### Микрофон освобождается после смахивания приложения из «недавних»
+- Коммит: `00ddc636`
+- Почему нужен человек: индикатор доступа к микрофону — системный, рисуется вне
+  приложения. Юнит-тест доказывает, что `closeAllPeerConnections()` вызывается на
+  обоих путях завершения сервиса, но не то, что аудио-HAL действительно отпустил
+  захват.
+- На чём: реальный аппарат с Android 12+ (у более старых нет индикатора).
+- Шаги:
+  1. Позвонить, дождаться соединения.
+  2. Смахнуть приложение из «недавних» прямо во время разговора.
+  3. Индикатор микрофона в статус-баре обязан погаснуть сразу; в
+     Настройки → Конфиденциальность → Панель управления Forta не должен
+     значиться как использующий микрофон.
+  4. Сразу же позвонить снова — звук должен быть в обе стороны (протёкшая
+     дорожка отравляла следующий звонок).
+- Проверено 2026-09-11 на Samsung SM-A528B (Android 14), сборка `f83b30e7` с
+  FCM. Звонит веб TEST1 из той же комнаты, Wi-Fi, телефон разблокирован.
+  Скрипт `scratchpad/run-mic-swipe.sh` (жест — `scratchpad/swipe-away.sh`),
+  прогоны `micswipe2`, `micswipe3` и `micswipe4`, логи
+  `scratchpad/runs/micswipe*-*`. Время в выдержках — часы телефона (UTC+3),
+  отметки скрипта — UTC.
+  - Шаги 1-2 (`micswipe3`). Телефон принял звонок, у веба `connected/stable`,
+    `cmd appops get com.forta.chat RECORD_AUDIO` — `(running)`. Через 16 с
+    после ответа приложение смахнуто из «недавних»:
+    ```
+    18:44:48.501 IncomingCallActivity: Accept pressed
+    18:44:48.505 CallConnection: onAnswer: callId=1789141484491OHhZhJ6TG0EJHQxT
+    18:45:04.606 HoneySpace.TaskListViewModel: onTaskRemoved : 20851
+    18:45:04.710 CallConnection: onDisconnect: 1789141484491OHhZhJ6TG0EJHQxT
+    18:45:04.712 CallTeardown: endCall reason=DISCONNECT callId=1789141484491OHhZhJ6TG0EJHQxT
+    ```
+  - Шаг 3. Первая же проверка, через 1-2 с после смахивания, видит закрытую
+    запись: `RECORD_AUDIO … duration=+14s898ms` без `(running)`. Так же при
+    каждой следующей проверке до перезвона. В `micswipe2` то же:
+    `duration=+50s837ms` через 2 с после смахивания. В `micswipe4` —
+    `duration=+16s184ms` через 2 с: это отрезок от `startRecording`
+    (19:09:13.124) до `endCall reason=DISCONNECT` (19:09:29.457), то есть
+    запись закрылась в момент teardown. Владелец в `micswipe2` и `micswipe3`
+    видел, как зелёная точка индикатора гаснет сразу после смахивания. На
+    обрезках статус-бара (`micswipe3-bar-talking.png`,
+    `micswipe3-bar-after-swipe.png`) точки нет даже в разговоре, поэтому на
+    этом Samsung индикатор подтверждает только глаз.
+    «Панель конфиденциальности» владелец в настройках Samsung не нашёл. Тот же
+    журнал доступа к микрофону открыт интентом
+    `android.intent.action.REVIEW_PERMISSION_HISTORY` в 18:50, после прогона.
+    Последняя запись Forta Chat — «18:45, 2 минуты»: разговор и перезвон
+    одним интервалом, отметки «используется сейчас» нет.
+  - Шаг 4 (`micswipe3`, `micswipe4`). Веб кладёт трубку брошенного звонка:
+    после смахивания `m.call.hangup` отправить некому, см. «Известное
+    ограничение» в записи «Смахивание приложения завершает звонок в Telecom».
+    Сразу после этого веб перезванивает. Оба раза звонок пришёл в тот же
+    процесс (pid 4430) через 27-30 с после смахивания, JS поднялся заново,
+    ответил владелец. `micswipe3`:
+    ```
+    18:45:31.973 FortaPush: Started IncomingCallActivity for test3823818
+    18:45:34.683 IncomingCallActivity: Accept pressed
+    18:45:34.909 CallTeardown: endCall reason=COLD_START callId=null State(audioMode=3, otherCallLive=true, …)
+    18:45:37.220 NativeWebRTCManager: onTrack: audio
+    18:45:38.653 WebRtcAudioTrackExternal: startPlayout
+    18:45:38.749 WebRtcAudioRecordExternal: Number of active recording sessions: 0
+    18:45:38.749 WebRtcAudioRecordExternal: startRecording
+    18:46:04.744 CallTeardown: endCall reason=DISCONNECT callId=1789141530915h3gzOYLCYnIdnAK2
+    ```
+    Запись нового звонка оба раза стартовала без чужих активных сессий
+    (`Number of active recording sessions: 0`). Звук идёт в обе стороны:
+    - телефон → веб: у веба за 22 с после соединения входящий поток 22,8 КБ,
+      `totalAudioEnergy` выросла с 0 до 0,47 (`micswipe3`, владелец говорил).
+      В `micswipe4` за те же 22 с — 13,2 КБ и 0,04;
+    - веб → телефон (`micswipe4`, `getStats` в WebView телефона): через ~9 с
+      после соединения входящий поток телефона 29,2 КБ при энергии 2,66,
+      через ~21 с — 66,4 КБ и 5,93. В первом звонке того же прогона, до
+      смахивания, было 30,6 КБ и 2,88.
+    После отбоя — `MODE_NORMAL`, запись `RECORD_AUDIO` закрыта:
+    `duration=+25s961ms` в `micswipe3` и `+24s521ms` в `micswipe4`. Это
+    отрезки от `startRecording` до `endCall` — 26,0 и 24,6 с. Через 40 с
+    запись по-прежнему закрыта. В `micswipe3` владелец видел, что точка снова
+    погасла. В `micswipe2` перезвон пришёл уже в новый процесс и остался без
+    ответа, там шаг 4 не засчитан.
+    Попутно: в `micswipe4` звук пошёл через 30 с после «Принять», а в
+    `micswipe3` — через 4 с. Холодный старт JS заново логинится в Matrix, и
+    сервер ответил на `POST /_matrix/client/v3/login` за 26 103 мс (в
+    `micswipe3` — за 503 мс). Приложение в это время ничего не ждало, задержка
+    на стороне сервера.
+- Статус: ☑ проверено 2026-09-11 на Samsung SM-A528B (шаги 1-4)
+
+### Нативная шторка выбора звука сообщает об отказе
+- Коммит: `556c8450`
+- Почему нужен человек: тост рисует система, и нужен именно тот момент, когда
+  `AudioRouter` ещё (или уже) не запущен — между ответом и первым аудиокадром,
+  и после teardown. Контрактный тест доказывает только проводку: что ветка
+  отказа есть и что строка переведена.
+- На чём: реальный аппарат (проверялось на Samsung SM-A528B).
+- Шаги:
+  1. Принять звонок и сразу же, до появления «Соединение установлено», открыть
+     шторку «Аудио» и выбрать «Динамик».
+     **Ожидается:** либо маршрут переключается (звук идёт из динамика), либо
+     появляется тост «Не удалось переключить звук. Попробуйте после
+     соединения.» — молча шторка закрываться не должна.
+     **Раньше:** шторка закрывалась в любом случае, галочка оставалась на
+     прежнем устройстве, и пользователь не понимал, нажалось ли вообще (кластер
+     O08).
+  2. То же самое во время установившегося разговора — там маршрут обязан
+     переключиться без тоста.
+  3. На русской локали проверить, что тост по-русски.
+- Измерено 2026-09-10 на Samsung SM-A528B (лог `scratchpad/runs/audio-143137.log`):
+  шаг 2 проходит — три выбора подряд применились (`setDevice: … (pinned)` →
+  `setCommunicationDevice(…): true`), шторка закрылась, тоста не было.
+  Шаг 1 достать не удалось: роутер поднимается через ~1,5 с после `onAnswer`, а
+  самый быстрый тап через adb (`uiautomator dump` + tap) — через ~8 с, окно
+  отказа к этому моменту закрыто. Ветка отказа остаётся доказанной только
+  тестами.
+- Проверено 2026-09-11 на Samsung SM-A528B (Android 14), сборка `f83b30e7` с
+  FCM. Звонит веб TEST1 из той же комнаты, Wi-Fi, телефон разблокирован.
+  Скрипты `scratchpad/run-early-pick2.sh` (шаг 1) и
+  `scratchpad/run-early-speaker3.sh` (шаг 3), логи
+  `scratchpad/runs/early-pick2-*` и `scratchpad/runs/early-spk4-*`. Время в
+  выдержках — часы телефона (UTC+3).
+  - Шаг 1 — ветка «маршрут переключается»: «Динамик» выбран до соединения.
+    ```
+    01:55:24.548 IncomingCallActivity: Accept pressed
+    01:55:25.736 To native: NativeCall, methodName: startAudioRouting
+    01:55:25.778 AudioLifecycle: setCommunicationDevice(EARPIECE): true
+    01:55:25.929 WindowManager: Changing focus from null to Window{… CallActivity}
+    01:55:26.736 WindowManager: Changing focus … to Window{… PopupWindow}
+    01:55:26.894 AudioRouter: setDevice: SPEAKER (pinned)
+    01:55:26.896 AS.AudioDeviceBroker: setCommunicationRouteForClient … type:speaker
+    01:55:26.897 AudioLifecycle: setCommunicationDevice(SPEAKER): true
+    01:55:27.716 To native: NativeCall, methodName: reportCallConnected
+    ```
+    Ветку отказа в этот момент через интерфейс не достать. После
+    `call.answer()` JS вызывает `launchCallUI` и `startAudioRouting` с
+    разницей в 1 мс, и роутер активен за ~150 мс до того, как экран звонка
+    получает фокус. Тап до конца анимации открытия система не доставляет
+    (`InputDispatcher: … waiting because NOT_VISIBLE`, прогон `early-pick1`).
+  - Шаг 3 — окно после teardown. Шторка открыта в разговоре, веб кладёт
+    трубку, «Динамик» нажимает наблюдатель на телефоне по строке
+    `stopAudioRouting`:
+    ```
+    01:49:34.953 To native: NativeCall, methodName: stopAudioRouting
+    01:49:34.974 To native: NativeCall, methodName: reportCallEnded
+    01:49:34.997 W/AudioRouter: setDevice(SPEAKER) refused: router inactive
+    01:49:35.007 I/Toast: show: caller = com.forta.chat.plugins.calls.CallActivity.showAudioRouteSheet$lambda$26:630
+    01:49:35.037 WindowManager: Changing focus from Window{… PopupWindow … EXITING} to Window{… CallActivity}
+    01:49:35.104 To native: NativeWebRTC, methodName: dismissCallUI
+    01:49:35.260 WindowManager: Changing focus from Window{… CallActivity} to null
+    ```
+    На скриншотах `scratchpad/runs/early-spk4-td1-shot1.png` и `-shot2.png`
+    тост по-русски: «Не удалось переключить звук. Попробуйте после
+    соединения.» Шторка не закрылась молча: отказ, тост, затем закрытие.
+    Окно узкое: от `stopAudioRouting` до ухода `CallActivity` проходит
+    40–540 мс (логи `amode-*`), нажатие пришло через 44 мс.
+  - Шаг 2 — блок «Измерено» выше, тоста там не было.
+- Статус: ☑ проверено 2026-09-11 на Samsung SM-A528B (шаги 1-3)
 
 ### Баннер непрочитанного переживает схлопывание записей о звонке
 - Коммит: `2d639194`
