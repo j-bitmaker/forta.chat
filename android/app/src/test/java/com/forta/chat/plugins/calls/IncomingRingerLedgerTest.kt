@@ -78,4 +78,60 @@ class IncomingRingerLedgerTest {
         assertFalse(ledger.mayFire(first))
         assertTrue(ledger.mayFire(again))
     }
+
+    // -- silence: the ring goes quiet, the deadline keeps running -------------------
+
+    @Test
+    fun `silence keeps the call armed and its deadline valid`() {
+        // Telecom's silence (a volume key pressed while the call rings) is not
+        // an answer and not a decline: an unanswered call still ends at 30 s.
+        val ledger = IncomingRingerLedger()
+        val token = ledger.arm("call-1")
+        assertEquals("call-1", ledger.silence())
+        assertEquals("call-1", ledger.armedCallId)
+        assertTrue(ledger.isSilenced("call-1"))
+        assertTrue(ledger.mayFire(token))
+    }
+
+    @Test
+    fun `silence with nothing ringing does nothing`() {
+        val ledger = IncomingRingerLedger()
+        assertNull(ledger.silence())
+        ledger.arm("call-1")
+        ledger.stop("call-1")
+        assertNull(ledger.silence())
+    }
+
+    @Test
+    fun `a silenced call stays quiet when its ringer is raised again`() {
+        // A second ringer instance for the same call (a shade tap while the
+        // ringer was not on top) re-arms it; the user has already silenced it.
+        val ledger = IncomingRingerLedger()
+        ledger.arm("call-1")
+        ledger.silence()
+        val again = ledger.arm("call-1")
+        assertTrue(ledger.isSilenced("call-1"))
+        assertTrue(ledger.mayFire(again))
+    }
+
+    @Test
+    fun `a new call rings even after the previous one was silenced`() {
+        val ledger = IncomingRingerLedger()
+        ledger.arm("call-1")
+        ledger.silence()
+        ledger.arm("call-2")
+        assertFalse(ledger.isSilenced("call-2"))
+        assertFalse(ledger.isSilenced("call-1"))
+    }
+
+    @Test
+    fun `stopping a silenced call clears the silence`() {
+        val ledger = IncomingRingerLedger()
+        ledger.arm("call-1")
+        ledger.silence()
+        ledger.stop("call-1")
+        assertFalse(ledger.isSilenced("call-1"))
+        ledger.arm("call-1")
+        assertFalse("a ring after the stop is a new ring", ledger.isSilenced("call-1"))
+    }
 }

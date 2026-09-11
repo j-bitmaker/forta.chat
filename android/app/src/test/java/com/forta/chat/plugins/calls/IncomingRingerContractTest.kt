@@ -25,6 +25,7 @@ class IncomingRingerContractTest {
     private val teardown by lazy { source("com/forta/chat/plugins/calls/CallTeardown.kt") }
     private val mainActivity by lazy { source("com/forta/chat/MainActivity.kt") }
     private val firebase by lazy { source("com/forta/chat/FortaFirebaseMessagingService.kt") }
+    private val ringer by lazy { source("com/forta/chat/plugins/calls/IncomingRinger.kt") }
 
     // -- one owner ------------------------------------------------------------
 
@@ -151,6 +152,29 @@ class IncomingRingerContractTest {
         assertTrue(functionBody(mainActivity, "override\\s+fun\\s+onCreate\\s*\\(").contains("liftKeyguardForCallAccept(intent)"))
         val lift = functionBody(mainActivity, "private\\s+fun\\s+liftKeyguardForCallAccept\\s*\\(")
         assertTrue(lift.contains("push_call_accept") && lift.contains("setShowWhenLocked(true)") && lift.contains("requestDismissKeyguard"))
+    }
+
+    // -- Telecom's silence -----------------------------------------------------------
+
+    @Test
+    fun telecomSilenceQuietsTheRingWithoutEndingOrAnsweringTheCall() {
+        // While a self-managed call rings, the system takes a volume-key press
+        // for silenceRinger and forwards it as onSilence; the key never reaches
+        // IncomingCallActivity, so its volumeControlStream cannot act.
+        val body = functionBody(connectionService, "override\\s+fun\\s+onSilence\\s*\\(")
+        assertTrue("onSilence must silence the ringer:\n$body", body.contains("IncomingRinger.silence()"))
+        for (forbidden in listOf("IncomingRinger.stop", "stopAll", "cancelRingTimeout", "onReject", "setDisconnected", "setActive")) {
+            assertFalse("onSilence must keep the call and both deadlines ($forbidden):\n$body", body.contains(forbidden))
+        }
+    }
+
+    @Test
+    fun silenceStopsTheSoundButNotTheDeadline() {
+        val body = functionBody(ringer, "fun\\s+silence\\s*\\(")
+        assertTrue("silence must stop the ringtone and vibration:\n$body", body.contains("stopHardware()"))
+        assertFalse("silence must not retire the 30 s deadline:\n$body", body.contains("ledger.stop"))
+        val arm = functionBody(ringer, "fun\\s+arm\\s*\\(")
+        assertTrue("a re-armed silenced call must stay quiet:\n$arm", arm.contains("ledger.isSilenced(callId)"))
     }
 
     // -- helpers --------------------------------------------------------------------

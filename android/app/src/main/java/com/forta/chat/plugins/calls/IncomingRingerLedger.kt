@@ -19,12 +19,18 @@ class IncomingRingerLedger {
 
     private var generation = 0L
 
+    /** The armed call the user silenced, or null — see [silence]. */
+    private var silencedCallId: String? = null
+
     /**
      * Ring for [callId], replacing whatever rang before. Returns the token a
      * deadline posted for this ring must present to [mayFire].
      */
     @Synchronized
     fun arm(callId: String): Long {
+        // Raising the ringer again for the call that already rings keeps the
+        // silence the user asked for; any other call is a new ring.
+        if (callId != armedCallId) silencedCallId = null
         armedCallId = callId
         return ++generation
     }
@@ -40,9 +46,25 @@ class IncomingRingerLedger {
         val armed = armedCallId ?: return false
         if (!callId.isNullOrEmpty() && callId != armed) return false
         armedCallId = null
+        silencedCallId = null
         generation++
         return true
     }
+
+    /**
+     * Mark whatever rings as silenced without retiring its deadline: the user
+     * asked the device to stop ringing, not to answer or decline. Returns the
+     * silenced call, or null when nothing rings.
+     */
+    @Synchronized
+    fun silence(): String? {
+        val armed = armedCallId ?: return null
+        silencedCallId = armed
+        return armed
+    }
+
+    @Synchronized
+    fun isSilenced(callId: String): Boolean = silencedCallId == callId && armedCallId == callId
 
     @Synchronized
     fun isArmedFor(callId: String): Boolean = armedCallId == callId

@@ -47,8 +47,12 @@ object IncomingRinger {
         val token = synchronized(this) {
             stopHardware()
             val t = ledger.arm(callId)
-            runCatching { startRingtone(app) }.onFailure { Log.w(TAG, "ringtone failed", it) }
-            runCatching { startVibration(app) }.onFailure { Log.w(TAG, "vibration failed", it) }
+            // A second ringer instance for a call the user already silenced
+            // keeps it quiet; the deadline restarts either way.
+            if (!ledger.isSilenced(callId)) {
+                runCatching { startRingtone(app) }.onFailure { Log.w(TAG, "ringtone failed", it) }
+                runCatching { startVibration(app) }.onFailure { Log.w(TAG, "vibration failed", it) }
+            }
             t
         }
         handler.postDelayed({
@@ -68,6 +72,21 @@ object IncomingRinger {
             Log.d(TAG, "stop callId=$callId")
         }
         wasRinging
+    }
+
+    /**
+     * Stop the ringtone and the vibration of whatever rings, and nothing else:
+     * the ringer screen stays up and the 30 s deadline still runs. Telecom asks
+     * for this when the user presses a volume key while the call rings.
+     * Returns whether anything was ringing.
+     */
+    fun silence(): Boolean {
+        synchronized(this) {
+            val callId = ledger.silence() ?: return false
+            stopHardware()
+            Log.d(TAG, "silence callId=$callId (deadline kept)")
+        }
+        return true
     }
 
     /** Stop whatever rings: the call was answered or connected, whichever id it carried. */

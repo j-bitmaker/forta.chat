@@ -721,6 +721,19 @@ class CallConnection(
         ringTimeoutHandler.removeCallbacks(ringTimeoutRunnable)
     }
 
+    /**
+     * Telecom's "stop ringing" (API 29+). While a self-managed call rings, the
+     * system takes a volume-key press for silenceRinger and forwards it here;
+     * the key never reaches IncomingCallActivity, so its volumeControlStream
+     * cannot act. Silence only: the ringer screen stays up, and both deadlines
+     * (the ringer's 30 s and this connection's backstop) still end an
+     * unanswered call on time.
+     */
+    override fun onSilence() {
+        Log.d("CallConnection", "onSilence: callId=$callId")
+        IncomingRinger.silence()
+    }
+
     override fun onAnswer() {
         Log.d("CallConnection", "onAnswer: callId=$callId, roomId=$roomId")
         cancelRingTimeout()
