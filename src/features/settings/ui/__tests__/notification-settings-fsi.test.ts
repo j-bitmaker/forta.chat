@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ref } from "vue";
-import { mount } from "@vue/test-utils";
+import { flushPromises, mount } from "@vue/test-utils";
 import { setActivePinia, createPinia } from "pinia";
 
 /**
@@ -11,6 +11,7 @@ import { setActivePinia, createPinia } from "pinia";
 
 const state = {
   fullScreenIntentAllowed: ref<boolean | null>(null),
+  detectFullScreenIntent: vi.fn().mockResolvedValue(undefined),
   openFullScreenIntentSettings: vi.fn().mockResolvedValue(true),
 };
 vi.mock("../../model/use-notification-settings", () => ({
@@ -20,9 +21,23 @@ vi.mock("../../model/use-notification-settings", () => ({
     openSystemNotificationSettings: vi.fn(),
     detectVendor: vi.fn(),
     fullScreenIntentAllowed: state.fullScreenIntentAllowed,
-    detectFullScreenIntent: vi.fn(),
+    detectFullScreenIntent: state.detectFullScreenIntent,
     openFullScreenIntentSettings: state.openFullScreenIntentSettings,
   }),
+}));
+
+type AppStateListener = (s: { isActive: boolean }) => void;
+const app = {
+  listeners: [] as AppStateListener[],
+  remove: vi.fn(),
+};
+vi.mock("@capacitor/app", () => ({
+  App: {
+    addListener: vi.fn(async (_event: string, cb: AppStateListener) => {
+      app.listeners.push(cb);
+      return { remove: app.remove };
+    }),
+  },
 }));
 vi.mock("@/shared/lib/platform", () => ({
   isNative: true,
@@ -44,7 +59,10 @@ describe("NotificationSettings — full-screen intent banner (O10)", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     state.fullScreenIntentAllowed.value = null;
+    state.detectFullScreenIntent.mockClear();
     state.openFullScreenIntentSettings.mockClear();
+    app.listeners.length = 0;
+    app.remove.mockClear();
     vi.stubGlobal("useI18n", () => ({ t: (k: string) => k }));
   });
 
@@ -68,5 +86,38 @@ describe("NotificationSettings — full-screen intent banner (O10)", () => {
     const wrapper = mount(NotificationSettings);
     await wrapper.find('[data-testid="fsi-open"]').trigger("click");
     expect(state.openFullScreenIntentSettings).toHaveBeenCalledTimes(1);
+  });
+
+  // The banner's button leaves the app for a system screen, and the user
+  // flips the permission there. The status used to be read only on mount, so
+  // coming back showed the old state both ways until the screen was reopened.
+  it("re-reads the permission when the app comes back to the foreground", async () => {
+    const { default: NotificationSettings } = await import("../NotificationSettings.vue");
+    mount(NotificationSettings);
+    await flushPromises();
+    expect(state.detectFullScreenIntent).toHaveBeenCalledTimes(1);
+    expect(app.listeners).toHaveLength(1);
+
+    app.listeners[0]({ isActive: false });
+    expect(state.detectFullScreenIntent).toHaveBeenCalledTimes(1);
+
+    app.listeners[0]({ isActive: true });
+    expect(state.detectFullScreenIntent).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops listening once the screen closes", async () => {
+    const { default: NotificationSettings } = await import("../NotificationSettings.vue");
+    const wrapper = mount(NotificationSettings);
+    await flushPromises();
+    wrapper.unmount();
+    expect(app.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a listener that resolves after the screen already closed", async () => {
+    const { default: NotificationSettings } = await import("../NotificationSettings.vue");
+    const wrapper = mount(NotificationSettings);
+    wrapper.unmount();
+    await flushPromises();
+    expect(app.remove).toHaveBeenCalledTimes(1);
   });
 });

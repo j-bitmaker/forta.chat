@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { onMounted, onUnmounted } from "vue";
+import { App as CapApp } from "@capacitor/app";
+import type { PluginListenerHandle } from "@capacitor/core";
 import { SettingsSection } from "@/shared/ui/settings-section";
 import { isNative } from "@/shared/lib/platform";
 import { useNotificationSettings } from "../model/use-notification-settings";
@@ -25,9 +27,34 @@ const {
   openFullScreenIntentSettings,
 } = useNotificationSettings();
 
-onMounted(() => {
+// The banner's button leaves the app for a system screen where the user flips
+// the permission. Read it again whenever the app returns to the foreground —
+// read only on mount, the banner showed the state from before the trip.
+let appStateHandle: PluginListenerHandle | null = null;
+let unmounted = false;
+
+onMounted(async () => {
   void detectVendor();
   void detectFullScreenIntent();
+  if (!isNative) return;
+  try {
+    const handle = await CapApp.addListener("appStateChange", ({ isActive }) => {
+      if (isActive) void detectFullScreenIntent();
+    });
+    // Closed while the listener was being added: drop it, or it leaks.
+    if (unmounted) {
+      void handle.remove();
+      return;
+    }
+    appStateHandle = handle;
+  } catch (e) {
+    console.warn("[notification-settings] appStateChange listener failed:", e);
+  }
+});
+
+onUnmounted(() => {
+  unmounted = true;
+  void appStateHandle?.remove();
 });
 </script>
 
