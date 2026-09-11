@@ -294,9 +294,14 @@ class NativeWebRTCManager(private val context: Context) {
             // Auto-attach existing local tracks (getUserMedia runs before createPC).
             // Under mediaLock: this runs on the plugin thread while the media
             // release executor can be disposing those very tracks, and addTrack
-            // on a disposed native object throws. Short critical section — no
-            // blocking native call inside.
+            // on a disposed native object throws. The recording switch is raised
+            // under the same lock: closeAllPeerConnections lowers it from that
+            // executor, and a raise landing between its snapshot and its stop
+            // would leave this connection silent. Short critical section — the
+            // raise hops to the worker thread and, with nothing sending yet, only
+            // sets a flag.
             synchronized(mediaLock) {
+                enableAudioRecording(pc, peerId)
                 localAudioTrack?.let { attachLocalTrackLocked(it, "audio", peerId, "createPeerConnection") }
                 localVideoTrack?.let { attachLocalTrackLocked(it, "video", peerId, "createPeerConnection") }
             }
@@ -855,9 +860,39 @@ class NativeWebRTCManager(private val context: Context) {
     // Cleanup
     // -----------------------------------------------------------------------
 
+    /**
+     * libwebrtc keeps one recording switch per factory, shared by every
+     * connection. [stopAudioRecording] lowers it for all of them, so each new
+     * connection raises it again before a local track can start sending.
+     */
+    private fun enableAudioRecording(pc: PeerConnection, peerId: String) {
+        try {
+            pc.setAudioRecording(true)
+        } catch (e: Exception) {
+            Log.e(TAG, "[$peerId] Could not enable audio recording", e)
+        }
+    }
+
+    /**
+     * Stops the device's audio recorder before the last connection closes.
+     * close() stops it only for a connection that reached STABLE: an outgoing
+     * call closed in HAVE_LOCAL_OFFER, which nobody answered, left
+     * WebRtcAudioRecordExternal recording until the process died, and the mic
+     * indicator stayed lit with no call.
+     */
+    private fun stopAudioRecording(pc: PeerConnection, peerId: String) {
+        try {
+            pc.setAudioRecording(false)
+            Log.d(TAG, "[$peerId] Audio recording stopped before close")
+        } catch (e: Exception) {
+            Log.e(TAG, "[$peerId] Could not stop audio recording", e)
+        }
+    }
+
     fun closePeerConnection(peerId: String) {
         val pc = peerConnections.remove(peerId)
         if (pc != null) {
+            if (peerConnections.isEmpty()) stopAudioRecording(pc, peerId)
             try {
                 pc.close()
             } catch (e: Exception) {
@@ -903,7 +938,9 @@ class NativeWebRTCManager(private val context: Context) {
     }
 
     private fun closeAllPeerConnectionsLocked() {
-        for ((peerId, pc) in peerConnections.toMap()) {
+        val connections = peerConnections.toMap()
+        connections.entries.firstOrNull()?.let { (peerId, pc) -> stopAudioRecording(pc, peerId) }
+        for ((peerId, pc) in connections) {
             try { pc.close() } catch (_: Exception) {}
             Log.d(TAG, "[$peerId] Closed")
         }
