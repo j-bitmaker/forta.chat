@@ -423,7 +423,6 @@ class CallActivity : Activity(), SensorEventListener {
             localVideoView.init(eglBase.eglBaseContext, null)
             localVideoView.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
             localVideoView.setEnableHardwareScaler(true)
-            localVideoView.setMirror(true)
             localVideoView.setZOrderMediaOverlay(true)
 
             // Attach remote renderer (may already have tracks from WebRTC negotiation)

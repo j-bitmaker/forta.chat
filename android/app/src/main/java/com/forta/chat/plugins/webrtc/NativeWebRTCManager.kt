@@ -134,6 +134,11 @@ class NativeWebRTCManager(private val context: Context) {
     @Volatile private var localRenderer: SurfaceViewRenderer? = null
     private var remoteRenderer: SurfaceViewRenderer? = null
 
+    // Which way the open camera faces, null while none is open. Drives the
+    // self-view mirror; written by the capture paths and by the camera
+    // thread's switch callback, read wherever a preview is bound.
+    @Volatile private var cameraFrontFacing: Boolean? = null
+
     private var listener: Listener? = null
     private var isInitialized = false
 
@@ -620,6 +625,7 @@ class NativeWebRTCManager(private val context: Context) {
             if (renderer != null && renderer != localRenderer) {
                 localRenderer?.let { track.removeSink(it) }
                 localRenderer = renderer
+                applySelfViewMirror(renderer)
                 track.addSink(renderer)
             }
             attachLocalTrackLocked(track, "video", peerId, "startLocalVideo(reuse)")
@@ -635,6 +641,7 @@ class NativeWebRTCManager(private val context: Context) {
             }
 
         videoCapturer = enumerator.createCapturer(cameraName, null)
+        cameraFrontFacing = enumerator.isFrontFacing(cameraName)
         surfaceTextureHelper = SurfaceTextureHelper.create("CaptureThread", eglBase!!.eglBaseContext)
         localVideoSource = factory?.createVideoSource(videoCapturer!!.isScreencast)
         videoCapturer?.initialize(surfaceTextureHelper, context, localVideoSource?.capturerObserver)
@@ -649,6 +656,7 @@ class NativeWebRTCManager(private val context: Context) {
         // track is published above, the renderer read below (see there).
         (renderer ?: localRenderer)?.let { sink ->
             localRenderer = sink
+            applySelfViewMirror(sink)
             track?.addSink(sink)
         }
 
@@ -709,11 +717,24 @@ class NativeWebRTCManager(private val context: Context) {
     fun attachLocalRenderer(renderer: SurfaceViewRenderer) {
         val previous = localRenderer
         localRenderer = renderer
+        applySelfViewMirror(renderer)
         val track = localVideoTrack ?: return
         runCatching {
             if (previous != null && previous !== renderer) track.removeSink(previous)
             track.addSink(renderer)
         }.onFailure { Log.w(TAG, "attachLocalRenderer on a disposed track", it) }
+    }
+
+    /**
+     * Draws the self-view the way its camera sees: mirrored for the front
+     * camera, as-is for the back one ([SelfViewMirror]). Only the preview is
+     * mirrored, never the frames sent to the other side. `setMirror` stores a
+     * flag under the renderer's own lock, so the main, plugin and camera
+     * threads may all call this; each writes its own field before reading the
+     * other's, so the last renderer and the last facing always meet.
+     */
+    private fun applySelfViewMirror(renderer: SurfaceViewRenderer? = localRenderer) {
+        renderer?.setMirror(SelfViewMirror.isMirrored(cameraFrontFacing))
     }
 
     fun setVideoEnabled(enabled: Boolean) {
@@ -737,6 +758,8 @@ class NativeWebRTCManager(private val context: Context) {
             videoCapturer?.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
                 override fun onCameraSwitchDone(isFrontFacing: Boolean) {
                     Log.d(TAG, "Camera switched, front: $isFrontFacing")
+                    cameraFrontFacing = isFrontFacing
+                    applySelfViewMirror()
                 }
                 override fun onCameraSwitchError(error: String) {
                     Log.e(TAG, "Camera switch error: $error")
@@ -919,6 +942,7 @@ class NativeWebRTCManager(private val context: Context) {
         videoCapturer?.stopCapture()
         videoCapturer?.dispose()
         videoCapturer = null
+        cameraFrontFacing = null
         surfaceTextureHelper?.dispose()
         surfaceTextureHelper = null
 
