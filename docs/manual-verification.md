@@ -651,6 +651,31 @@
     01:52:31.600 AudioRouter: setDevice: SPEAKER (pinned)
     01:52:31.602 AS.AudioDeviceBroker: setCommunicationRouteForClient … type:speaker
     ```
+- Измерено 2026-09-13 на Samsung SM-A528B с AirPods Pro 2, сборка `0bdde967` с FCM
+  (`scratchpad/run-stage3-route.sh`, логи `scratchpad/runs/route3b-*`, `route3d-*`;
+  время — часы телефона, UTC+3). **Выбор «Динамик» не включает громкий динамик.**
+  - Прежние блоки «Измерено» ошибочны: строка `AS.AudioDeviceBroker
+    setCommunicationRouteForClient … type:speaker` — только запрос приложения.
+    Аудиорежимом звонка владеет Telecom (`mAudioModeOwner … mUid=1000`), и звуковая
+    политика после каждого выбора оставляет трубку:
+    ```
+    02:12:39.467 AudioRouter: setDevice: SPEAKER (pinned)
+    02:12:39.471 AudioLifecycle: setCommunicationDevice(SPEAKER): true
+    02:12:39.471 APM_AudioPolicyManager: getNewOutputDevices selected devices {AUDIO_DEVICE_OUT_EARPIECE, @:}
+    ```
+    В звонках 2026-09-10 (`audio-143137.log`) и 2026-09-13 — 16 выборов и ни одного
+    `selected devices {AUDIO_DEVICE_OUT_SPEAKER}` за время разговора; Telecom ни разу
+    не входил в `ActiveSpeakerRoute`. Владелец слышал писк из верхней части телефона
+    при любом выборе.
+  - Шаг 2 не проходит — см. выше.
+  - Шаг 3 не проверить, пока динамик не работает. Гарнитуру переключает сам Telecom:
+    при подключении AirPods он уводит звонок в них (`SWITCH_BLUETOOTH` →
+    `ActiveBluetoothRoute`; звук в AirPods подтвердил владелец) независимо от выбора в
+    приложении. С подключёнными AirPods звуковая политика после выборов «Динамик» и
+    «Динамик телефона» оставляет Bluetooth; при отключении AirPods звонок возвращается
+    в трубку.
+  - Починку владелец отдал без его участия: маршрут должен идти через соединение
+    Telecom.
 - Статус: ☐ не проверено
 
 ### Факты ICE и Tor в отчёте
@@ -1049,6 +1074,32 @@
      `Unpresented slot <callId> is no longer ringing (state=4) — leaving it alone`.
      **Недопустимо:** `Releasing an unpresented connection` сразу после
      `onAnswer` того же callId — это обрыв только что принятого разговора.
+- Измерено 2026-09-13 на Samsung SM-A528B с AirPods Pro 2, сборка `0bdde967` с FCM
+  (`scratchpad/run-stage3-orphan.sh orphan3a`, логи `scratchpad/runs/orphan3a-*`;
+  время — часы телефона). Сценарий пошёл не по шагам записи: строки `Releasing an
+  unpresented connection` не было, но нашлись два других дефекта.
+  - Смахивание во время звонка A (02:38:03) глушит рингтон приложения, а соединение
+    остаётся звонящим (`releaseOnTaskRemoved` оставляет его до таймаута) — в AirPods
+    звенит дальше. Нажатие на ножку принимает его без экрана и без JS:
+    ```
+    02:38:14.298 BluetoothInCallService: BT - answering call(false)
+    02:38:14.316 CallConnection: onAnswer: callId=17892562779348W0Y1OwUYehE4uAe
+    02:38:14.318 CallConnection: onAnswer: JS listener not wired, queued for replay
+    ```
+    Отбой собеседника до телефона не дошёл: звонок висел в Telecom ACTIVE
+    (`MODE_IN_COMMUNICATION`), холодный старт приложения его не тронул
+    (`COLD_START … otherCallLive=true … actions=[]`), следующий входящий получил
+    «занято». Снято `am force-stop` в 02:44.
+  - Звонок B из той же комнаты соединился без ответа пользователя: JS применил
+    отложенный ответ на A к B по совпадению комнаты, и микрофон телефона 41 с уходил
+    собеседнику:
+    ```
+    02:38:19.947 [NativeCallBridge] Pending answer queued, waiting for matrixCall: 17892562779348W0Y1OwUYehE4uAe room: <room>
+    02:38:20.138 [call-service] handleIncomingCall: callId=1789256297487pwCMsMV2ry9FSHda, type=voice
+    02:38:21.942 [call-service] Pre-accepted incoming call, skipping ringer: 1789256297487pwCMsMV2ry9FSHda
+    02:38:23.571 IncomingCallActivity: Call answered elsewhere — silencing ringer
+    ```
+  - Обе починки владелец отдал без его участия; запись перепроверить после них.
 - Статус: ☐ не проверено
 
 ### Событие о завершившемся звонке не роняет текущий (push-путь)
