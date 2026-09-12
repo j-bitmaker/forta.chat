@@ -83,7 +83,10 @@ class NativeWebRTCManager(private val context: Context) {
     }
 
     private var factory: PeerConnectionFactory? = null
-    private var eglBase: EglBase? = null
+    // Guards the lazy creation in getEglBase: CallActivity asks for the context
+    // on the main thread while initialize() asks on the plugin thread.
+    private val eglLock = Any()
+    @Volatile private var eglBase: EglBase? = null
 
     // Multiple peer connections keyed by peerId
     /**
@@ -159,7 +162,7 @@ class NativeWebRTCManager(private val context: Context) {
         // whole bootstrap in a Throwable catch so the failure surfaces as
         // a typed UI error through CallActivity instead of a silent crash.
         try {
-            eglBase = EglBase.create()
+            val egl = checkNotNull(getEglBase()) { "EglBase unavailable" }
 
             val initOptions = PeerConnectionFactory.InitializationOptions.builder(context)
                 .setEnableInternalTracer(false)
@@ -167,11 +170,11 @@ class NativeWebRTCManager(private val context: Context) {
             PeerConnectionFactory.initialize(initOptions)
 
             val encoderFactory = DefaultVideoEncoderFactory(
-                eglBase!!.eglBaseContext,
+                egl.eglBaseContext,
                 true,  // enableIntelVp8Encoder
                 true   // enableH264HighProfile
             )
-            val decoderFactory = DefaultVideoDecoderFactory(eglBase!!.eglBaseContext)
+            val decoderFactory = DefaultVideoDecoderFactory(egl.eglBaseContext)
 
             // Hardware AEC/NS is broken on Xiaomi/MIUI, Realme, Oppo, Infinix, Tecno,
             // Huawei, ZTE — enabling it mutes the mic. Fall back to software AEC/NS
@@ -197,18 +200,32 @@ class NativeWebRTCManager(private val context: Context) {
             Log.d(TAG, "Initialized with HW acceleration")
         } catch (t: Throwable) {
             // Leave isInitialized=false so a future caller can either
-            // retry or short-circuit with a typed error. Tear down any
-            // partial state — a half-initialised EglBase pins a GL
-            // context and leaks SurfaceTexture handles.
+            // retry or short-circuit with a typed error. The GL context
+            // stays: the call screen may already render with it, and a
+            // retry has to share that same context or its decoded frames
+            // cannot be drawn there. dispose() releases it.
             Log.e(TAG, "[callee-crash-guard] NativeWebRTC initialize failed", t)
-            runCatching { eglBase?.release() }
-            eglBase = null
             factory = null
             isInitialized = false
         }
     }
 
-    fun getEglBase(): EglBase? = eglBase
+    /**
+     * The GL context the renderers and the codec factories share, created on
+     * first use rather than by [initialize]. On a cold process CallActivity
+     * opens before the plugin thread builds the factory; it found no context,
+     * skipped its renderer setup for the whole call, and the self-view stayed
+     * black while the remote renderer was never attached. A context holds no
+     * audio or camera device, so the factory itself stays lazy (WEE-47). Null
+     * only when EGL cannot be brought up (WEE-31): the call screen then runs
+     * without video instead of crashing.
+     */
+    fun getEglBase(): EglBase? = synchronized(eglLock) {
+        eglBase ?: runCatching { EglBase.create() }
+            .onFailure { Log.e(TAG, "[callee-crash-guard] EglBase create failed", it) }
+            .getOrNull()
+            ?.also { eglBase = it }
+    }
 
     // -----------------------------------------------------------------------
     // Peer Connection
@@ -979,8 +996,10 @@ class NativeWebRTCManager(private val context: Context) {
 
         factory?.dispose()
         factory = null
-        eglBase?.release()
-        eglBase = null
+        synchronized(eglLock) {
+            eglBase?.release()
+            eglBase = null
+        }
         isInitialized = false
         Log.d(TAG, "Disposed")
     }

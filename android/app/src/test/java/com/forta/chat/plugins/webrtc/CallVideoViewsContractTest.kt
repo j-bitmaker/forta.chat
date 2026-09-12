@@ -1,5 +1,6 @@
 package com.forta.chat.plugins.webrtc
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -85,6 +86,37 @@ class CallVideoViewsContractTest {
         assertTrue(
             "the facing is written by the camera thread and read by others",
             manager.contains("@Volatile private var cameraFrontFacing"),
+        )
+    }
+
+    // -- The call screen gets its GL context before the factory exists --------
+
+    @Test
+    fun glContext_isCreatedOnFirstUse_inOnePlace() {
+        // On a cold process CallActivity opens before the plugin thread builds
+        // the factory. It found no context, skipped its renderer setup for the
+        // whole call and left the self-view black (rearcam2).
+        assertTrue(
+            "getEglBase must create the context under eglLock",
+            Regex("fun\\s+getEglBase\\s*\\(\\s*\\)\\s*:\\s*EglBase\\?\\s*=\\s*synchronized\\(eglLock\\)")
+                .containsMatchIn(manager),
+        )
+        val body = functionBody(manager, "fun\\s+getEglBase\\s*\\(")
+        assertTrue("getEglBase must create a missing context:\n$body", body.contains("EglBase.create("))
+        assertEquals("the context is created in one place", 1, Regex("EglBase\\.create\\(").findAll(manager).count())
+        assertTrue("the context is written and read across threads", manager.contains("@Volatile private var eglBase"))
+    }
+
+    @Test
+    fun factory_sharesTheCallScreensContext_andKeepsItWhenItFails() {
+        val body = functionBody(manager, "fun\\s+initialize\\s*\\(")
+        assertTrue("initialize must take the context from getEglBase:\n$body", body.contains("getEglBase()"))
+        val catchStart = body.indexOf("catch (t: Throwable)")
+        assertTrue("initialize must keep its crash guard:\n$body", catchStart >= 0)
+        val catchBody = braceBody(body, body.indexOf('{', catchStart) + 1)
+        assertFalse(
+            "a failed factory must not release a context the call screen may already render with:\n$catchBody",
+            catchBody.contains("eglBase?.release()"),
         )
     }
 
