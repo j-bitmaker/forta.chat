@@ -5,7 +5,7 @@ import { useCallStore, CallStatus } from "@/entities/call";
 import type { CallType, CallInfo, CallHistoryEntry } from "@/entities/call";
 import { matrixIdToAddress } from "@/entities/chat/lib/chat-helpers";
 import { useUserStore } from "@/entities/user";
-import type { CallFeed } from "matrix-js-sdk-bastyon/lib/webrtc/callFeed";
+import type { CallFeed, CallFeedEvent } from "matrix-js-sdk-bastyon/lib/webrtc/callFeed";
 import { playRingtone, playDialtone, playEndTone, stopAllSounds } from "./call-sounds";
 import { checkOtherTabHasCall } from "./call-tab-lock";
 import { webrtcDiagnostics } from "./webrtc-diagnostics";
@@ -265,6 +265,10 @@ function updateFeeds(call: MatrixCall) {
 
 let trackedRemoteFeed: CallFeed | null = null;
 let remoteFeedMuteHandler: ((audioMuted: boolean, videoMuted: boolean) => void) | null = null;
+let remoteFeedStreamHandler: (() => void) | null = null;
+
+/** The feed's track-change event; the SDK enum is imported as a type only. */
+const FEED_NEW_STREAM = "new_stream" as CallFeedEvent.NewStream;
 
 function cleanupRemoteFeedListener() {
   if (trackedRemoteFeed && remoteFeedMuteHandler) {
@@ -272,8 +276,14 @@ function cleanupRemoteFeedListener() {
       trackedRemoteFeed.off("mute_state_changed" as any, remoteFeedMuteHandler);
     } catch { /* ignore */ }
   }
+  if (trackedRemoteFeed && remoteFeedStreamHandler) {
+    try {
+      trackedRemoteFeed.off(FEED_NEW_STREAM, remoteFeedStreamHandler);
+    } catch { /* ignore */ }
+  }
   trackedRemoteFeed = null;
   remoteFeedMuteHandler = null;
+  remoteFeedStreamHandler = null;
 }
 
 function syncRemoteVideoMuted(call: MatrixCall) {
@@ -284,6 +294,23 @@ function syncRemoteVideoMuted(call: MatrixCall) {
   const maybeUpgradeToVideo = (videoMuted: boolean) => {
     if (!videoMuted && callStore.activeCall?.type === "voice") {
       callStore.setActiveCall({ ...callStore.activeCall, type: "video" });
+    }
+  };
+
+  /**
+   * Re-reads the feed after its tracks may have changed and tells the native
+   * call screen only when the answer did. isVideoMuted() counts tracks, and
+   * with the native engine each remote track arrives as its own event: the
+   * feed starts with the audio track alone and reads muted until the video
+   * track joins it.
+   */
+  const resyncFromFeed = (feed: CallFeed) => {
+    const videoMuted = feed.isVideoMuted();
+    const changed = videoMuted !== callStore.remoteVideoMuted;
+    callStore.remoteVideoMuted = videoMuted;
+    maybeUpgradeToVideo(videoMuted);
+    if (isNative && changed) {
+      NativeWebRTC.updateRemoteVideoState({ muted: videoMuted }).catch(() => {});
     }
   };
 
@@ -307,14 +334,16 @@ function syncRemoteVideoMuted(call: MatrixCall) {
       };
       trackedRemoteFeed = remoteFeed;
       remoteFeed.on("mute_state_changed" as any, remoteFeedMuteHandler);
+      const onNewStream = () => resyncFromFeed(remoteFeed);
+      remoteFeedStreamHandler = onNewStream;
+      remoteFeed.on(FEED_NEW_STREAM, onNewStream);
     } else {
       // No remote feed yet → treat as muted
       callStore.remoteVideoMuted = true;
     }
   } else if (remoteFeed) {
-    // Same feed, just re-check state
-    callStore.remoteVideoMuted = remoteFeed.isVideoMuted();
-    maybeUpgradeToVideo(remoteFeed.isVideoMuted());
+    // Same feed: its tracks may have changed since it was wired
+    resyncFromFeed(remoteFeed);
   }
 }
 

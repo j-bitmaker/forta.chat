@@ -1955,3 +1955,166 @@ describe('Tor hint and the no-relay warning (O05/O14)', () => {
     }
   });
 });
+
+describe('remote video state reaches the native call screen', () => {
+  // The native call screen hides the remote picture while JS reports the
+  // remote camera muted, and has no other source for that state. With the
+  // native engine every remote track arrives as its own event: the SDK builds
+  // the feed from the audio track alone, so isVideoMuted() reads true at that
+  // moment, and the video track joins the same stream a moment later. The
+  // screen only ever heard the first answer and kept the avatar over live
+  // frames for the whole call.
+  beforeEach(async () => {
+    // 'onAudioError listener' above re-mocks the bridge with untracked spies
+    // and resets the module cache; point call-service back at the tracked
+    // methods so the screen updates below are observable.
+    vi.doMock('@/shared/lib/native-webrtc', () => ({
+      installNativeWebRTCProxy: vi.fn(),
+      isNativeWebRTCEngineEnabled: () => true,
+      NativeWebRTC: new Proxy({}, {
+        get: (_target, prop) =>
+          typeof prop === 'string' && prop in mockNativeWebRTCMethods
+            ? mockNativeWebRTCMethods[prop]
+            : vi.fn().mockResolvedValue({}),
+      }),
+    }));
+    vi.resetModules();
+    vi.useRealTimers();
+    vi.clearAllMocks();
+    mockCallStore.isInCall = false;
+    mockCallStore.activeCall = null;
+    mockCallStore.matrixCall = null;
+    mockCallStore.remoteVideoMuted = false;
+    mockEnsureCallPermissions.mockResolvedValue(undefined);
+    mockGetUser.mockReset();
+    mockGetUser.mockReturnValue({ name: 'Peer' });
+    mockLoadUsersBatch.mockReset();
+    mockLoadUsersBatch.mockResolvedValue(undefined);
+    const { __resetFinalizeCallStateForTests } = await import('./finalize-call');
+    __resetFinalizeCallStateForTests();
+  });
+
+  type Listener = (...args: unknown[]) => void;
+
+  /** CallFeed stub: as in the SDK, isVideoMuted() is true while the stream has no video track. */
+  function makeRemoteFeed() {
+    const listeners = new Map<string, Set<Listener>>();
+    const kinds = ['audio'];
+    return {
+      isVideoMuted: () => !kinds.includes('video'),
+      on: (event: string, fn: Listener) => {
+        if (!listeners.has(event)) listeners.set(event, new Set());
+        listeners.get(event)?.add(fn);
+      },
+      off: (event: string, fn: Listener) => {
+        listeners.get(event)?.delete(fn);
+      },
+      emit: (event: string, ...args: unknown[]) => {
+        listeners.get(event)?.forEach((fn) => fn(...args));
+      },
+      listenerCount: (event: string) => listeners.get(event)?.size ?? 0,
+      addVideoTrack: () => {
+        kinds.push('video');
+      },
+    };
+  }
+
+  let seq = 0;
+
+  /**
+   * Rings an incoming video call. The call carries its own on/off spies, so
+   * its handlers are read from it and a missing one fails the test instead of
+   * turning the step into a silent no-op.
+   */
+  async function ringIncomingVideoCall() {
+    const on = vi.fn();
+    const off = vi.fn();
+    const call: Record<string, unknown> = {
+      callId: `remote-video-${++seq}`,
+      roomId: '!room:matrix.org',
+      type: 'video',
+      state: 'ringing',
+      on,
+      off,
+      answer: mockAnswer,
+      reject: mockReject,
+      hangup: mockHangup,
+      isMicrophoneMuted: vi.fn(() => false),
+      localUsermediaStream: null,
+      localScreensharingStream: null,
+      remoteUsermediaStream: null,
+      remoteScreensharingStream: null,
+      remoteUsermediaFeed: null,
+      getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+    };
+    const { useCallService } = await import('./call-service');
+    const { __resetIncomingCallDedupForTests } = await import('./incoming-call-dedup');
+    __resetIncomingCallDedupForTests();
+    mockCallStore.matrixCall = call;
+    await useCallService().handleIncomingCall(call as never);
+    const handler = (event: string) => {
+      const entry = on.mock.calls.find((c: unknown[]) => c[0] === event);
+      if (!entry) throw new Error(`no ${event} handler wired`);
+      return entry[1] as (...args: unknown[]) => void;
+    };
+    return { call, handler };
+  }
+
+  /** The muted values the native screen received, in order. */
+  function screenStates(): boolean[] {
+    return mockNativeWebRTCMethods.updateRemoteVideoState.mock.calls.map(
+      (c: unknown[]) => (c[0] as { muted: boolean }).muted,
+    );
+  }
+
+  it('shows the remote picture once the video track joins the feed', async () => {
+    const { call, handler } = await ringIncomingVideoCall();
+    const feed = makeRemoteFeed();
+    call.remoteUsermediaFeed = feed;
+    handler('FeedsChanged')();
+    expect(screenStates()).toEqual([true]);
+
+    feed.addVideoTrack();
+    feed.emit('new_stream');
+
+    expect(screenStates()).toEqual([true, false]);
+    expect(mockCallStore.remoteVideoMuted).toBe(false);
+  });
+
+  it('tells the screen when a later refresh of the same feed finds the video track', async () => {
+    const { call, handler } = await ringIncomingVideoCall();
+    const feed = makeRemoteFeed();
+    call.remoteUsermediaFeed = feed;
+    handler('FeedsChanged')();
+
+    feed.addVideoTrack();
+    handler('FeedsChanged')();
+
+    expect(screenStates()).toEqual([true, false]);
+  });
+
+  it('does not repeat an unchanged state to the screen', async () => {
+    const { call, handler } = await ringIncomingVideoCall();
+    const feed = makeRemoteFeed();
+    call.remoteUsermediaFeed = feed;
+    handler('FeedsChanged')();
+
+    feed.emit('new_stream');
+    handler('FeedsChanged')();
+
+    expect(screenStates()).toEqual([true]);
+  });
+
+  it('stops listening to the feed when the call ends', async () => {
+    const { call, handler } = await ringIncomingVideoCall();
+    const feed = makeRemoteFeed();
+    call.remoteUsermediaFeed = feed;
+    handler('FeedsChanged')();
+    expect(feed.listenerCount('new_stream')).toBe(1);
+
+    handler('State')('ended', 'connected');
+
+    expect(feed.listenerCount('new_stream')).toBe(0);
+    expect(feed.listenerCount('mute_state_changed')).toBe(0);
+  });
+});

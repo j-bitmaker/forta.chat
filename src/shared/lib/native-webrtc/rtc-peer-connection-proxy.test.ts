@@ -684,4 +684,112 @@ describe("NativeRTCPeerConnection proxy", () => {
       pc.close();
     });
   });
+
+  describe("remote tracks of one msid share one MediaStream", () => {
+    // libwebrtc raises onTrack once per track. A browser hands every track of
+    // one msid the same MediaStream, and the SDK relies on it: it builds the
+    // feed from the first stream and ignores a later stream with the same id
+    // ("already have a feed for it"). A fresh stream per event left a video
+    // call's feed holding only its audio track, so the native call screen hid
+    // the remote picture for the whole call.
+
+    const globals = globalThis as { AudioContext?: unknown };
+    let savedAudioContext: unknown;
+    const streamProto = MediaStream.prototype as { getTracks?: () => MediaStreamTrack[] };
+    let polyfilledGetTracks = false;
+
+    beforeEach(() => {
+      // happy-dom has no Web Audio; the placeholder audio track comes from it.
+      savedAudioContext = globals.AudioContext;
+      let n = 0;
+      globals.AudioContext = class {
+        createOscillator() {
+          return { connect: () => {}, start: () => {} };
+        }
+        createMediaStreamDestination() {
+          const track = { kind: "audio", id: `placeholder-audio-${n++}`, enabled: true };
+          return { stream: { getAudioTracks: () => [track] } };
+        }
+      };
+      // happy-dom's MediaStream has no getTracks, which the proxy logs with.
+      polyfilledGetTracks = typeof streamProto.getTracks !== "function";
+      if (polyfilledGetTracks) {
+        streamProto.getTracks = function (this: MediaStream) {
+          return [...this.getAudioTracks(), ...this.getVideoTracks()];
+        };
+      }
+    });
+
+    afterEach(() => {
+      globals.AudioContext = savedAudioContext;
+      if (polyfilledGetTracks) delete streamProto.getTracks;
+    });
+
+    type TrackEventLike = { track: MediaStreamTrack; streams: MediaStream[] };
+
+    async function newPcWithTrackEvents(): Promise<{
+      pc: RTCPeerConnection;
+      peerId: string;
+      events: TrackEventLike[];
+    }> {
+      const pc = new window.RTCPeerConnection();
+      await tick();
+      await tick();
+      const arg = getBridgeMethod("createPeerConnection").mock.calls.at(-1)?.[0] as {
+        peerId: string;
+      };
+      const events: TrackEventLike[] = [];
+      pc.addEventListener("track", (e) => events.push(e as unknown as TrackEventLike));
+      return { pc, peerId: arg.peerId, events };
+    }
+
+    it("adds the video track to the stream the audio track created, and announces it", async () => {
+      const { pc, peerId, events } = await newPcWithTrackEvents();
+
+      fireNativeEvent("onTrack", { peerId, kind: "audio", trackId: "a1", streamId: "remote-1" });
+      const stream = events[0].streams[0];
+      expect(stream.id).toBe("remote-1");
+      const videoTracksOnAnnounce: number[] = [];
+      stream.addEventListener("addtrack", () =>
+        videoTracksOnAnnounce.push(stream.getVideoTracks().length),
+      );
+
+      fireNativeEvent("onTrack", { peerId, kind: "video", trackId: "v1", streamId: "remote-1" });
+
+      expect(events[1].streams[0]).toBe(stream);
+      expect(stream.getAudioTracks()).toHaveLength(1);
+      expect(stream.getVideoTracks()).toEqual([events[1].track]);
+      // CallFeed re-reads its tracks on addtrack, and Chrome fires none for a
+      // script's own addTrack — the proxy has to announce it.
+      expect(videoTracksOnAnnounce.length).toBeGreaterThan(0);
+      expect(videoTracksOnAnnounce.every((count) => count === 1)).toBe(true);
+      pc.close();
+    });
+
+    it("does not add a second placeholder when native repeats onTrack for a track", async () => {
+      const { pc, peerId, events } = await newPcWithTrackEvents();
+
+      fireNativeEvent("onTrack", { peerId, kind: "audio", trackId: "a1", streamId: "remote-1" });
+      fireNativeEvent("onTrack", { peerId, kind: "video", trackId: "v1", streamId: "remote-1" });
+      fireNativeEvent("onTrack", { peerId, kind: "video", trackId: "v1", streamId: "remote-1" });
+
+      const stream = events[0].streams[0];
+      expect(events[2].streams[0]).toBe(stream);
+      expect(events[2].track).toBe(events[1].track);
+      expect(stream.getVideoTracks()).toHaveLength(1);
+      pc.close();
+    });
+
+    it("keeps tracks of different msids in different streams", async () => {
+      const { pc, peerId, events } = await newPcWithTrackEvents();
+
+      fireNativeEvent("onTrack", { peerId, kind: "audio", trackId: "a1", streamId: "remote-1" });
+      fireNativeEvent("onTrack", { peerId, kind: "video", trackId: "v2", streamId: "remote-2" });
+
+      expect(events[1].streams[0]).not.toBe(events[0].streams[0]);
+      expect(events[1].streams[0].id).toBe("remote-2");
+      expect(events[0].streams[0].getVideoTracks()).toHaveLength(0);
+      pc.close();
+    });
+  });
 });

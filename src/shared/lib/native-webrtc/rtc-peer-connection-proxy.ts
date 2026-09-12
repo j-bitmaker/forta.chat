@@ -71,6 +71,33 @@ function nextSignalingState(isLocal: boolean, type: RTCSdpType): RTCSignalingSta
   return "have-remote-offer";
 }
 
+/**
+ * A silent stand-in for a remote track. The media itself renders natively; the
+ * SDK only needs a track of the right kind in the stream it builds a feed from.
+ * Audio comes from a disabled oscillator, video from a 1x1 canvas; where Web
+ * Audio is unavailable the audio slot falls back to a canvas track.
+ */
+function createPlaceholderTrack(kind: string): MediaStreamTrack | undefined {
+  if (kind !== "video") {
+    try {
+      const ctx = new AudioContext();
+      const osc = ctx.createOscillator();
+      const dest = ctx.createMediaStreamDestination();
+      osc.connect(dest);
+      osc.start();
+      const track = dest.stream.getAudioTracks()[0];
+      if (track) track.enabled = false;
+      return track;
+    } catch {
+      // No Web Audio: a canvas track holds the slot instead.
+    }
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = 1;
+  canvas.height = 1;
+  return canvas.captureStream(0).getVideoTracks()[0];
+}
+
 class NativeRTCPeerConnection extends EventTarget {
   // Manual event listener tracking — EventTarget.dispatchEvent may not
   // work correctly in Capacitor WebView for custom classes
@@ -281,45 +308,39 @@ class NativeRTCPeerConnection extends EventTarget {
           let track: MediaStreamTrack | undefined;
 
           try {
-            // Create dummy track first
-            if (data.kind === "video") {
-              const canvas = document.createElement("canvas");
-              canvas.width = 1;
-              canvas.height = 1;
-              const cs = canvas.captureStream(0);
-              track = cs.getVideoTracks()[0];
-            } else {
-              try {
-                const ctx = new AudioContext();
-                const osc = ctx.createOscillator();
-                const dest = ctx.createMediaStreamDestination();
-                osc.connect(dest);
-                osc.start();
-                track = dest.stream.getAudioTracks()[0];
-                if (track) track.enabled = false;
-              } catch {
-                const canvas = document.createElement("canvas");
-                canvas.width = 1;
-                canvas.height = 1;
-                const cs = canvas.captureStream(0);
-                track = cs.getVideoTracks()[0];
+            // One placeholder per native track: a repeated onTrack for the
+            // same track must not grow the stream.
+            track = this._remoteTracks.get(data.trackId) ?? createPlaceholderTrack(data.kind);
+            if (track && data.trackId) this._remoteTracks.set(data.trackId, track);
+
+            const known = data.streamId ? this._remoteStreams.get(data.streamId) : undefined;
+            if (known) {
+              stream = known;
+              if (track && !stream.getTracks().includes(track)) {
+                stream.addTrack(track);
+                // Chrome fires no addtrack for a script's own addTrack, and the
+                // SDK's CallFeed re-reads its tracks on that event.
+                const added = new Event("addtrack") as Event & { track?: MediaStreamTrack };
+                added.track = track;
+                stream.dispatchEvent(added);
               }
-            }
+            } else {
+              // Create stream with the remote SDP's stream ID
+              // MediaStream constructor with existing tracks
+              stream = new MediaStream(track ? [track] : []);
 
-            // Create stream with the remote SDP's stream ID
-            // MediaStream constructor with existing tracks
-            stream = new MediaStream(track ? [track] : []);
-
-            // Override the stream id to match remote SDP's msid.
-            // The SDK does: this.remoteSDPStreamMetadata![stream.id].purpose.
-            // writable/configurable:true so the id can be updated on
-            // renegotiation (video upgrade, glare) without silently failing.
-            if (data.streamId) {
-              Object.defineProperty(stream, "id", {
-                value: data.streamId,
-                writable: true,
-                configurable: true,
-              });
+              // Override the stream id to match remote SDP's msid.
+              // The SDK does: this.remoteSDPStreamMetadata![stream.id].purpose.
+              // writable/configurable:true so the id can be updated on
+              // renegotiation (video upgrade, glare) without silently failing.
+              if (data.streamId) {
+                Object.defineProperty(stream, "id", {
+                  value: data.streamId,
+                  writable: true,
+                  configurable: true,
+                });
+                this._remoteStreams.set(data.streamId, stream);
+              }
             }
           } catch (err) {
             console.error("[NativeRTCProxy] onTrack: failed to create track:", err);
@@ -472,6 +493,18 @@ class NativeRTCPeerConnection extends EventTarget {
 
   private _senders: RTCRtpSender[] = [];
   private _localStreams: MediaStream[] = [];
+
+  /**
+   * Remote streams by msid, and the placeholder standing in for each native
+   * track. libwebrtc raises one onTrack per track; a browser hands every track
+   * of one msid the same MediaStream, and the SDK depends on that — it builds
+   * the feed from the first stream and ignores a later one with the same id.
+   * A fresh stream per event left a video call's feed with its audio track
+   * only, so the feed read "video muted" and the native call screen covered
+   * the remote picture with the avatar for the whole call.
+   */
+  private _remoteStreams = new Map<string, MediaStream>();
+  private _remoteTracks = new Map<string, MediaStreamTrack>();
   // An addTrack negotiationneeded is waiting for its microtask.
   private _negotiationNeededQueued = false;
 
@@ -639,6 +672,8 @@ class NativeRTCPeerConnection extends EventTarget {
       handle.remove();
     }
     this.listeners = [];
+    this._remoteStreams.clear();
+    this._remoteTracks.clear();
   }
 
   // -----------------------------------------------------------------------
