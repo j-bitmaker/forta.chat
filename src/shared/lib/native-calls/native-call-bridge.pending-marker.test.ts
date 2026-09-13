@@ -15,6 +15,8 @@ import { PENDING_MARKER_ROOM_TTL_MS } from './pending-call-marker';
 const ROOM = '!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app';
 const PUSH_EVENT_ID = '$ZM8kQ5-push-event-id';
 const MATRIX_CALL_ID = '17889559802696wWSVJYT0cFnIWQt';
+/** The next call from the same room, as in the 2026-09-13 Samsung run. */
+const NEXT_CALL_ID = '1789256297487pwCMsMV2ry9FSHda';
 
 const android = {
   isNative: true,
@@ -89,6 +91,10 @@ const markerAged = (ageMs: number) =>
     atMs: Date.now() - ageMs,
   });
 
+/** A native marker written `ageMs` ago for a call keyed by its real Matrix callId. */
+const markerForCall = (callId: string, ageMs: number) =>
+  vi.fn().mockResolvedValue({ callId, roomId: ROOM, atMs: Date.now() - ageMs });
+
 describe('consumePendingRejectCallId', () => {
   it('rejects the call the user declined moments ago (cold start from push)', async () => {
     const { consumePendingRejectCallId } = await loadBridge(noMarker(), markerAged(3_000));
@@ -121,6 +127,15 @@ describe('consumePendingRejectCallId', () => {
     );
 
     await expect(consumePendingRejectCallId(MATRIX_CALL_ID, ROOM)).resolves.toBe(true);
+  });
+
+  it('does not reject the next call from the same room on a fresh decline for another call', async () => {
+    const { consumePendingRejectCallId } = await loadBridge(
+      noMarker(),
+      markerForCall(MATRIX_CALL_ID, 3_000),
+    );
+
+    await expect(consumePendingRejectCallId(NEXT_CALL_ID, ROOM)).resolves.toBe(false);
   });
 });
 
@@ -358,6 +373,17 @@ describe('consumePendingAnswerCallId', () => {
 
     await expect(consumePendingAnswerCallId(MATRIX_CALL_ID, ROOM)).resolves.toBe(false);
   });
+
+  it('does not pre-accept the next call from the same room on a fresh answer for another call', async () => {
+    // The answer names a real Matrix callId, so a different id is a different
+    // call, however young the marker and whatever room it shares.
+    const { consumePendingAnswerCallId } = await loadBridge(
+      markerForCall(MATRIX_CALL_ID, 6_000),
+      noMarker(),
+    );
+
+    await expect(consumePendingAnswerCallId(NEXT_CALL_ID, ROOM)).resolves.toBe(false);
+  });
 });
 
 describe("wire() replaying a queued answer", () => {
@@ -442,6 +468,33 @@ describe("wire() replaying a queued answer", () => {
     stale.mockResolvedValue({ callId: null, roomId: null, atMs: 0 });
 
     await expect(mod.consumePendingAnswerCallId(MATRIX_CALL_ID, ROOM)).resolves.toBe(true);
+  });
+
+  it("does not hand a queued answer to the next call from the same room", async () => {
+    // orphan3a on the Samsung, 2026-09-13. Call A, swiped away while ringing,
+    // was answered from AirPods with JS dead. On the next start wire() seeded
+    // that answer, and call B from the same room arrived six seconds later:
+    // handleIncomingCall consumed A's marker for B by room, and B connected
+    // with nobody touching the phone. The wait itself was already bound to A.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const callService = freshService();
+      const answeredA = markerForCall(MATRIX_CALL_ID, 6_000);
+      const mod = await loadBridge(answeredA, noMarker(), {
+        matrixCall: { callId: NEXT_CALL_ID, roomId: ROOM },
+      });
+      await mod.nativeCallBridge.wire(callService);
+      // getPendingAnswer is read-and-clear: wire() has already taken it.
+      answeredA.mockResolvedValue({ callId: null, roomId: null, atMs: 0 });
+
+      const preAccepted = await mod.consumePendingAnswerCallId(NEXT_CALL_ID, ROOM);
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(preAccepted).toBe(false);
+      expect(callService.answerCall).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

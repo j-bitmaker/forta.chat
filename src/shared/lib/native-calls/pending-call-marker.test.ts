@@ -51,6 +51,18 @@ describe("matchesPendingCallMarker — roomId fallback", () => {
     expect(match).toBe(true);
   });
 
+  it("does not widen a real Matrix callId to the room, however fresh", () => {
+    // 2026-09-13 on the Samsung: an answer given to call A from the headset
+    // pre-accepted call B from the same room six seconds later. A Matrix callId
+    // compares directly, so a different one is a different call.
+    const match = matchesPendingCallMarker(
+      { callId: "17892562779348W0Y1OwUYehE4uAe", roomId: ROOM, atMs: NOW - 6_000 },
+      { callId: "1789256297487pwCMsMV2ry9FSHda", roomId: ROOM, now: NOW },
+    );
+
+    expect(match).toBe(false);
+  });
+
   it("still matches one millisecond inside the TTL", () => {
     const match = matchesPendingCallMarker(
       { callId: null, roomId: ROOM, atMs: NOW - (PENDING_MARKER_ROOM_TTL_MS - 1) },
@@ -169,6 +181,15 @@ describe("matchesPendingCallMarker — degenerate markers", () => {
         { callId: "call-b", roomId: ROOM, now: NOW },
       ),
     ).toBe(true);
+  });
+
+  it("still refuses the room for a real callId when the platform reports no write time (iOS)", () => {
+    const match = matchesPendingCallMarker(
+      { callId: "17892562779348W0Y1OwUYehE4uAe", roomId: ROOM },
+      { callId: "1789256297487pwCMsMV2ry9FSHda", roomId: ROOM, now: NOW },
+    );
+
+    expect(match).toBe(false);
   });
 });
 

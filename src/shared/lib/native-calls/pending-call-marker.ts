@@ -5,10 +5,11 @@
  * The markers are written by the native ringer (Kotlin `CallConnection.
  * onAnswer` / `onReject`, plus `IncomingCallActivity`'s belt-and-braces
  * writes) and consumed by `handleIncomingCall` once Matrix finally delivers
- * the invite. Matching has to fall back to `roomId`, because this
- * homeserver's push payload carries `room_id` but its `call_id` is really an
- * event_id and never equals the Matrix SDK's `call.callId` — on the
- * cold-start-from-push path the callId simply is not comparable.
+ * the invite. Matching falls back to `roomId` for a marker whose callId is
+ * not comparable: a push without `call_id` keys its connection by the
+ * event_id, which never equals the Matrix SDK's `call.callId`, so on that
+ * cold-start-from-push path the room is all there is. A marker holding a real
+ * Matrix callId matches that call and no other.
  *
  * That fallback is also how a marker nobody consumed can reject an entirely
  * different, later call from the same room. Observed on the bench 2026-09-09:
@@ -79,6 +80,13 @@ export interface PendingCallMarkerTarget {
 
 /**
  * True when `marker` refers to the call described by `target`.
+ *
+ * The room is consulted only when the marker's own id cannot be compared. On
+ * 2026-09-13 a Samsung answered call A from AirPods while JS was dead; on the
+ * next start the queued answer, carrying A's real callId, matched call B from
+ * the same room six seconds later, and B connected with nobody touching the
+ * phone. The age bound could not help: six seconds is well inside an invite
+ * lifetime.
  */
 export function matchesPendingCallMarker(
   marker: PendingCallMarker,
@@ -87,6 +95,9 @@ export function matchesPendingCallMarker(
   // An exact callId names the very call the user acted on. Never ambiguous,
   // so it matches whatever its age.
   if (marker.callId && marker.callId === target.callId) return true;
+
+  // A different real callId is a different call, even in the same room.
+  if (!callIdNeedsRoomCorrelation(marker.callId)) return false;
 
   if (!marker.roomId || !target.roomId || marker.roomId !== target.roomId) {
     return false;

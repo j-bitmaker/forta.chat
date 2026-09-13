@@ -61,9 +61,10 @@ const NativeCall: NativeCallNativePlugin = isIOS
  *
  * Two markers because the push-side `call_id` is often just the push
  * event_id on this homeserver, which does NOT match the Matrix SDK's
- * `call.callId`. We fall through to `roomId` for reliable correlation:
- * if the user tapped Answer on ANY incoming ringer for room R, then
- * the first MatrixCall we receive for room R is the one they accepted.
+ * `call.callId`. For such an id only, we fall through to `roomId`: if the
+ * user tapped Answer on a push-keyed ringer for room R, the first
+ * MatrixCall we receive for room R is the one they accepted. A marker
+ * holding a real Matrix callId matches that call alone.
  */
 let pendingAnswer: PendingCallMarker | null = null;
 
@@ -171,9 +172,11 @@ function cancelAnswerWait(): void {
  *
  * Match order:
  *   1. exact callId equality (works when the push carries the real
- *      Matrix content.call_id)
- *   2. roomId equality (fallback — our homeserver's push payloads
- *      don't include the Matrix call_id, but they do include room_id)
+ *      Matrix content.call_id, and always on the /sync path)
+ *   2. roomId equality, only for a marker keyed by an event_id or by
+ *      nothing — a push without call_id still carries room_id. A real
+ *      callId that differs is a different call: on 2026-09-13 an answer
+ *      for one call pre-accepted the next one from the same room.
  *
  * Falls back to querying native directly when the in-memory markers
  * aren't set yet: on cold-start-from-push the Matrix SDK frequently
@@ -445,10 +448,10 @@ class NativeCallBridge {
       console.log('[NativeCallBridge] Call answered:', callId, 'room:', roomId);
       // Record the accept so handleIncomingCall on the JS side knows
       // to skip the duplicate-ring path and go straight to answered.
-      // BOTH callId and roomId are needed because on this homeserver
-      // the push payload's call_id is actually the event_id — it will
-      // NEVER match the Matrix SDK's call.callId. The roomId fallback
-      // is how we correlate the pending accept with the MatrixCall.
+      // BOTH callId and roomId are needed because a push without call_id
+      // keys the connection by its event_id, which will NEVER match the
+      // Matrix SDK's call.callId. For such an id the roomId fallback is how
+      // we correlate the pending accept with the MatrixCall.
       // Assigned whole: this event names one call, so its room travels with
       // its id. Keeping a previous call's room here and re-stamping it is
       // exactly how a stale marker used to swallow an unrelated later call.
