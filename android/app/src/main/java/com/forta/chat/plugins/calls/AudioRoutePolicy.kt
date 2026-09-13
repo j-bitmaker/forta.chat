@@ -34,6 +34,20 @@ object AudioRoutePolicy {
         return Decision(target, keepPin = pin != null)
     }
 
+    /**
+     * The route after Telecom reports one it switched to on its own.
+     *
+     * Telecom owns the audio route of a self-managed call and moves it to a
+     * headset the moment one connects. A loudspeaker the user pinned is asked
+     * back, the same way it holds against a device change; any other pin holds
+     * only while Telecom is on it, and an unpinned route is simply what the call
+     * now uses.
+     */
+    fun onTelecomRouteChanged(route: Device, pinned: Device?): Decision = when {
+        pinned == Device.SPEAKER && route != Device.SPEAKER -> Decision(Device.SPEAKER, keepPin = true)
+        else -> Decision(target = null, keepPin = pinned != null && pinned == route)
+    }
+
     /** The route for a call whose device just vanished. */
     fun fallback(available: Set<Device>, callType: String): Device = when {
         Device.WIRED_HEADSET in available -> Device.WIRED_HEADSET

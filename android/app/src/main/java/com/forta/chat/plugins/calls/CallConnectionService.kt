@@ -11,10 +11,12 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.OutcomeReceiver
 import android.os.SystemClock
 import java.util.concurrent.atomic.AtomicReference
 import android.telecom.*
 import android.util.Log
+import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -818,6 +820,77 @@ class CallConnection(
     fun markAdoptedByJs() {
         adoptedByJs = true
         cancelAdoptionTimeout()
+    }
+
+    /**
+     * The endpoints Telecom last offered this call (API 34+). A route request
+     * has to name one of them; see [requestAudioRoute]. Written by Telecom's
+     * callback on the main thread, read from whichever thread picks a route.
+     */
+    @Volatile
+    private var availableEndpoints: List<CallEndpoint> = emptyList()
+
+    /**
+     * Ask Telecom to move this call's audio to [device].
+     *
+     * Telecom owns the route of a self-managed call. On a Samsung with
+     * Android 14, AudioRouter's setCommunicationDevice was recorded and ignored
+     * through 16 speaker picks, while Telecom's own switch to a headset was the
+     * only change anyone heard (stage 3, 2026-09-13). API 34 takes an endpoint
+     * Telecom offered; before that, or when none of the offered endpoints
+     * matches, the route constant.
+     *
+     * @return false when this connection can no longer carry a request.
+     */
+    fun requestAudioRoute(device: AudioRouter.Device): Boolean {
+        if (released.get()) return false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val type = TelecomAudioRoute.endpointTypeFor(device)
+            val endpoint = availableEndpoints.firstOrNull { it.endpointType == type }
+            if (endpoint != null) {
+                requestCallEndpointChange(
+                    endpoint,
+                    context.mainExecutor,
+                    object : OutcomeReceiver<Void, CallEndpointException> {
+                        override fun onResult(result: Void?) {
+                            Log.d("CallConnection", "requestCallEndpointChange($device): done")
+                        }
+
+                        override fun onError(error: CallEndpointException) {
+                            Log.w("CallConnection", "requestCallEndpointChange($device) failed: code=${error.code}")
+                        }
+                    },
+                )
+                return true
+            }
+        }
+        @Suppress("DEPRECATION")
+        setAudioRoute(TelecomAudioRoute.routeFor(device))
+        return true
+    }
+
+    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    override fun onAvailableCallEndpointsChanged(availableEndpoints: List<CallEndpoint>) {
+        this.availableEndpoints = availableEndpoints
+    }
+
+    /** Telecom's route report on API 34+; see [AudioRouter.onTelecomRouteChanged]. */
+    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    override fun onCallEndpointChanged(callEndpoint: CallEndpoint) {
+        val device = TelecomAudioRoute.deviceForEndpointType(callEndpoint.endpointType) ?: return
+        Log.d("CallConnection", "onCallEndpointChanged: $callId -> $device")
+        AudioRouter.getSharedInstance(context).onTelecomRouteChanged(device)
+    }
+
+    /** Telecom's route report before API 34; see [AudioRouter.onTelecomRouteChanged]. */
+    @Deprecated("Telecom reports routes through onCallEndpointChanged on API 34+")
+    override fun onCallAudioStateChanged(state: CallAudioState) {
+        // API 34 delivers the same change through both callbacks; mirroring it
+        // twice would ask a pinned loudspeaker back twice.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
+        val device = TelecomAudioRoute.deviceForRoute(state.route) ?: return
+        Log.d("CallConnection", "onCallAudioStateChanged: $callId -> $device")
+        AudioRouter.getSharedInstance(context).onTelecomRouteChanged(device)
     }
 
     /**

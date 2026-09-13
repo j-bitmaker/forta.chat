@@ -1065,6 +1065,34 @@ class AudioRouter private constructor(private val context: Context) {
         return true
     }
 
+    /**
+     * Telecom switched this call's audio route.
+     *
+     * Telecom owns the route of a self-managed call and switches it on its own —
+     * to a headset the moment one connects — so its report is what the call
+     * really uses and what the UI shows. A loudspeaker the user pinned is asked
+     * back through [setDeviceInternal]; see [AudioRoutePolicy.onTelecomRouteChanged].
+     * Reports before [start] are ignored: start picks the call's first route
+     * itself and asks Telecom for it.
+     */
+    fun onTelecomRouteChanged(route: Device) {
+        if (!isActive) return
+        synchronized(routeLock) {
+            val decision = AudioRoutePolicy.onTelecomRouteChanged(route, pinnedDevice)
+            if (!decision.keepPin) pinnedDevice = null
+            val target = decision.target
+            if (target != null) {
+                Log.d(TAG, "Telecom moved the call to $route — restoring pinned $target")
+                timeline.record("route", "telecom moved to $route, restoring $target")
+                setDeviceInternal(target)
+            } else if (activeDevice != route) {
+                activeDevice = route
+                timeline.record("route", "telecom reports $route")
+            }
+        }
+        notifyListener()
+    }
+
     fun getActiveDevice(): Device = activeDevice
 
     fun getBluetoothDeviceName(): String? = bluetoothDeviceName
@@ -1078,6 +1106,15 @@ class AudioRouter private constructor(private val context: Context) {
 
     private fun setDeviceInternal(device: Device) {
         activeDevice = device
+        // Telecom owns the route of a self-managed call: while it held the audio
+        // mode on a Samsung with Android 14, the platform ignored every
+        // AudioManager request below (stage 3, 2026-09-13). Ask it first. The
+        // AudioManager path stays for a call Telecom never registered and for
+        // platforms that honour it; both name the same device.
+        CallConnectionService.currentConnection?.let { connection ->
+            val asked = connection.requestAudioRoute(device)
+            timeline.record("route", "telecom $device${if (asked) "" else " refused: released"}")
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             setDeviceModern(device)
         } else {

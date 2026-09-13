@@ -97,4 +97,55 @@ class AudioRoutePolicyTest {
             decide(Device.BLUETOOTH, builtIn + Device.BLUETOOTH),
         )
     }
+
+    // -- Telecom switched the route itself ----------------------------------------
+    //
+    // Telecom owns the audio route of a self-managed call. On a Samsung with
+    // Android 14 it ignored every route request made through AudioManager and
+    // moved the call to AirPods the moment they connected (stage 3, 2026-09-13).
+
+    @Test
+    fun telecomMovingToBluetooth_isAskedBack_toAPinnedLoudspeaker() {
+        assertEquals(
+            AudioRoutePolicy.Decision(Device.SPEAKER, keepPin = true),
+            AudioRoutePolicy.onTelecomRouteChanged(Device.BLUETOOTH, pinned = Device.SPEAKER),
+        )
+    }
+
+    @Test
+    fun telecomReportingThePinnedLoudspeaker_changesNothing() {
+        assertEquals(
+            AudioRoutePolicy.Decision(target = null, keepPin = true),
+            AudioRoutePolicy.onTelecomRouteChanged(Device.SPEAKER, pinned = Device.SPEAKER),
+        )
+    }
+
+    @Test
+    fun telecomConfirmingAPinnedEarpiece_keepsThePin() {
+        assertEquals(
+            AudioRoutePolicy.Decision(target = null, keepPin = true),
+            AudioRoutePolicy.onTelecomRouteChanged(Device.EARPIECE, pinned = Device.EARPIECE),
+        )
+    }
+
+    @Test
+    fun telecomMovingToBluetooth_endsAnEarpiecePin() {
+        // Same rule as a device change: only a loudspeaker pin holds against a
+        // headset, because the in-call UI has no other way to reach one.
+        assertEquals(
+            AudioRoutePolicy.Decision(target = null, keepPin = false),
+            AudioRoutePolicy.onTelecomRouteChanged(Device.BLUETOOTH, pinned = Device.EARPIECE),
+        )
+    }
+
+    @Test
+    fun telecomRoute_isMirrored_whenNothingIsPinned() {
+        for (route in Device.values()) {
+            assertEquals(
+                "route $route",
+                AudioRoutePolicy.Decision(target = null, keepPin = false),
+                AudioRoutePolicy.onTelecomRouteChanged(route, pinned = null),
+            )
+        }
+    }
 }
