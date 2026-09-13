@@ -437,6 +437,8 @@ class CallForegroundService : Service() {
         releaseWakeLock()
         abandonAudioFocus()
         instance = null
+        // Ends a process left with nothing to present — see IdleProcessExit.
+        IdleProcessExit.schedule(applicationContext, "call service destroyed")
         super.onDestroy()
     }
 

@@ -978,6 +978,8 @@ class CallConnection(
         if (CallConnectionService.currentConnection === this) {
             CallConnectionService.currentConnection = null
         }
+        // Ends a process left with nothing to present — see IdleProcessExit.
+        IdleProcessExit.schedule(context, "reject $callId")
         // Backstop for the paths that never reach the JS finalize (ring timeout
         // with a frozen WebView, a Telecom-side reject); a no-op when JS has
         // already torn the audio session down. Wrapped so it can never keep the
@@ -1008,6 +1010,8 @@ class CallConnection(
         if (CallConnectionService.currentConnection === this) {
             CallConnectionService.currentConnection = null
         }
+        // Ends a process left with nothing to present — see IdleProcessExit.
+        IdleProcessExit.schedule(context, "disconnect $callId")
         clearPendingFor(callId, roomId)
         // Backstop for the disconnects JS never drives: a headset or the
         // system call UI ending the call, a push-delivered hangup while the

@@ -228,6 +228,9 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
 
         // Handle calls
         if (msgType == "m.call.invite") {
+            // Telecom creates this call's connection only after the push is
+            // handled; until then the idle check must not end the process.
+            com.forta.chat.plugins.calls.IdleProcessExit.noteCallPush()
             // Suppress invite retries for a call we're already ringing
             // or answering. Caller clients resend m.call.invite every
             // few seconds until they see our answer/hangup; each retry
