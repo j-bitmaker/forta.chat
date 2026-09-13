@@ -89,6 +89,37 @@ class CallConnectionService : ConnectionService() {
         }
 
         /**
+         * Release a connection Telecom answered that JS never picked up.
+         *
+         * The second net behind the connection's own adoption backstop, for the
+         * same reason [releaseStaleRingingConnection] backs the ring timeout: a
+         * main-looper Handler can be held past its deadline by Doze or a frozen
+         * process. [StaleCallPolicy.isUnadoptedAnswer] keeps it off a call JS
+         * reported connected and off an answer still inside its window.
+         *
+         * `onDisconnect`, never `onReject`, as in [releaseOnTaskRemoved].
+         *
+         * @return true when a connection was actually released.
+         */
+        fun releaseUnadoptedAnswer(
+            nowMs: Long = SystemClock.elapsedRealtime(),
+        ): Boolean {
+            val connection = currentConnection ?: return false
+            val unadopted = StaleCallPolicy.isUnadoptedAnswer(
+                isActive = connection.state == Connection.STATE_ACTIVE,
+                answeredAtMs = connection.answeredAtMs,
+                adoptedByJs = connection.adoptedByJs,
+                nowMs = nowMs,
+                timeoutMs = CallConnection.ANSWER_ADOPTION_TIMEOUT_MS,
+            )
+            if (!unadopted) return false
+            Log.w(TAG, "Releasing an answered connection JS never picked up: ${connection.callId}")
+            runCatching { connection.onDisconnect() }
+                .onFailure { Log.w(TAG, "unadopted-answer release threw", it) }
+            return true
+        }
+
+        /**
          * Release a connection nothing presents, so a new incoming call can be
          * added at all.
          *
@@ -664,6 +695,20 @@ class CallConnection(
          * device is never left ringing for a call the caller has given up on.
          */
         const val RING_TIMEOUT_MS = 45_000L
+
+        /**
+         * How long an answer Telecom delivered natively may wait for JS to
+         * report the call connected before the connection is released.
+         *
+         * `onAnswer` cancels the ring timeout, so without this nothing bounds an
+         * answered connection whose JS never comes: a headset press on a call
+         * swiped away while ringing left one ACTIVE until a force-stop (Samsung,
+         * 2026-09-13). Long enough for a cold start from push: JS answers within
+         * the SDK's 60 s invite lifetime or not at all, and the extra 30 s
+         * covers connecting after a late answer — the slowest bench cold start
+         * had sound 30 s after the tap.
+         */
+        const val ANSWER_ADOPTION_TIMEOUT_MS = 90_000L
     }
 
     /**
@@ -684,6 +729,34 @@ class CallConnection(
         // unattended — the user is not even holding the phone.
         runCatching { onReject() }
             .onFailure { Log.w("CallConnection", "ring timeout reject threw", it) }
+    }
+
+    /**
+     * `SystemClock.elapsedRealtime()` when Telecom answered this connection,
+     * null until then. Read by [StaleCallPolicy.isUnadoptedAnswer] on app
+     * resume as the second net behind [adoptionTimeoutRunnable].
+     */
+    @Volatile
+    var answeredAtMs: Long? = null
+        private set
+
+    /**
+     * JS reported this call connected. Written from Capacitor's plugin thread,
+     * read by the backstop on the main looper.
+     */
+    @Volatile
+    var adoptedByJs: Boolean = false
+        private set
+
+    /** Releases an answer JS never picked up. See [ANSWER_ADOPTION_TIMEOUT_MS]. */
+    private val adoptionTimeoutRunnable = Runnable {
+        if (adoptedByJs) return@Runnable
+        Log.w("CallConnection", "Answered call was never picked up by JS — releasing $callId")
+        // onDisconnect, never onReject: the caller gave up long ago, and a reject
+        // marker can only ever decline something later. Caught for the same
+        // reason as the ring timeout: this fires with nobody holding the phone.
+        runCatching { onDisconnect() }
+            .onFailure { Log.w("CallConnection", "adoption timeout release threw", it) }
     }
 
     /**
@@ -722,6 +795,32 @@ class CallConnection(
     }
 
     /**
+     * Start the backstop for an answer JS has to pick up. Armed by [onAnswer]
+     * only: a call JS answers itself is connected by JS, and an outgoing call is
+     * never answered here.
+     */
+    private fun armAdoptionTimeout() {
+        answeredAtMs = SystemClock.elapsedRealtime()
+        ringTimeoutHandler.removeCallbacks(adoptionTimeoutRunnable)
+        ringTimeoutHandler.postDelayed(adoptionTimeoutRunnable, ANSWER_ADOPTION_TIMEOUT_MS)
+    }
+
+    private fun cancelAdoptionTimeout() {
+        ringTimeoutHandler.removeCallbacks(adoptionTimeoutRunnable)
+    }
+
+    /**
+     * JS reported this call connected, so the answer has been picked up.
+     *
+     * The flag goes first: the backstop reads it, so a deadline already
+     * dequeued on the main looper still sees the adoption.
+     */
+    fun markAdoptedByJs() {
+        adoptedByJs = true
+        cancelAdoptionTimeout()
+    }
+
+    /**
      * Telecom's "stop ringing" (API 29+). While a self-managed call rings, the
      * system takes a volume-key press for silenceRinger and forwards it here;
      * the key never reaches IncomingCallActivity, so its volumeControlStream
@@ -747,6 +846,7 @@ class CallConnection(
             return
         }
         setActive()
+        armAdoptionTimeout()
         // Every answer route reaches this method — the activity's own Accept
         // button calls it, and so does Telecom when it answers on its own from a
         // Bluetooth headset, Android Auto or the system call UI. Silencing here
@@ -779,6 +879,7 @@ class CallConnection(
     override fun onReject() {
         Log.d("CallConnection", "onReject: callId=$callId, roomId=$roomId")
         cancelRingTimeout()
+        cancelAdoptionTimeout()
         // Telecom throws if a destroyed connection is disconnected again, and
         // there are now several routes here — the button, the shade action, the
         // activity's countdown and this connection's own backstop.
@@ -817,6 +918,7 @@ class CallConnection(
     override fun onDisconnect() {
         Log.d("CallConnection", "onDisconnect: $callId")
         cancelRingTimeout()
+        cancelAdoptionTimeout()
         if (!released.compareAndSet(false, true)) {
             Log.d("CallConnection", "onDisconnect: already released, skipping teardown")
             return

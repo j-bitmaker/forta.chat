@@ -366,6 +366,9 @@ class CallPlugin : Plugin() {
             }
         }
         connection?.setActive()
+        // The answer has been picked up: disarm the backstop that releases a
+        // connection Telecom answered while JS was not there.
+        connection?.markAdoptedByJs()
         // The answer is on the wire now — JS only reaches here from the
         // connected state — so the marker has nothing left to carry. It exists
         // only to replay a decision across a process that was not alive to send
@@ -702,11 +705,18 @@ class CallPlugin : Plugin() {
      * ringing sets it too); the honest fix is to release *our* connection and
      * let Telecom drop the mode on its own. [StaleCallPolicy] keeps this from
      * touching a call the user is about to answer.
+     *
+     * The same sweep releases a connection Telecom answered that JS never
+     * picked up ([CallConnectionService.releaseUnadoptedAnswer]); the JS
+     * watchdog calls this only while it holds no call of its own.
      */
     @PluginMethod
     fun releaseStaleRingingCall(call: PluginCall) {
         val released = try {
-            CallConnectionService.releaseStaleRingingConnection()
+            // Each net finds nothing unless its own deadline has passed.
+            val ringing = CallConnectionService.releaseStaleRingingConnection()
+            val unadopted = CallConnectionService.releaseUnadoptedAnswer()
+            ringing || unadopted
         } catch (e: Throwable) {
             Log.w(TAG, "releaseStaleRingingCall threw", e)
             false

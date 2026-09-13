@@ -18,6 +18,9 @@ package com.forta.chat.plugins.calls
  * already outlived the ring timeout, past which no legitimate ringing
  * connection can exist. Kept free of Android imports so the rule itself is
  * unit-testable.
+ *
+ * [isUnadoptedAnswer] is the same kind of net for an answered connection that
+ * JS never picked up.
  */
 object StaleCallPolicy {
 
@@ -40,6 +43,40 @@ object StaleCallPolicy {
         // elapsedRealtime does not run backwards, but the two readings come
         // from different call sites; fail closed rather than treat a negative
         // age as "very old".
+        if (elapsed < 0L) return false
+        return elapsed >= timeoutMs
+    }
+
+    /**
+     * True when Telecom answered this connection natively and JS has not
+     * reported the call connected within [timeoutMs].
+     *
+     * `onAnswer` cancels the ring timeout, and nothing else ends an answered
+     * connection whose JS never comes: no hangup push reaches this app, and the
+     * cold-start sweep leaves a live slot alone. Seen on a Samsung 2026-09-13 —
+     * a call swiped away while ringing was answered from AirPods with JS dead
+     * and stayed ACTIVE until a force-stop, turning the next call away as busy.
+     *
+     * As strict as [isStaleRinging]: a call JS reported connected is never
+     * released however long it lasts, and the window outlasts a cold start from
+     * push, which logs in, syncs and connects inside it.
+     *
+     * @param isActive      connection state is `STATE_ACTIVE`
+     * @param answeredAtMs  `SystemClock.elapsedRealtime()` at `onAnswer`; null when Telecom never answered it
+     * @param adoptedByJs   JS reported the call connected
+     * @param nowMs         `SystemClock.elapsedRealtime()` now
+     * @param timeoutMs     adoption deadline, normally [CallConnection.ANSWER_ADOPTION_TIMEOUT_MS]
+     */
+    fun isUnadoptedAnswer(
+        isActive: Boolean,
+        answeredAtMs: Long?,
+        adoptedByJs: Boolean,
+        nowMs: Long,
+        timeoutMs: Long,
+    ): Boolean {
+        if (!isActive || adoptedByJs || answeredAtMs == null) return false
+        if (timeoutMs <= 0L) return false
+        val elapsed = nowMs - answeredAtMs
         if (elapsed < 0L) return false
         return elapsed >= timeoutMs
     }
