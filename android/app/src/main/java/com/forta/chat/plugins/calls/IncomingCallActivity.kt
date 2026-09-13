@@ -303,13 +303,14 @@ class IncomingCallActivity : Activity() {
             return
         }
 
-        // A *second* caller reaching a ringer that is already up. setIntent()
+        // A *second* caller reaching a ringer that is already up: a redial from
+        // the same room, or a ringing call whose room is unknown — a caller from
+        // another room is kept off this screen by SecondRingPolicy. setIntent()
         // above has already swapped what accept()/decline() will act on, so the
         // visible identity has to follow — otherwise the user sees the first
-        // caller's name and answers the second one's call. The first call is
-        // not stranded by this: its Telecom connection was still RINGING, and
-        // onCreateIncomingConnection released it when the new one displaced it
-        // (DisplacedConnectionPolicy only spares established calls).
+        // caller's name and answers the second one's call. Telecom does not
+        // release the first call for this: it refuses the second registration
+        // while the first is RINGING, and the first ends on its own timers.
         val newCallId = intent.getStringExtra("callId") ?: ""
         if (newCallId.isEmpty() || newCallId == shownCallId) return
 

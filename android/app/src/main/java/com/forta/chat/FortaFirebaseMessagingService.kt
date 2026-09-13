@@ -13,10 +13,13 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.forta.chat.plugins.calls.CallConnectionService
 import com.forta.chat.plugins.calls.CallNotificationConfig
+import com.forta.chat.plugins.calls.CallSlotPolicy
 import com.forta.chat.plugins.calls.CancelledCallStore
 import com.forta.chat.plugins.calls.IncomingCallActivity
+import com.forta.chat.plugins.calls.IncomingRinger
 import com.forta.chat.plugins.calls.InviteThrottleGuard
 import com.forta.chat.plugins.calls.InviteThrottleTracker
+import com.forta.chat.plugins.calls.SecondRingPolicy
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
@@ -301,6 +304,16 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
                 return
             }
 
+            // Another call still rings on the incoming screen: a caller from
+            // another room must not take it over — see SecondRingPolicy. JS
+            // gets the push and turns the call away, as it already does.
+            val ringingCallId = IncomingRinger.ringingCallId
+            if (!SecondRingPolicy.mayTakeOverRinger(callId, roomId, ringingCallId, ringingRoomFor(ringingCallId))) {
+                Log.i(TAG, "Second call $callId from $roomId while $ringingCallId rings — leaving the screen to that call")
+                forwardToJs(data)
+                return
+            }
+
             lastRingingCallId = callId.takeIf { it.isNotEmpty() }
 
             // Cancel any existing message notification for this room
@@ -331,6 +344,13 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
 
         // Forward to JS for decryption
         forwardToJs(data)
+    }
+
+    /** Room of the call [ringingCallId] rings for, when the Telecom slot holds it; null when unknown. */
+    private fun ringingRoomFor(ringingCallId: String?): String? {
+        if (ringingCallId == null) return null
+        val slot = CallConnectionService.currentConnection ?: return null
+        return slot.roomId.takeIf { CallSlotPolicy.owns(slot.callId, ringingCallId) }
     }
 
     override fun onNewToken(token: String) {
