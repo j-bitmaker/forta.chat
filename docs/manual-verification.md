@@ -1550,96 +1550,6 @@
 - Статус: ☐ шаги 2, 3, 5, 6 прошли 2026-09-15; шаг 4 провален: выбор AirPods с динамика
   не срабатывает, а видеозвонок после ухода AirPods остаётся в трубке
 
-### Отбой из пуша закрывает только свой звонок
-- Коммит: `239b4d77`
-- Почему нужен человек: тесты доказывают правило (`RemoteHangupPolicyTest`,
-  `CallTeardownPolicyTest`) и проводку (`RemoteHangupContractTest`,
-  `push-service-call-signal.test.ts`). Hangup-пуш доходит до телефона, только если у
-  аккаунта есть правило пушей для `m.call.hangup`: без правила этот путь недостижим
-  («Аудиорежим», шаг 2). Что отбой одного звонка не глушит другой, видно только на
-  аппарате с правилом.
-- На чём: реальный Android, сборка с FCM, правило `m.call.hangup → notify` на тестовом
-  аккаунте телефона — ставится только с согласия владельца. Годится Samsung SM-A528B ↔
-  веб TEST1 и третий профиль `profile3`.
-- Шаги:
-  1. `adb logcat -v time > /tmp/run.log &`.
-  2. Регресс: позвонить телефону с веба TEST1, не отвечать, положить трубку на вебе.
-     - **Ожидается:** в логе `Call ended remotely (type=m.call.hangup)`, рингер и экран
-       входящего закрываются сразу, уведомление звонка исчезает. Превью комнаты не
-       меняется на заглушку нового сообщения, счётчик непрочитанного от отбоя не
-       растёт.
-  3. Отбой чужого звонка во время ринга, JS не поднят (как в `sr-dead1`): свернуть
-     приложение и завершить процесс (`adb shell am kill com.forta.chat`). Позвонить
-     телефону с веба TEST1 (звонок A) и не отвечать. Пока A звонит, позвонить с третьего
-     профиля (звонок B): экран остаётся за A, а у третьего профиля B звонит дальше —
-     отклонить его некому. Положить трубку B. При живом JS шаг не воспроизвести: JS
-     отклоняет B сразу, и отбоя от третьего профиля не бывает.
-     - **Ожидается:** в логе `Call ended remotely (type=m.call.hangup)` для B. Рингтон и
-       экран A остаются, `IncomingRinger: stop callId=<callId A>` нет. «Принять»
-       соединяет A, звук в обе стороны.
-     - **Раньше:** отбой B закрыл бы рингер и экран A — пуш снимал всё, что звонит.
-- Измерено 2026-09-15 (UTC) без владельца на Samsung SM-A528B (Android 14), сборка
-  `87ebfd68` с FCM. Правило `m.call.hangup → notify` поставлено на аккаунт телефона вручную
-  с согласия владельца (`scratchpad/web/push-rule.mjs`). Скрипты
-  `scratchpad/run-hangup-other.sh hangup-other1` и `scratchpad/run-hangup-counter.sh
-  hcount-rule2`, логи `scratchpad/runs/hangup-other1-*` и `hcount-rule2-*`, время по часам
-  телефона.
-  - **Шаг 3 — отбой B не тронул A; «Принять» не проверено.** Процесс завершён до звонков.
-    Звонок A с веба TEST1 поднял рингер, звонок B с третьего профиля экран не забрал, отбой
-    B пришёл пушем и закрыл только B:
-    ```
-    14:08:06.012 D/IncomingRinger: arm callId=1789470483721f3IWkzBFx7GQPhit
-    14:08:19.112 I/FortaPush: Second call 1789470497984KoaBcezyE4B6TTyj from !… while 1789470483721f3IWkzBFx7GQPhit rings — leaving the screen to that call
-    14:08:23.578 D/FortaPush: Call ended remotely (type=m.call.hangup), tearing down incoming UI
-    14:08:23.578 W/FortaPush: hangup for 1789470497984KoaBcezyE4B6TTyj: slot holds 1789470483721f3IWkzBFx7GQPhit, leaving it
-    14:08:23.589 I/CallTeardown: endCall reason=REMOTE_HANGUP callId=1789470497984KoaBcezyE4B6TTyj State(… otherCallLive=true …)
-    14:08:36.013 W/IncomingRinger: no answer in 30s for 1789470483721f3IWkzBFx7GQPhit — auto-rejecting
-    ```
-    До 30-секундного срока A строки `IncomingRinger: stop callId=<callId A>` нет. Через 11 с
-    после отбоя B экран всё ещё показывал A (`countdown="3s"`). Тап «Принять» скрипт сделал
-    через 2 с после срока A: два снимка экрана подряд заняли 11 с. Соединение A и звук не
-    проверены; после срока JS отклонил A как обычно (`Pre-rejected incoming call`).
-  - **Шаг 2 — рингер закрыт пушем; счётчик растёт.** Процесс жив, пропущенный звонок с веба
-    TEST1:
-    ```
-    14:10:16.758 D/FortaPush: Call ended remotely (type=m.call.hangup), tearing down incoming UI
-    14:10:16.774 I/CallTeardown: endCall reason=DISCONNECT callId=1789470602142OmhaeIPGzk0c7Por …
-    14:10:16.790 I/CallTeardown: endCall reason=REMOTE_HANGUP callId=1789470602142OmhaeIPGzk0c7Por …
-    ```
-    Счётчик комнаты в списке чатов (строка и стор совпадают): 7 → 9 после пропущенного, 9 → 11
-    после принятого, трубку оба раза клал веб. С правилом каждый звонок даёт +2, без правила
-    было +1 (`hcount-norule`): сервер считает отбой непрочитанным. Вычитание отбоев из счётчика —
-    запись «Приложение ставит правило hangup-пушей, отбой собеседника не растит счётчик». Превью
-    комнаты не снималось.
-- Измерено 2026-09-15 (UTC) без владельца на той же Samsung, сборка `8dff0a4b` — правило
-  ставит само приложение. Скрипт `scratchpad/run-hangup-other.sh hangup-other2` исправлен:
-  звонок B набирается сразу, как только появился рингер A, отбой ищется в собственном логе
-  прогона, а проверка экрана и тап идут по одному снимку. Логи
-  `scratchpad/runs/hangup-other2-*`.
-  - **Шаг 3 прошёл.** Процесс завершён до звонков:
-    ```
-    14:29:41.033 D/IncomingRinger: arm callId=1789471778765wb97AG91G7Z5Mt1G
-    14:29:49.345 I/FortaPush: Second call 1789471788260k6MaiP85hZsKETOv from !… while 1789471778765wb97AG91G7Z5Mt1G rings — leaving the screen to that call
-    14:29:53.854 D/FortaPush: Call ended remotely (type=m.call.hangup), tearing down incoming UI
-    14:29:53.857 W/FortaPush: hangup for 1789471788260k6MaiP85hZsKETOv: slot holds 1789471778765wb97AG91G7Z5Mt1G, leaving it
-    14:29:53.862 I/CallTeardown: endCall reason=REMOTE_HANGUP callId=1789471788260k6MaiP85hZsKETOv State(… otherCallLive=true …)
-    14:29:59.134 D/IncomingCallActivity: Accept pressed
-    14:29:59.168 D/IncomingRinger: stop callId=1789471778765wb97AG91G7Z5Mt1G
-    14:29:59.168 D/CallConnection: onAnswer: callId=1789471778765wb97AG91G7Z5Mt1G, roomId=!…
-    14:30:04.145 I/Capacitor/Console: [call-service] Pre-accepted incoming call, skipping ringer: 1789471778765wb97AG91G7Z5Mt1G
-    14:30:05.317 D/Capacitor/Console: sendEvent of type m.call.answer in !…
-    ```
-    Через 5 с после отбоя B экран показывал A (`countdown="13s"`). Строка
-    `IncomingRinger: stop` для A появилась только от «Принять». JS поднялся холодным стартом и
-    ответил через 6 с после тапа. У веба A за звонок входящие байты выросли 3877 → 14 314,
-    накопленная энергия входящего звука 1,8e-5 → 3,8e-5: звук с телефона шёл, а байт мало,
-    потому что микрофон телефона тихий (DTX). Исходящих байт 128 272. Звонок закрыл отбой
-    веба (`Call ended remotely` → `onDisconnect`).
-  - **Шаг 2: рингер и счётчик прошли** на той же сборке (запись «Приложение ставит правило
-    hangup-пушей…», шаги 5–6, `hcount-app1`). Пропущенный звонок закрыт пушем, счётчик растёт
-    на 1 за звонок, отбой его не увеличивает. Превью комнаты ещё не снималось.
-- Статус: ☐ шаг 3 проверен 2026-09-15; в шаге 2 рингер и счётчик проверены, превью впереди
-
 ### Отчёт JS о завершённом звонке закрывает только его рингер
 - Коммит: `efdeb9bc`
 - Почему нужен человек: контрактный тест (`ReportCallEndedContractTest`) доказывает
@@ -1759,6 +1669,10 @@
   SCO), звонок останется в трубке — так было и до правки.
 - Статус: ☐ не проверено
 
+---
+
+## Проверено
+
 ### Приложение ставит правило hangup-пушей, отбой собеседника не растит счётчик
 - Коммит: `8dff0a4b`
 - Почему нужен человек: тесты доказывают правило и дату его появления
@@ -1856,10 +1770,11 @@
     шагов 7–8 и `hburst1` 10 непрочитанных (пять `m.call.invite`, пять `m.call.hangup`). Бейдж 9:
     вычтен один отбой — последний, попавший в окно. Починка — запись «Отбои за разрывом живого
     таймлайна не остаются в счётчике».
-- Статус: ☐ шаги 2–8 проверены 2026-09-15; найден остаток — отбои за разрывом таймлайна
+- Статус: ☑ проверено 2026-09-15 (шаги 2–8); найденный остаток — отбои за разрывом таймлайна —
+  починен и проверен в `0249bf72`
 
 ### Отбои за разрывом живого таймлайна не остаются в счётчике
-- Коммит: `…`
+- Коммит: `0249bf72`
 - Почему нужен человек: тесты доказывают подсчёт отбоев из `/messages`
   (`call-hangup-unread.test.ts`), обход разрыва по страницам, кэш и ограничение параллельных
   запросов (`hangup-gap-counter.test.ts`), запрос с фильтром (`matrix-client-room-hangups.test.ts`)
@@ -1900,11 +1815,145 @@
     нет, и отбои за разрывом остаются в счётчике.
   - Больше 250 отбоев за одним разрывом вычитаются не все.
   - Другие клиенты аккаунта, бейдж iOS и переключатель аккаунтов — как в записи `8dff0a4b`.
-- Статус: ☐ не проверено
+- Измерено 2026-09-15 (UTC) без владельца на Samsung SM-A528B (Android 14), сборка `0249bf72` с
+  FCM. Логи `scratchpad/runs/unread-read1-*`, `notif-after-gapfix.jsonl`.
+  - **Холодный старт на остатке `hburst1`** (`scratchpad/run-unread-read.sh unread-read1`, без
+    звонков и нажатий). До установки сборки бейдж TEST1 был 9 при серверных 10. Это два звонка
+    шагов 7–8 и три звонка `hburst1` после квитанции: пять `m.call.invite` и пять `m.call.hangup`.
+    - После запуска Matrix готов через 7 с. Счётчик в строке списка и в сторе — 5, через 20 и 40 с
+      тоже 5: 10 − 5 отбоев.
+    - WebView отправил два запроса `/messages` с фильтром `m.call.hangup` (141 и 244 мс) через
+      3–4 с после загрузки страницы. Строк `[hangup-gap-counter]` в логе нет.
+    - `/notifications` после прогона: по TEST1 пять пар invite/hangup после квитанции (11:32,
+      11:33 и три в 11:43–11:44), последнее уведомление в 11:44:35, новых нет. Пары 10:48, 11:08 и
+      11:29 — звонки B с третьего профиля в другой комнате (`busyring1`, `hangup-other1`,
+      `hangup-other2`). Лишнего вычитания нет: бейдж равен числу непрочитанных invite.
+  - **Шаг 2 прошёл** (`scratchpad/run-hangup-counter-burst.sh hburst2`, 12:14–12:17 UTC).
+    Приложение смахнуто, три пропущенных звонка с веба TEST1. Каждый поднял рингер пушем и был
+    закрыт hangup-пушем, процесс после каждого завершался сам. После открытия приложения счётчик
+    5 → 8, через 20 и 40 с тоже 8: +3. На `8dff0a4b` те же три звонка дали +7 (`hburst1`).
+    Запросов `/messages` с фильтром `m.call.hangup` после запуска — 3 (128–231 мс), все через
+    3 с после загрузки страницы.
+    Выдержка по часам телефона (МСК), первый звонок и холодный старт:
+    ```
+    15:14:40.037 D/IncomingRinger: arm callId=1789474477826ydIUZDf4MIcNInef
+    15:14:49.466 D/FortaPush: Call ended remotely (type=m.call.hangup), tearing down incoming UI
+    15:14:52.599 I/IdleProcessExit: Call over and nothing left to present — ending the process (disconnect 1789474477826ydIUZDf4MIcNInef)
+    15:16:18.756 I/CallTeardown: endCall reason=COLD_START callId=null State(audioMode=0, otherCallLive=false, …)
+    ```
+  - **Шаг 3 прошёл** (`scratchpad/run-hangup-counter.sh hcount-gap1`, 12:17–12:20 UTC). Процесс
+    жив, приложение на списке чатов. Пропущенный звонок закрыт hangup-пушем, счётчик 8 → 9.
+    Принятый: у веба `connected/stable`, трубку положил веб, счётчик 9 → 10. По +1 за звонок, как
+    на `8dff0a4b` (`hcount-app1`).
+  - **Сверка с сервером** (`notif-after-regress.jsonl`). По TEST1 после квитанции 10
+    `m.call.invite` и 10 `m.call.hangup`: пять пар до сборки, три `hburst2` и две `hcount-gap1`.
+    Сервер считает 20, бейдж 10 = 20 − 10.
+  - **Шаг 4 прошёл** (12:21–12:22 UTC). Комната TEST1 открыта через CDP: счётчик 10 → 0, после
+    выхода 0, через 20 с тоже 0.
+- Статус: ☑ проверено 2026-09-15 (шаги 2–4)
 
----
-
-## Проверено
+### Отбой из пуша закрывает только свой звонок
+- Коммит: `239b4d77`
+- Почему нужен человек: тесты доказывают правило (`RemoteHangupPolicyTest`,
+  `CallTeardownPolicyTest`) и проводку (`RemoteHangupContractTest`,
+  `push-service-call-signal.test.ts`). Hangup-пуш доходит до телефона, только если у
+  аккаунта есть правило пушей для `m.call.hangup`: без правила этот путь недостижим
+  («Аудиорежим», шаг 2). Что отбой одного звонка не глушит другой, видно только на
+  аппарате с правилом.
+- На чём: реальный Android, сборка с FCM, правило `m.call.hangup → notify` на тестовом
+  аккаунте телефона — ставится только с согласия владельца. Годится Samsung SM-A528B ↔
+  веб TEST1 и третий профиль `profile3`.
+- Шаги:
+  1. `adb logcat -v time > /tmp/run.log &`.
+  2. Регресс: позвонить телефону с веба TEST1, не отвечать, положить трубку на вебе.
+     - **Ожидается:** в логе `Call ended remotely (type=m.call.hangup)`, рингер и экран
+       входящего закрываются сразу, уведомление звонка исчезает. Превью комнаты не
+       меняется на заглушку нового сообщения, счётчик непрочитанного от отбоя не
+       растёт.
+  3. Отбой чужого звонка во время ринга, JS не поднят (как в `sr-dead1`): свернуть
+     приложение и завершить процесс (`adb shell am kill com.forta.chat`). Позвонить
+     телефону с веба TEST1 (звонок A) и не отвечать. Пока A звонит, позвонить с третьего
+     профиля (звонок B): экран остаётся за A, а у третьего профиля B звонит дальше —
+     отклонить его некому. Положить трубку B. При живом JS шаг не воспроизвести: JS
+     отклоняет B сразу, и отбоя от третьего профиля не бывает.
+     - **Ожидается:** в логе `Call ended remotely (type=m.call.hangup)` для B. Рингтон и
+       экран A остаются, `IncomingRinger: stop callId=<callId A>` нет. «Принять»
+       соединяет A, звук в обе стороны.
+     - **Раньше:** отбой B закрыл бы рингер и экран A — пуш снимал всё, что звонит.
+- Измерено 2026-09-15 (UTC) без владельца на Samsung SM-A528B (Android 14), сборка
+  `87ebfd68` с FCM. Правило `m.call.hangup → notify` поставлено на аккаунт телефона вручную
+  с согласия владельца (`scratchpad/web/push-rule.mjs`). Скрипты
+  `scratchpad/run-hangup-other.sh hangup-other1` и `scratchpad/run-hangup-counter.sh
+  hcount-rule2`, логи `scratchpad/runs/hangup-other1-*` и `hcount-rule2-*`, время по часам
+  телефона.
+  - **Шаг 3 — отбой B не тронул A; «Принять» не проверено.** Процесс завершён до звонков.
+    Звонок A с веба TEST1 поднял рингер, звонок B с третьего профиля экран не забрал, отбой
+    B пришёл пушем и закрыл только B:
+    ```
+    14:08:06.012 D/IncomingRinger: arm callId=1789470483721f3IWkzBFx7GQPhit
+    14:08:19.112 I/FortaPush: Second call 1789470497984KoaBcezyE4B6TTyj from !… while 1789470483721f3IWkzBFx7GQPhit rings — leaving the screen to that call
+    14:08:23.578 D/FortaPush: Call ended remotely (type=m.call.hangup), tearing down incoming UI
+    14:08:23.578 W/FortaPush: hangup for 1789470497984KoaBcezyE4B6TTyj: slot holds 1789470483721f3IWkzBFx7GQPhit, leaving it
+    14:08:23.589 I/CallTeardown: endCall reason=REMOTE_HANGUP callId=1789470497984KoaBcezyE4B6TTyj State(… otherCallLive=true …)
+    14:08:36.013 W/IncomingRinger: no answer in 30s for 1789470483721f3IWkzBFx7GQPhit — auto-rejecting
+    ```
+    До 30-секундного срока A строки `IncomingRinger: stop callId=<callId A>` нет. Через 11 с
+    после отбоя B экран всё ещё показывал A (`countdown="3s"`). Тап «Принять» скрипт сделал
+    через 2 с после срока A: два снимка экрана подряд заняли 11 с. Соединение A и звук не
+    проверены; после срока JS отклонил A как обычно (`Pre-rejected incoming call`).
+  - **Шаг 2 — рингер закрыт пушем; счётчик растёт.** Процесс жив, пропущенный звонок с веба
+    TEST1:
+    ```
+    14:10:16.758 D/FortaPush: Call ended remotely (type=m.call.hangup), tearing down incoming UI
+    14:10:16.774 I/CallTeardown: endCall reason=DISCONNECT callId=1789470602142OmhaeIPGzk0c7Por …
+    14:10:16.790 I/CallTeardown: endCall reason=REMOTE_HANGUP callId=1789470602142OmhaeIPGzk0c7Por …
+    ```
+    Счётчик комнаты в списке чатов (строка и стор совпадают): 7 → 9 после пропущенного, 9 → 11
+    после принятого, трубку оба раза клал веб. С правилом каждый звонок даёт +2, без правила
+    было +1 (`hcount-norule`): сервер считает отбой непрочитанным. Вычитание отбоев из счётчика —
+    запись «Приложение ставит правило hangup-пушей, отбой собеседника не растит счётчик». Превью
+    комнаты не снималось.
+- Измерено 2026-09-15 (UTC) без владельца на той же Samsung, сборка `8dff0a4b` — правило
+  ставит само приложение. Скрипт `scratchpad/run-hangup-other.sh hangup-other2` исправлен:
+  звонок B набирается сразу, как только появился рингер A, отбой ищется в собственном логе
+  прогона, а проверка экрана и тап идут по одному снимку. Логи
+  `scratchpad/runs/hangup-other2-*`.
+  - **Шаг 3 прошёл.** Процесс завершён до звонков:
+    ```
+    14:29:41.033 D/IncomingRinger: arm callId=1789471778765wb97AG91G7Z5Mt1G
+    14:29:49.345 I/FortaPush: Second call 1789471788260k6MaiP85hZsKETOv from !… while 1789471778765wb97AG91G7Z5Mt1G rings — leaving the screen to that call
+    14:29:53.854 D/FortaPush: Call ended remotely (type=m.call.hangup), tearing down incoming UI
+    14:29:53.857 W/FortaPush: hangup for 1789471788260k6MaiP85hZsKETOv: slot holds 1789471778765wb97AG91G7Z5Mt1G, leaving it
+    14:29:53.862 I/CallTeardown: endCall reason=REMOTE_HANGUP callId=1789471788260k6MaiP85hZsKETOv State(… otherCallLive=true …)
+    14:29:59.134 D/IncomingCallActivity: Accept pressed
+    14:29:59.168 D/IncomingRinger: stop callId=1789471778765wb97AG91G7Z5Mt1G
+    14:29:59.168 D/CallConnection: onAnswer: callId=1789471778765wb97AG91G7Z5Mt1G, roomId=!…
+    14:30:04.145 I/Capacitor/Console: [call-service] Pre-accepted incoming call, skipping ringer: 1789471778765wb97AG91G7Z5Mt1G
+    14:30:05.317 D/Capacitor/Console: sendEvent of type m.call.answer in !…
+    ```
+    Через 5 с после отбоя B экран показывал A (`countdown="13s"`). Строка
+    `IncomingRinger: stop` для A появилась только от «Принять». JS поднялся холодным стартом и
+    ответил через 6 с после тапа. У веба A за звонок входящие байты выросли 3877 → 14 314,
+    накопленная энергия входящего звука 1,8e-5 → 3,8e-5: звук с телефона шёл, а байт мало,
+    потому что микрофон телефона тихий (DTX). Исходящих байт 128 272. Звонок закрыл отбой
+    веба (`Call ended remotely` → `onDisconnect`).
+  - **Шаг 2: рингер и счётчик прошли** на той же сборке (запись «Приложение ставит правило
+    hangup-пушей…», шаги 5–6, `hcount-app1`). Пропущенный звонок закрыт пушем, счётчик растёт
+    на 1 за звонок, отбой его не увеличивает. Превью комнаты ещё не снималось.
+- Измерено 2026-09-15 (UTC) без владельца на той же Samsung, сборка `0249bf72`
+  (`scratchpad/run-hangup-counter.sh hcount-gap1`, логи `scratchpad/runs/hcount-gap1-*`).
+  - **Шаг 2 прошёл.** Процесс жив, приложение на списке чатов, пропущенный звонок с веба TEST1.
+    Пуш закрыл звонок за 5 мс:
+    ```
+    15:18:07.807 D/FortaPush: Call ended remotely (type=m.call.hangup), tearing down incoming UI
+    15:18:07.810 D/CallConnection: onDisconnect: 1789474672921blKIBIWbxua1ckhQ
+    15:18:07.812 I/CallTeardown: endCall reason=DISCONNECT callId=1789474672921blKIBIWbxua1ckhQ …
+    ```
+    Строка TEST1 в списке чатов после звонка — «📞 Голосовой звонок», счётчик 8 → 9. В сторе
+    последнее сообщение — запись звонка (`isCall: true`), заглушки нового сообщения на экране нет.
+    Через 3 минуты после звонка активных уведомлений Forta нет (`dumpsys notification`); что
+    уведомление снялось в момент отбоя, отдельно не снималось.
+- Статус: ☑ проверено 2026-09-15 (шаги 2–3)
 
 ### Превью задней камеры на нативном экране звонка не зеркалится
 - Коммит: `2612eaee`
