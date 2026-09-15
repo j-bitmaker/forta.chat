@@ -1359,67 +1359,6 @@
   - Шаги 2–4 не проверялись.
 - Статус: ☐ шаг 1 прошёл 2026-09-14 на холодном и тёплом старте; шаги 2–4 не проверены
 
-### Превью задней камеры на нативном экране звонка не зеркалится
-- Коммит: `2612eaee`
-- Почему нужен человек: контракт-тест доказывает только одно. Зеркало превью
-  ставит менеджер по камере, которая сейчас открыта: при старте камеры, при
-  привязке окошка и после переключения. Как превью выглядит, видно только на
-  аппарате с настоящими объективами.
-- На чём: реальный Android; годится Samsung SM-A528B ↔ веб TEST1
-  (`scratchpad/run-rear-camera.sh`).
-- Найдено 2026-09-12 на шаге 2 записи «Тыловая камера не зеркалится»
-  (`rearcam3`): на нативном экране звонка превью задней камеры было зеркальным.
-  - `CallActivity.initVideoRenderers` один раз ставил
-    `localVideoView.setMirror(true)`, а `switchCamera()` зеркало не трогал.
-  - Собеседник получал незеркальную картинку с обеих камер.
-- Шаги:
-  1. Видеозвонок с телефона вебу; в окошке своего видео фронтальная камера.
-     **Ожидается:** превью зеркальное — поднятая правая рука в окошке справа,
-     как в зеркале.
-  2. Переключить на заднюю камеру и навести на текст.
-     - **Ожидается:** в окошке текст читается нормально, в логе
-       `Camera switched, front: false`.
-     - **Раньше:** текст задом наперёд.
-  3. Переключить обратно на фронтальную — превью снова зеркальное.
-  4. У веба картинка с обеих камер незеркальная, текст читается: зеркалится
-     только превью.
-  5. Завершить звонок на задней камере и позвонить снова. Звонок начинается с
-     фронтальной, превью зеркальное.
-- Измерено 2026-09-14 (UTC) на Samsung SM-A528B (Android 14), сборка `044f25f5` с
-  FCM, те же прогоны `rearcold2` и `rearwarm2` (`scratchpad/run-rear-camera.sh`).
-  Камера переключалась через `NativeWebRTC.switchCamera` — тот же `switchCamera()`
-  менеджера, что у кнопки. Владелец держал перед камерой обложку книги с крупным
-  текстом; кадры остаются локально.
-  - Шаг 1 прошёл: на фронтальной камере текст в окошке зеркальный — владелец.
-  - **Шаг 2 прошёл** в обоих прогонах: `Camera switched, front: false`, текст в
-    окошке читается нормально — владелец и снимки экрана `back-phone.png`.
-  - Шаг 3 прошёл: после `Camera switched, front: true` превью снова зеркальное
-    (снимок `rearwarm2-shots/front2-phone.png`).
-  - Шаг 4 прошёл: у веба кадры с фронтальной и задней камеры незеркальные, текст
-    читается (`rearcold2-shots/front-frame.png`, `back-frame.png`).
-  - Шаг 5 не проверялся: оба звонка завершились на фронтальной камере.
-- Измерено 2026-09-15 (UTC), тот же аппарат и сборка, без владельца
-  (`scratchpad/run-rear-redial.sh`, логи `scratchpad/runs/rearredial1-*`).
-  - **Шаг 5, камера — прошло.** Видеозвонок вебу, переключение на заднюю, отбой на
-    задней кнопкой в JS. Через 26 с второй видеозвонок снова начался с
-    фронтальной:
-    ```
-    01:40:29.429 D/NativeWebRTCManager: Local video started with camera: 1 (peerId=, pcs=0)
-    01:40:39.198 D/NativeWebRTCManager: Camera switched, front: false
-    01:40:45.285 D/CallConnection: onDisconnect: 1789425628227lDiYdBwm0HNdae93
-    01:41:37.515 D/NativeWebRTCManager: Local video started with camera: 1 (peerId=, pcs=0)
-    ```
-    Камера 1 на этом аппарате — `CAMERA_FACING_FRONT` (`CameraManagerGlobal`).
-  - Шаг 5, зеркало превью — не проверено: менеджер не пишет зеркало в лог, снимок
-    экрана не делали. Нужен взгляд на окошко во втором звонке.
-  - Попутно: второй звонок открыл экран через 23 с после `CallActivity created`, в
-    первом — через 0,5 с. Держала система, не приложение: в эти секунды
-    `system_server` писал `Slow dispatch took 30084ms android.bg` и `Long monitor
-    contention … ProxyManager.updateTimeoutsIfNeeded`. После паузы звонок ушёл
-    через 0,8 с.
-- Статус: ☐ шаги 1–4 прошли 2026-09-14; шаг 5 — после перезвона камера снова
-  фронтальная (2026-09-15), зеркало превью не проверено
-
 ### Своё видео в первом видеозвонке после холодного старта
 - Коммит: `19a2a4cb`
 - Почему нужен человек: контракт-тест доказывает только, что GL-контекст
@@ -1517,7 +1456,250 @@
      `Pre-accepted incoming call` или `matrixCall ready, answering
      (matchById=true` с callId этого же звонка, звук в обе стороны. Метку с event_id (пуш без `call_id`) этот сервер не шлёт — тот
      путь закрыт только тестами.
-- Статус: ☐ не проверено
+- Измерено 2026-09-15 (UTC) с владельцем на Samsung SM-A528B (Android 14), сборка
+  `044f25f5` с FCM, AirPods Pro 2 (`scratchpad/run-headset-orphan.sh`, логи
+  `scratchpad/runs/ho-reopen1-*` и `ho-talkcold1-*`, время по часам телефона).
+  - **Шаги 2–3 прошли** (`ho-reopen1`). Скрипт смахнул приложение во время звонка A,
+    владелец принял его нажатием на ножку, скрипт сразу открыл приложение, веб
+    положил трубку и тут же позвонил снова (B):
+    ```
+    04:04:40.659 I/BluetoothInCallService: BT - answering call(false)
+    04:04:40.680 D/CallConnection: onAnswer: callId=17894342616195kOdJDHdVurwedgx, roomId=!…
+    04:04:41.924 I/CallTeardown: endCall reason=COLD_START callId=null State(audioMode=3, otherCallLive=true, …)
+    04:04:44.553 I/Capacitor/Console: [NativeCallBridge] Pending answer queued, waiting for matrixCall: 17894342616195kOdJDHdVurwedgx room: !…
+    04:05:03.084 W/CallConnectionService: Incoming call while a call is established — reporting busy
+    04:05:14.937 W/Capacitor/Console: [NativeCallBridge] Timed out waiting for matrixCall: 17894342616195kOdJDHdVurwedgx
+    ```
+    За 35 с после звонка B без нажатий: `Pre-accepted incoming call` — 0, ответов JS и
+    `onAnswer` — 0, `reporting busy` — 2 (регистрации пуша и JS). Отложенный ответ с
+    callId A ждал только A и истёк. Владелец: приложение открылось само, второй звонок
+    звонил, на него не отвечали.
+  - Попутно: для B, уже получившего «занято», пуш через 160 мс всё равно поднял рингер
+    (`IncomingRinger: arm callId=1789434302209xTlBSEljOZ394BXp`), и звонок звонил 30 с до
+    `no answer in 30s … auto-rejecting`. Вынесено отдельной задачей.
+  - **Шаг 4 прошёл** (`ho-talkcold1`). Приложение смахнуто до звонка (`Killing 26802 …
+    remove task`), звонок поднял процесс пушем, скрипт нажал «Принять» до загрузки JS:
+    ```
+    04:10:19.949 I/ActivityManager: Start proc 31219:com.forta.chat/u0a294 for broadcast {com.forta.chat/com.google.firebase.iid.FirebaseInstanceIdReceiver}
+    04:10:31.017 D/IncomingCallActivity: Accept pressed
+    04:10:31.037 D/CallConnection: onAnswer: callId=1789434618863TSC8C4IF4PqxoKFK, roomId=!…
+    04:10:35.749 D/Capacitor/Console: FetchHttpApi: <-- POST …/_matrix/client/v3/login [538ms 200]
+    04:10:37.509 I/Capacitor/Console: [call-service] Pre-accepted incoming call, skipping ringer: 1789434618863TSC8C4IF4PqxoKFK
+    04:10:39.547 V/Capacitor: … methodName: reportCallConnected, methodData: {"callId":"1789434618863TSC8C4IF4PqxoKFK"}
+    ```
+    Разговор шёл 2,5 минуты, у веба `connected/stable`. От телефона к вебу шла почти
+    одна тишина: 14,8 КБ за 150 с, энергия 0,0027 к 60-й секунде и дальше не росла.
+    Слышен ли звук веба в AirPods, владелец пока не ответил.
+- Статус: ☐ шаги 2–3 прошли 2026-09-15; шаг 4 — ответ до загрузки подхвачен с тем же
+  callId, звук в обе стороны не подтверждён
+
+### «Динамик» переключает звук через Telecom
+- Коммит: `4adc0eec`
+- Почему нужен человек: тесты доказывают три вещи. Устройства переводятся в
+  маршруты Telecom (`TelecomAudioRouteTest`). Правило пина действует и для смены
+  маршрута самим Telecom (`AudioRoutePolicyTest`). Проводка на месте
+  (`TelecomAudioRouteContractTest`): выбор уходит в соединение Telecom —
+  `requestCallEndpointChange` на Android 14+, `setAudioRoute` раньше, — а маршрут,
+  о котором сообщил Telecom, показывается в интерфейсе. Слышно ли громкий динамик и
+  как ведёт себя настоящая гарнитура, видно только на аппарате.
+- На чём: реальный Android 14+; отдельно — Android 13 или ниже (путь
+  `setAudioRoute`). Годится Samsung SM-A528B с AirPods Pro 2 ↔ веб TEST1
+  (`scratchpad/run-stage3-route.sh`).
+- Найдено 2026-09-13 при проверке «Громкая связь: отказ и пин ручного выбора».
+  Аудиорежимом звонка владеет Telecom, и `setCommunicationDevice` из `AudioRouter`
+  игнорировался: за 16 выборов «Динамик» звуковая политика ни разу не выбрала
+  громкий динамик.
+- Шаги:
+  1. `adb logcat -v time > /tmp/run.log &`. Голосовой звонок с веба, ответить на
+     телефоне.
+  2. «Аудио» → «Динамик».
+     - **Ожидается:** звук из решётки на нижнем торце. В логе
+       `requestCallEndpointChange(SPEAKER): done`, у Telecom
+       `Entering state ActiveSpeakerRoute`, у звуковой политики
+       `selected devices {AUDIO_DEVICE_OUT_SPEAKER`. Значок «Аудио» — динамик.
+     - **Раньше:** звук оставался в верхней части телефона, Telecom не выходил из
+       `ActiveEarpieceRoute`.
+  3. «Аудио» → «Динамик телефона» — звук снова в верхней части телефона; ещё раз
+     «Динамик» — снова внизу.
+  4. При включённом динамике подключить AirPods.
+     - **Ожидается:** звук остаётся на динамике или возвращается на него через
+       мгновение, в логе `restoring pinned SPEAKER`.
+     - Выбрать AirPods — звук в AirPods; убрать AirPods в кейс — звук в верхней
+       части телефона.
+  5. Видеозвонок: звук сразу из решётки на нижнем торце, в логе
+     `requestCallEndpointChange(SPEAKER): done` после `start(video)`.
+  6. Переключатель динамика в окне звонка приложения — то же, что шаг 2.
+- Измерено 2026-09-15 (UTC) с владельцем на Samsung SM-A528B (Android 14), сборка
+  `044f25f5` с FCM, AirPods Pro 2. Голосовой звонок с веба TEST1 (`route4`,
+  `scratchpad/run-stage3-route.sh`), видеозвонки с телефона (`rearmirror1`) и с веба
+  (`route7v`, тот же скрипт с `VIDEO=1`), разговор с ответом ножкой (`ho-talkopen2`);
+  логи в `scratchpad/runs/`, время по часам телефона.
+  - **Шаги 2–3 прошли** (`route4`). Каждый выбор на шторке доходит до Telecom и
+    звуковой политики; владелец слышал звук снизу после «Динамик» и сверху после
+    «Динамик телефона»:
+    ```
+    03:01:08.728 D/AudioRouter: setDevice: SPEAKER (pinned)
+    03:01:09.450 I/Telecom: … Entering state ActiveSpeakerRoute: CSW.rCEC->CARSM.pM_USER_SWITCH_SPEAKER(cfc)@Gx0
+    03:01:09.458 V/APM_AudioPolicyManager: getNewOutputDevices selected devices {AUDIO_DEVICE_OUT_SPEAKER, @:}
+    03:01:09.481 D/CallConnection: requestCallEndpointChange(SPEAKER): done
+    03:01:18.520 D/AudioRouter: setDevice: EARPIECE (pinned)
+    03:01:18.522 I/Telecom: … Entering state ActiveEarpieceRoute: CSW.rCEC->CARSM.pM_USER_SWITCH_EARPIECE(cfc)@GyA
+    03:01:18.570 V/APM_AudioPolicyManager: getNewOutputDevices selected devices {AUDIO_DEVICE_OUT_EARPIECE, @:}
+    ```
+  - **Шаг 4, подключение AirPods — прошло.** Telecom сам увёл звонок в гарнитуру,
+    приложение вернуло закреплённый динамик за 0,9 с (на слух владелец этот момент
+    отдельно не подтверждал):
+    ```
+    03:02:30.167 I/Telecom: … Entering state ActiveBluetoothRoute: BSR.oR->CARSM.pM_BT_ACTIVE_DEVICE_PRESENT->…
+    03:02:31.014 D/AudioRouter: Telecom moved the call to BLUETOOTH — restoring pinned SPEAKER
+    03:02:31.889 I/Telecom: … Entering state ActiveSpeakerRoute: …->CSW.rCEC->CARSM.pM_USER_SWITCH_SPEAKER(cast)@E-E-…
+    03:02:31.905 D/CallConnection: requestCallEndpointChange(SPEAKER): done
+    ```
+  - **Шаг 4, «Выбрать AirPods» — провалено.** С динамика выбор AirPods ничего не
+    меняет, 5 раз из 5 (03:02:44, 03:03:22, 03:03:49, 03:04:13, 03:04:26). Telecom
+    отвечает успехом через 15–30 мс, но в `ActiveBluetoothRoute` не переходит,
+    гарнитуру не подключает (`connectAudio()` нет), звуковая политика остаётся на
+    динамике:
+    ```
+    03:03:49.576 D/AudioRouter: setDevice: BLUETOOTH (pinned)
+    03:03:49.589 V/APM_AudioPolicyManager: getNewOutputDevices selected devices {AUDIO_DEVICE_OUT_SPEAKER, @:}
+    03:03:49.605 D/CallConnection: requestCallEndpointChange(BLUETOOTH): done
+    03:04:10.060 D/AudioRouter: setDevice: SPEAKER (pinned)
+    ```
+    С «Динамика телефона» тот же выбор сработал 4 раза из 5:
+    ```
+    03:03:44.295 D/AudioRouter: setDevice: BLUETOOTH (pinned)
+    03:03:44.311 I/BluetoothHeadset: connectAudio()
+    03:03:44.314 I/Telecom: … Entering state ActiveBluetoothRoute: CSW.rCEC->CARSM.pM_USER_SWITCH_BLUETOOTH->BRM.pM_100->CARSM.pM_BT_AUDIO_CONNECTED…
+    03:03:44.346 D/CallConnection: onCallEndpointChanged: 1789430434328qlnkDJlanqHMlEBQ -> BLUETOOTH
+    ```
+    Владелец: с «Динамика» на AirPods звук иногда не переключался, а через «Динамик
+    телефона» иногда переключался. До нашего `onError` отказ не доходит, поэтому в логе
+    приложения провала не видно.
+  - Шаг 4, «убрать AirPods в кейс» — прошло по логу в голосовом звонке
+    (`ho-talkopen2`): после выбора AirPods и кейса звонок перешёл в трубку и у Telecom,
+    и у звуковой политики. На вопрос, откуда звук после кейса, владелец ответил только,
+    что звук был в наушниках, пока они были подключены:
+    ```
+    03:51:16.700 D/AudioRouter: setDevice: BLUETOOTH (pinned)
+    03:51:27.951 I/Telecom: … Entering state ActiveEarpieceRoute: BSR.oR->BRM.pM_201->CARSM.pM_BT_AUDIO_DISCONNECTED@HTc
+    03:51:27.976 V/APM_AudioPolicyManager: getNewOutputDevices selected devices {AUDIO_DEVICE_OUT_EARPIECE, @:}
+    03:51:28.951 D/CallConnection: onCallEndpointChanged: 1789433316759339IPRcYQc8yeL5A -> EARPIECE
+    ```
+  - **Шаг 5 прошёл.** В трёх видеозвонках (два с телефона в `rearmirror1`, один с веба в
+    `route7v`) динамик запрошен сразу после `start(video)`, Telecom и звуковая политика
+    согласны. После `rearmirror1` владелец ответил «скорее сверху»; в `route7v` владелец
+    закрыл пальцем решётку на нижнем торце, и звук заметно стих — он шёл снизу:
+    ```
+    03:41:46.630 D/AudioLifecycle: start(video): set mode=MODE_IN_COMMUNICATION, initial active=SPEAKER
+    03:41:47.175 I/Telecom: … Entering state ActiveSpeakerRoute: CSW.rCEC->CARSM.pM_USER_SWITCH_SPEAKER(cfc)@HLI
+    03:41:47.416 D/CallConnection: requestCallEndpointChange(SPEAKER): done
+    03:41:47.505 V/APM_AudioPolicyManager: getOutput() stream 0 selected devices {AUDIO_DEVICE_OUT_SPEAKER, @:}, output 13
+    ```
+    Попытки `route5v` и `route6v` не в счёт: веб не нашёл кнопку видеозвонка (в личном
+    чате она в «Инфо» → «Ещё»), потом звонок пропустили и рингер закрылся по своему
+    30-секундному сроку.
+  - **Видеозвонок после AirPods — провалено** (остаточный риск этой записи). В `route7v`
+    AirPods подключились посреди видеозвонка, звук ушёл в них. Когда AirPods убрали в
+    кейс, Telecom сам перевёл звонок в трубку, и приложение до конца звонка динамик
+    обратно не запросило; владелец: звук «скорее сверху»:
+    ```
+    03:42:32.731 I/Telecom: … Entering state ActiveBluetoothRoute: BSR.oR->CARSM.pM_BT_ACTIVE_DEVICE_PRESENT->…
+    03:42:33.665 D/CallConnection: onCallEndpointChanged: 1789432898580IiStHgeULYUe0Fy4 -> BLUETOOTH
+    03:42:59.011 I/Telecom: … Entering state ActiveEarpieceRoute: BSR.oR->BRM.pM_201->CARSM.pM_BT_AUDIO_DISCONNECTED@HNA
+    03:42:59.036 V/APM_AudioPolicyManager: getNewOutputDevices selected devices {AUDIO_DEVICE_OUT_EARPIECE, @:}
+    03:42:59.707 D/CallConnection: onCallEndpointChanged: 1789432898580IiStHgeULYUe0Fy4 -> EARPIECE
+    ```
+  - **Шаг 6 прошёл** (`route4`): кнопка громкой связи в окне звонка приложения (нажата
+    через CDP, `scratchpad/run-route-toggle.sh`) увела звонок в трубку и вернула на
+    динамик; владелец слышал, как звук ушёл наверх и вернулся вниз:
+    ```
+    03:01:36.670 D/AudioRouter: setDevice: EARPIECE (pinned)
+    03:01:36.675 I/Telecom: … Entering state ActiveEarpieceRoute: CSW.rCEC->CARSM.pM_USER_SWITCH_EARPIECE(cfc)@GzA
+    03:01:37.510 D/CallConnection: requestCallEndpointChange(EARPIECE): done
+    03:01:44.126 D/AudioRouter: setDevice: SPEAKER (pinned)
+    03:01:44.922 I/Telecom: … Entering state ActiveSpeakerRoute: CSW.rCEC->CARSM.pM_USER_SWITCH_SPEAKER(cfc)@Gzk
+    03:01:44.928 D/CallConnection: requestCallEndpointChange(SPEAKER): done
+    ```
+  - Android 13 и ниже (путь `setAudioRoute`) не проверялся — нет аппарата.
+- Статус: ☐ шаги 2, 3, 5, 6 прошли 2026-09-15; шаг 4 провален: выбор AirPods с динамика
+  не срабатывает, а видеозвонок после ухода AirPods остаётся в трубке
+
+---
+
+## Проверено
+
+### Превью задней камеры на нативном экране звонка не зеркалится
+- Коммит: `2612eaee`
+- Почему нужен человек: контракт-тест доказывает только одно. Зеркало превью
+  ставит менеджер по камере, которая сейчас открыта: при старте камеры, при
+  привязке окошка и после переключения. Как превью выглядит, видно только на
+  аппарате с настоящими объективами.
+- На чём: реальный Android; годится Samsung SM-A528B ↔ веб TEST1
+  (`scratchpad/run-rear-camera.sh`).
+- Найдено 2026-09-12 на шаге 2 записи «Тыловая камера не зеркалится»
+  (`rearcam3`): на нативном экране звонка превью задней камеры было зеркальным.
+  - `CallActivity.initVideoRenderers` один раз ставил
+    `localVideoView.setMirror(true)`, а `switchCamera()` зеркало не трогал.
+  - Собеседник получал незеркальную картинку с обеих камер.
+- Шаги:
+  1. Видеозвонок с телефона вебу; в окошке своего видео фронтальная камера.
+     **Ожидается:** превью зеркальное — поднятая правая рука в окошке справа,
+     как в зеркале.
+  2. Переключить на заднюю камеру и навести на текст.
+     - **Ожидается:** в окошке текст читается нормально, в логе
+       `Camera switched, front: false`.
+     - **Раньше:** текст задом наперёд.
+  3. Переключить обратно на фронтальную — превью снова зеркальное.
+  4. У веба картинка с обеих камер незеркальная, текст читается: зеркалится
+     только превью.
+  5. Завершить звонок на задней камере и позвонить снова. Звонок начинается с
+     фронтальной, превью зеркальное.
+- Измерено 2026-09-14 (UTC) на Samsung SM-A528B (Android 14), сборка `044f25f5` с
+  FCM, те же прогоны `rearcold2` и `rearwarm2` (`scratchpad/run-rear-camera.sh`).
+  Камера переключалась через `NativeWebRTC.switchCamera` — тот же `switchCamera()`
+  менеджера, что у кнопки. Владелец держал перед камерой обложку книги с крупным
+  текстом; кадры остаются локально.
+  - Шаг 1 прошёл: на фронтальной камере текст в окошке зеркальный — владелец.
+  - **Шаг 2 прошёл** в обоих прогонах: `Camera switched, front: false`, текст в
+    окошке читается нормально — владелец и снимки экрана `back-phone.png`.
+  - Шаг 3 прошёл: после `Camera switched, front: true` превью снова зеркальное
+    (снимок `rearwarm2-shots/front2-phone.png`).
+  - Шаг 4 прошёл: у веба кадры с фронтальной и задней камеры незеркальные, текст
+    читается (`rearcold2-shots/front-frame.png`, `back-frame.png`).
+  - Шаг 5 не проверялся: оба звонка завершились на фронтальной камере.
+- Измерено 2026-09-15 (UTC), тот же аппарат и сборка, без владельца
+  (`scratchpad/run-rear-redial.sh`, логи `scratchpad/runs/rearredial1-*`).
+  - **Шаг 5, камера — прошло.** Видеозвонок вебу, переключение на заднюю, отбой на
+    задней кнопкой в JS. Через 26 с второй видеозвонок снова начался с
+    фронтальной:
+    ```
+    01:40:29.429 D/NativeWebRTCManager: Local video started with camera: 1 (peerId=, pcs=0)
+    01:40:39.198 D/NativeWebRTCManager: Camera switched, front: false
+    01:40:45.285 D/CallConnection: onDisconnect: 1789425628227lDiYdBwm0HNdae93
+    01:41:37.515 D/NativeWebRTCManager: Local video started with camera: 1 (peerId=, pcs=0)
+    ```
+    Камера 1 на этом аппарате — `CAMERA_FACING_FRONT` (`CameraManagerGlobal`).
+  - Шаг 5, зеркало превью — не проверено: менеджер не пишет зеркало в лог, снимок
+    экрана не делали. Нужен взгляд на окошко во втором звонке.
+  - Попутно: второй звонок открыл экран через 23 с после `CallActivity created`, в
+    первом — через 0,5 с. Держала система, не приложение: в эти секунды
+    `system_server` писал `Slow dispatch took 30084ms android.bg` и `Long monitor
+    contention … ProxyManager.updateTimeoutsIfNeeded`. После паузы звонок ушёл
+    через 0,8 с.
+- Измерено 2026-09-15 (UTC) с владельцем, тот же аппарат и сборка, AirPods в кейсе
+  (`scratchpad/run-rear-redial.sh`, логи `scratchpad/runs/rearmirror1-*`).
+  - **Шаг 5 прошёл целиком.** Первый видеозвонок скрипт переключил на заднюю камеру и
+    завершил на ней; второй через 24,5 с снова начался с фронтальной:
+    ```
+    03:21:08.549 D/NativeWebRTCManager: Local video started with camera: 1 (peerId=, pcs=0)
+    03:21:18.298 D/NativeWebRTCManager: Camera switched, front: false
+    03:21:23.349 D/CallConnection: onDisconnect: 1789431667571ruM74sa7i1ZQDsVp
+    03:21:47.874 D/NativeWebRTCManager: Local video started with camera: 1 (peerId=, pcs=0)
+    ```
+    Во втором звонке владелец смотрел на окошко своего видео и выбрал ответ «лицо,
+    поднятая правая рука справа, как в зеркале» — превью фронтальной камеры зеркальное.
+- Статус: ☑ шаги 1–4 проверены 2026-09-14, шаг 5 — 2026-09-15
 
 ### Звонок, принятый без JS, не висит ACTIVE бесконечно
 - Коммит: `b10bc69f`
@@ -1560,47 +1742,55 @@
      `never picked up by JS`.
   6. Регресс при открытом приложении: принять входящий нажатием на ножку и
      разговаривать больше 2 минут — звонок не рвётся.
-- Статус: ☐ не проверено
-
-### «Динамик» переключает звук через Telecom
-- Коммит: `4adc0eec`
-- Почему нужен человек: тесты доказывают три вещи. Устройства переводятся в
-  маршруты Telecom (`TelecomAudioRouteTest`). Правило пина действует и для смены
-  маршрута самим Telecom (`AudioRoutePolicyTest`). Проводка на месте
-  (`TelecomAudioRouteContractTest`): выбор уходит в соединение Telecom —
-  `requestCallEndpointChange` на Android 14+, `setAudioRoute` раньше, — а маршрут,
-  о котором сообщил Telecom, показывается в интерфейсе. Слышно ли громкий динамик и
-  как ведёт себя настоящая гарнитура, видно только на аппарате.
-- На чём: реальный Android 14+; отдельно — Android 13 или ниже (путь
-  `setAudioRoute`). Годится Samsung SM-A528B с AirPods Pro 2 ↔ веб TEST1
-  (`scratchpad/run-stage3-route.sh`).
-- Найдено 2026-09-13 при проверке «Громкая связь: отказ и пин ручного выбора».
-  Аудиорежимом звонка владеет Telecom, и `setCommunicationDevice` из `AudioRouter`
-  игнорировался: за 16 выборов «Динамик» звуковая политика ни разу не выбрала
-  громкий динамик.
-- Шаги:
-  1. `adb logcat -v time > /tmp/run.log &`. Голосовой звонок с веба, ответить на
-     телефоне.
-  2. «Аудио» → «Динамик».
-     - **Ожидается:** звук из решётки на нижнем торце. В логе
-       `requestCallEndpointChange(SPEAKER): done`, у Telecom
-       `Entering state ActiveSpeakerRoute`, у звуковой политики
-       `selected devices {AUDIO_DEVICE_OUT_SPEAKER`. Значок «Аудио» — динамик.
-     - **Раньше:** звук оставался в верхней части телефона, Telecom не выходил из
-       `ActiveEarpieceRoute`.
-  3. «Аудио» → «Динамик телефона» — звук снова в верхней части телефона; ещё раз
-     «Динамик» — снова внизу.
-  4. При включённом динамике подключить AirPods.
-     - **Ожидается:** звук остаётся на динамике или возвращается на него через
-       мгновение, в логе `restoring pinned SPEAKER`.
-     - Выбрать AirPods — звук в AirPods; убрать AirPods в кейс — звук в верхней
-       части телефона.
-  5. Видеозвонок: звук сразу из решётки на нижнем торце, в логе
-     `requestCallEndpointChange(SPEAKER): done` после `start(video)`.
-  6. Переключатель динамика в окне звонка приложения — то же, что шаг 2.
-- Статус: ☐ не проверено
-
----
+- Измерено 2026-09-15 (UTC) с владельцем на Samsung SM-A528B (Android 14), сборка
+  `044f25f5` с FCM, AirPods Pro 2 (`scratchpad/run-headset-orphan.sh`, логи
+  `scratchpad/runs/ho-{release2,reopen1,talkcold1,talkopen2}-*`, время по часам
+  телефона).
+  - **Шаги 2–3 прошли** (`ho-release2`). Скрипт смахнул приложение во время звонка,
+    владелец принял звонок нажатием на ножку, приложение не открывали, веб положил
+    трубку через 10 с:
+    ```
+    03:57:47.972 I/BluetoothInCallService: BT - answering call(false)
+    03:57:47.988 D/CallConnection: onAnswer: callId=1789433849914nzJ1eGcjfMn5Z7y9, roomId=!…
+    03:59:17.992 W/CallConnection: Answered call was never picked up by JS — releasing 1789433849914nzJ1eGcjfMn5Z7y9
+    03:59:17.993 D/CallConnection: onDisconnect: 1789433849914nzJ1eGcjfMn5Z7y9
+    03:59:21.033 I/IdleProcessExit: Call over and nothing left to present — ending the process (disconnect 1789433849914nzJ1eGcjfMn5Z7y9)
+    03:59:42.911 D/IncomingRinger: arm callId=1789433981221smT8nO91pGA1FYfL
+    ```
+    Звонок отпущен через 90,0 с после `onAnswer`, затем в Telecom нет живых звонков,
+    режим `MODE_NORMAL`. Перезвон поднял новый процесс пушем и зазвонил, `reporting
+    busy` нет. Владелец: после нажатия в наушниках, похоже, тишина; второй звонок
+    звонил.
+  - Первая попытка (`ho-release1`) не в счёт: скрипт считал строки в кольцевом буфере
+    `adb logcat -d`, старая строка `arm` вытеснилась, и он сбросил звонящий звонок как
+    незазвонивший. Теперь скрипт считает по своему файлу лога.
+  - **Шаг 4 прошёл** (`ho-reopen1`, подробности — в записи «Отложенный ответ на один
+    звонок не принимает следующий из той же комнаты»). Приложение открыто сразу после
+    нажатия, JS ждал звонок до `Timed out waiting for matrixCall`. Соединение отпущено
+    тем же сроком — `04:06:10.681 W/CallConnection: Answered call was never picked up by
+    JS — releasing 17894342616195kOdJDHdVurwedgx`, через 90,0 с после `onAnswer`
+    в 04:04:40.680. Звонок B в 04:05:03 получил «занято». Строка освобождения — из
+    параллельного потока `scratchpad/runs/rearwarm1-phone.log`: лог `ho-reopen1`
+    закончился в 04:05:45.
+  - **Шаг 5 прошёл** (`ho-talkcold1`, строки — в той же записи): процесс поднят пушем,
+    «Принять» до загрузки JS, `reportCallConnected` через 8,5 с после `onAnswer`,
+    2,5 минуты разговора без `never picked up by JS`, отбой веба — `onDisconnect`
+    в 04:13:04.406.
+  - **Шаг 6 прошёл** (`ho-talkopen2`): приложение открыто, ответ ножкой, JS подхватил
+    звонок через 0,3 с, 2,5 минуты разговора без `never picked up by JS`; владелец
+    слышал звук до конца:
+    ```
+    03:48:56.385 I/BluetoothInCallService: BT - answering call(false)
+    03:48:56.409 D/CallConnection: onAnswer: callId=1789433316759339IPRcYQc8yeL5A, roomId=!…
+    03:48:56.725 I/Capacitor/Console: [NativeCallBridge] matrixCall ready, answering (matchById=true, matchByRoom=false): 1789433316759339IPRcYQc8yeL5A
+    03:48:59.417 V/Capacitor: … methodName: reportCallConnected, methodData: {"callId":"1789433316759339IPRcYQc8yeL5A"}
+    03:51:39.305 D/CallConnection: onDisconnect: 1789433316759339IPRcYQc8yeL5A
+    ```
+  - Попутно в `ho-talkopen2`: один звонок зарегистрирован в Telecom дважды — пушем и
+    через 0,1 с из JS (`reportIncomingCall` в 03:48:38.162). Вторую регистрацию (`TC@69`)
+    отклонил сервис звонков приложения (`Reason: (duplicate-incoming)`), звонок `TC@68`
+    звонил дальше.
+- Статус: ☑ шаги 2–6 проверены 2026-09-15
 
 ### Процесс со смахнутым звонком не съедает следующий push-звонок
 - Коммит: `33868ae2`
@@ -1734,10 +1924,29 @@
   - Попутно в `idle-redial1`: во время звонка B на телефоне нажали кнопки питания
     и громкости. Дважды `silence callId=… (deadline kept)`: звонок затих и
     закрылся по своему 30-секундному сроку.
-- Статус: ☐ шаги 1, 2, 3, 5, 6 прошли (1, 2, 5, 6 — 2026-09-14, 3 — 2026-09-15), шаг 4 — со
-  свёрнутым приложением; шаг 7 не проверен
-
-## Проверено
+- Измерено 2026-09-15 (UTC) с владельцем, тот же аппарат и сборка, AirPods Pro 2
+  (`scratchpad/run-headset-orphan.sh`, логи `scratchpad/runs/ho-release2-*` и
+  `ho-talkopen2-*`).
+  - **Шаг 7 прошёл** (`ho-release2`, подробности — в записи «Звонок, принятый без JS,
+    не висит ACTIVE бесконечно»). Через 3,0 с после освобождения звонка процесс
+    завершился сам, следующий звонок поднял новый процесс и зазвонил:
+    ```
+    03:59:17.992 W/CallConnection: Answered call was never picked up by JS — releasing 1789433849914nzJ1eGcjfMn5Z7y9
+    03:59:21.033 I/IdleProcessExit: Call over and nothing left to present — ending the process (disconnect 1789433849914nzJ1eGcjfMn5Z7y9)
+    03:59:21.141 I/ActivityManager: Process com.forta.chat (pid 19703) has died: cch+15 CEM (278,1870)
+    03:59:42.092 I/ActivityManager: Start proc 26802:com.forta.chat/u0a294 for broadcast {com.forta.chat/com.google.firebase.iid.FirebaseInstanceIdReceiver}
+    03:59:42.911 D/IncomingRinger: arm callId=1789433981221smT8nO91pGA1FYfL
+    ```
+  - **Шаг 4 прошёл** с открытым приложением (`ho-talkopen2`): звонок принят ножкой, веб
+    положил трубку — `03:51:43.731 D/IdleProcessExit: staying after call service
+    destroyed (attempt 0): Snapshot(uiTaskRunning=true, hasConnection=false, …)`,
+    процесс 19703 до и после звонка. В строке причина последнего триггера: сервис
+    звонка остановился примерно через 1,4 с после `onDisconnect` и перезапустил
+    3-секундную проверку. Строка из шага дословно есть в `ho-reopen1` (приложение
+    открыто, соединение отпущено страховкой): `04:06:13.697 D/IdleProcessExit: staying
+    after disconnect 17894342616195kOdJDHdVurwedgx (attempt 0):
+    Snapshot(uiTaskRunning=true, …)`.
+- Статус: ☑ шаги 1–7 проверены (1, 2, 5, 6 — 2026-09-14; 3, 4, 7 — 2026-09-15)
 
 ### Второй звонок из другой комнаты не забирает экран у звонящего
 - Коммит: `27541373`
