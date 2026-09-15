@@ -18,6 +18,11 @@ class TorManager(private val config: ConfigurationManager) {
     private var currentMode: TorMode = TorMode.NEVER
     private var currentBridgeType: BridgeType = BridgeType.NONE
 
+    // Taken anew by every start, under [lock]. A Tor process's output and exit count only while
+    // its start is the latest: a stopped Tor's last lines or late exit can reach us after the
+    // next start began.
+    private var startGeneration = 0
+
     private val torRunner = ProcessRunner(tag = "Tor")
     private val proxyRunner = ProcessRunner(tag = "ReverseProxy")
     private var torThread: Thread? = null
@@ -53,7 +58,7 @@ class TorManager(private val config: ConfigurationManager) {
         val bootStart = android.os.SystemClock.elapsedRealtime()
         fun elapsed() = android.os.SystemClock.elapsedRealtime() - bootStart
 
-        lock.withLock {
+        val generation = lock.withLock {
             if (state.get() != TorState.STOPPED) {
                 Log.w(TAG, "Tor already ${state.get()}, ignoring start")
                 return
@@ -61,6 +66,7 @@ class TorManager(private val config: ConfigurationManager) {
             persistSettings(mode, bridgeType)
             setState(TorState.STARTING)
             bootstrapPercent.set(0)
+            ++startGeneration
         }
 
         config.ensureGeoIPFiles()
@@ -110,45 +116,69 @@ class TorManager(private val config: ConfigurationManager) {
         }
 
         val bootstrapListener = object : ProcessRunner.OutputListener {
-            override fun onStdOutput(line: String) = handleBootstrapLine(line, ::elapsed)
-            override fun onErrOutput(line: String) = handleBootstrapLine(line, ::elapsed)
+            override fun onStdOutput(line: String) = handleBootstrapLine(line, generation, ::elapsed)
+            override fun onErrOutput(line: String) = handleBootstrapLine(line, generation, ::elapsed)
+        }
+
+        // Launch here, not on the waiting thread: the process must exist when startTor
+        // returns, or a stop queued right behind this start finds nothing to stop.
+        val proc = try {
+            torRunner.launch(
+                binaryPath = config.torPath,
+                args = listOf("-f", config.torConfPath, "--pidfile", config.torPidPath),
+                env = mapOf("LD_LIBRARY_PATH" to config.nativeLibPath),
+                listener = bootstrapListener,
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start Tor process", e)
+            setState(TorState.STOPPED)
+            return
         }
 
         torThread = Thread({
-            try {
-                val exitCode = torRunner.start(
-                    binaryPath = config.torPath,
-                    args = listOf("-f", config.torConfPath, "--pidfile", config.torPidPath),
-                    env = mapOf("LD_LIBRARY_PATH" to config.nativeLibPath),
-                    listener = bootstrapListener,
-                )
-                Log.d(TAG, "Tor process exited with code $exitCode")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start Tor process", e)
+            val exitCode = try {
+                proc.waitFor()
+            } catch (_: InterruptedException) {
+                -1
             }
-            if (state.get() != TorState.STOPPING) {
-                setState(TorState.STOPPED)
+            Log.d(TAG, "Tor process exited with code $exitCode")
+            // A stop sets STOPPING before it ends the process, and after a restart the state
+            // belongs to the next start.
+            lock.withLock {
+                val current = state.get()
+                if (generation == startGeneration && (current == TorState.STARTING || current == TorState.RUNNING)) {
+                    setState(TorState.STOPPED)
+                }
             }
         }, "TorThread").also { it.isDaemon = true; it.start() }
     }
 
-    private fun handleBootstrapLine(line: String, elapsed: () -> Long) {
+    private fun handleBootstrapLine(line: String, generation: Int, elapsed: () -> Long) {
         val pct = ProcessRunner.parseBootstrapPercent(line) ?: return
         Log.i(TAG, "[BOOT] T+${elapsed()}ms Bootstrap $pct%")
-        bootstrapPercent.set(pct)
-        onBootstrapProgress?.invoke(pct)
-        if (pct >= 100 && state.get() != TorState.RUNNING) {
+        // Under the stop's lock, and only for the start in progress: a line a stopped Tor
+        // printed last must not bring RUNNING back or start a proxy nobody stops.
+        lock.withLock {
+            if (generation != startGeneration || state.get() != TorState.STARTING) return
+            bootstrapPercent.set(pct)
+            onBootstrapProgress?.invoke(pct)
+            if (pct < 100) return
             Log.i(TAG, "[BOOT] T+${elapsed()}ms Tor ready, starting reverse proxy")
-            startReverseProxy()
+            if (!startReverseProxy()) {
+                Log.e(TAG, "[BOOT] Reverse proxy did not start, Tor stays STARTING")
+                return
+            }
             setState(TorState.RUNNING)
         }
     }
 
-    private fun startReverseProxy() {
+    /** Launches the reverse proxy; false when it could not be started. */
+    private fun startReverseProxy(): Boolean {
         File(config.reverseProxyPath).setExecutable(true)
 
-        proxyThread = Thread({
-            val exitCode = proxyRunner.start(
+        // Launch here, like Tor itself: a stop right after RUNNING must find the proxy to stop.
+        val proc = try {
+            proxyRunner.launch(
                 binaryPath = config.reverseProxyPath,
                 args = listOf(
                     "-proxyport", config.reverseProxyDefaultPort.toString(),
@@ -157,8 +187,20 @@ class TorManager(private val config: ConfigurationManager) {
                 ),
                 env = mapOf("LD_LIBRARY_PATH" to config.nativeLibPath)
             )
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start the reverse proxy", e)
+            return false
+        }
+
+        proxyThread = Thread({
+            val exitCode = try {
+                proc.waitFor()
+            } catch (_: InterruptedException) {
+                -1
+            }
             Log.d(TAG, "ReverseProxy exited with code $exitCode")
         }, "ReverseProxyThread").also { it.isDaemon = true; it.start() }
+        return true
     }
 
     fun stopTor() {

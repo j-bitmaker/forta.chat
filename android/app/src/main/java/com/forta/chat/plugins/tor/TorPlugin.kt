@@ -10,6 +10,7 @@ import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.URL
+import java.util.concurrent.Executors
 
 @CapacitorPlugin(name = "Tor")
 class TorPlugin : Plugin() {
@@ -17,6 +18,14 @@ class TorPlugin : Plugin() {
     private lateinit var config: ConfigurationManager
     private lateinit var torManager: TorManager
     private val routeDecider = TorRouteDecider()
+
+    // Every start and stop runs here, one at a time, in the order JS asked. With a thread
+    // per call an earlier restart could finish after a later stop, and Tor came back up
+    // while the app showed «Никогда». Each block catches and rejects: Capacitor catches what
+    // a plugin method throws, but an exception on this thread would end the app.
+    private val torCommands = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "TorCommands").apply { isDaemon = true }
+    }
 
     override fun load() {
         config = ConfigurationManager(context)
@@ -59,45 +68,65 @@ class TorPlugin : Plugin() {
         }
 
         if (mode == TorMode.NEVER) {
-            torManager.persistSettings(TorMode.NEVER, bridgeType)
-            torManager.stopTor()
-            call.resolve(JSObject().apply {
-                put("socksPort", 0)
-                put("proxyPort", 0)
-                put("mode", "never")
-            })
+            torCommands.execute {
+                try {
+                    torManager.persistSettings(TorMode.NEVER, bridgeType)
+                    torManager.stopTor()
+                    call.resolve(JSObject().apply {
+                        put("socksPort", 0)
+                        put("proxyPort", 0)
+                        put("mode", "never")
+                    })
+                } catch (e: Exception) {
+                    call.reject("Failed to stop Tor: ${e.message}", e)
+                }
+            }
             return
         }
 
-        Thread {
+        torCommands.execute {
             try {
                 torManager.startTor(mode, bridgeType, bridges)
-
-                val timeout = 120_000L
-                val start = System.currentTimeMillis()
-                while (!torManager.isReady && System.currentTimeMillis() - start < timeout) {
-                    Thread.sleep(500)
-                }
-
-                if (torManager.isReady) {
-                    call.resolve(JSObject().apply {
-                        put("socksPort", config.torDefaultSocksPort)
-                        put("proxyPort", config.reverseProxyDefaultPort)
-                        put("mode", modeStr)
-                    })
-                } else {
-                    call.reject("Tor bootstrap timeout after ${timeout / 1000}s")
-                }
             } catch (e: Exception) {
                 call.reject("Failed to start Tor: ${e.message}", e)
+                return@execute
             }
-        }.start()
+
+            // Wait for the bootstrap off the queue, so a stop or a new configuration can run meanwhile.
+            Thread {
+                try {
+                    val timeout = 120_000L
+                    val start = System.currentTimeMillis()
+                    while (!torManager.isReady && System.currentTimeMillis() - start < timeout) {
+                        Thread.sleep(500)
+                    }
+
+                    if (torManager.isReady) {
+                        call.resolve(JSObject().apply {
+                            put("socksPort", config.torDefaultSocksPort)
+                            put("proxyPort", config.reverseProxyDefaultPort)
+                            put("mode", modeStr)
+                        })
+                    } else {
+                        call.reject("Tor bootstrap timeout after ${timeout / 1000}s")
+                    }
+                } catch (e: Exception) {
+                    call.reject("Failed to start Tor: ${e.message}", e)
+                }
+            }.start()
+        }
     }
 
     @PluginMethod
     fun stopDaemon(call: PluginCall) {
-        torManager.stopTor()
-        call.resolve()
+        torCommands.execute {
+            try {
+                torManager.stopTor()
+                call.resolve()
+            } catch (e: Exception) {
+                call.reject("Failed to stop Tor: ${e.message}", e)
+            }
+        }
     }
 
     @PluginMethod
@@ -127,15 +156,19 @@ class TorPlugin : Plugin() {
             torManager.bridgeType
         }
 
-        Thread {
-            if (mode == TorMode.NEVER) {
-                torManager.persistSettings(TorMode.NEVER, bridgeType)
-                torManager.stopTor()
-            } else {
-                torManager.restartTor(mode, bridgeType, bridges)
+        torCommands.execute {
+            try {
+                if (mode == TorMode.NEVER) {
+                    torManager.persistSettings(TorMode.NEVER, bridgeType)
+                    torManager.stopTor()
+                } else {
+                    torManager.restartTor(mode, bridgeType, bridges)
+                }
+                call.resolve()
+            } catch (e: Exception) {
+                call.reject("Failed to configure Tor: ${e.message}", e)
             }
-            call.resolve()
-        }.start()
+        }
     }
 
     @PluginMethod
@@ -247,7 +280,7 @@ class TorPlugin : Plugin() {
 
     @PluginMethod
     fun clearTorCache(call: PluginCall) {
-        Thread {
+        torCommands.execute {
             try {
                 torManager.stopTor()
                 val dataDir = java.io.File(config.torDataDir)
@@ -259,6 +292,6 @@ class TorPlugin : Plugin() {
             } catch (e: Exception) {
                 call.reject("Failed to clear Tor cache: ${e.message}", e)
             }
-        }.start()
+        }
     }
 }
