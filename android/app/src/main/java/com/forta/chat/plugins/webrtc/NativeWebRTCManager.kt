@@ -135,7 +135,21 @@ class NativeWebRTCManager(private val context: Context) {
     // (attachLocalRenderer) and read by the plugin thread when it creates the
     // video track; volatile so each side sees the other's write.
     @Volatile private var localRenderer: SurfaceViewRenderer? = null
-    private var remoteRenderer: SurfaceViewRenderer? = null
+
+    // The remote video tracks and the call screen's renderer. Tracks come in on
+    // the signaling thread and the renderer from CallActivity on the main
+    // thread; RemoteVideoSinks serialises both. A sink call that throws must
+    // not stop the rest, or onDestroy would skip releasing the view.
+    private val remoteVideo = RemoteVideoSinks<VideoTrack, SurfaceViewRenderer>(
+        addSink = { track, renderer ->
+            runCatching { track.addSink(renderer) }
+                .onFailure { Log.w(TAG, "Could not put the renderer on a remote track", it) }
+        },
+        removeSink = { track, renderer ->
+            runCatching { track.removeSink(renderer) }
+                .onFailure { Log.w(TAG, "Could not take the renderer off a remote track", it) }
+        },
+    )
 
     // Which way the open camera faces, null while none is open. Drives the
     // self-view mirror; written by the capture paths and by the camera
@@ -238,6 +252,7 @@ class NativeWebRTCManager(private val context: Context) {
         peerConnections[peerId]?.let {
             try { it.close() } catch (_: Exception) {}
             peerConnections.remove(peerId)
+            remoteVideo.forgetPeer(peerId)
         }
 
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
@@ -271,7 +286,11 @@ class NativeWebRTCManager(private val context: Context) {
             override fun onRemoveStream(stream: MediaStream) {}
 
             override fun onAddTrack(receiver: RtpReceiver, streams: Array<out MediaStream>) {
-                Log.d(TAG, "[$peerId] onAddTrack: ${receiver.track()?.kind()}")
+                val track = receiver.track()
+                Log.d(TAG, "[$peerId] onAddTrack: ${track?.kind()}")
+                // Kept before the plugin hears of it, so the call screen's renderer
+                // is on the track by the time the view is shown.
+                if (track is VideoTrack) remoteVideo.keepTrack(peerId, track.id(), track)
                 listener.onAddTrack(peerId, receiver, streams)
             }
 
@@ -280,6 +299,8 @@ class NativeWebRTCManager(private val context: Context) {
             }
 
             override fun onRemoveTrack(receiver: RtpReceiver) {
+                // A fresh wrapper of the removed track, so it is forgotten by id.
+                (receiver.track() as? VideoTrack)?.let { remoteVideo.forgetTrack(peerId, it.id()) }
                 listener.onRemoveTrack(peerId, receiver)
             }
 
@@ -861,31 +882,18 @@ class NativeWebRTCManager(private val context: Context) {
     // Remote Media
     // -----------------------------------------------------------------------
 
+    /** Shows the remote video on [renderer], including tracks that arrived before it. */
     fun attachRemoteRenderer(renderer: SurfaceViewRenderer) {
-        remoteRenderer = renderer
-        // Re-attach any existing remote video tracks (if they arrived before renderer)
-        for ((_, pc) in peerConnections) {
-            for (transceiver in pc.transceivers) {
-                val track = transceiver.receiver?.track()
-                if (track is VideoTrack && track.enabled()) {
-                    track.addSink(renderer)
-                }
-            }
-        }
+        remoteVideo.attach(renderer)
     }
 
-    fun addRemoteTrackSink(track: VideoTrack) {
-        remoteRenderer?.let { track.addSink(it) }
+    /** Takes a closing call screen's renderer off the remote tracks before it is released. */
+    fun detachRemoteRenderer(renderer: SurfaceViewRenderer) {
+        remoteVideo.detach(renderer)
     }
 
     fun hasRemoteVideoTracks(): Boolean {
-        for ((_, pc) in peerConnections) {
-            for (transceiver in pc.transceivers) {
-                val track = transceiver.receiver?.track()
-                if (track is VideoTrack && track.enabled()) return true
-            }
-        }
-        return false
+        return remoteVideo.tracks().any { it.enabled() }
     }
 
     // -----------------------------------------------------------------------
@@ -931,6 +939,7 @@ class NativeWebRTCManager(private val context: Context) {
 
     fun closePeerConnection(peerId: String) {
         val pc = peerConnections.remove(peerId)
+        remoteVideo.forgetPeer(peerId)
         if (pc != null) {
             if (peerConnections.isEmpty()) stopAudioRecording(pc, peerId)
             try {
@@ -986,6 +995,7 @@ class NativeWebRTCManager(private val context: Context) {
             Log.d(TAG, "[$peerId] Closed")
         }
         peerConnections.clear()
+        remoteVideo.forgetAll()
         stopLocalMediaLocked()
         listener = null
         Log.d(TAG, "All PeerConnections closed")

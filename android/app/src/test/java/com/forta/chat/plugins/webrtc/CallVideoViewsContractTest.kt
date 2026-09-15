@@ -120,6 +120,81 @@ class CallVideoViewsContractTest {
         )
     }
 
+    // -- The remote renderer stays on the remote video tracks ---------------
+
+    private val plugin by lazy { source("com/forta/chat/plugins/webrtc/WebRTCPlugin.kt") }
+
+    @Test
+    fun remoteVideo_neverListsTransceiversOrReceivers() {
+        // Listing a connection's transceivers or receivers disposes the
+        // wrappers the previous listing returned, and a disposed VideoTrack
+        // drops every sink added through it. The call screen attached its
+        // renderer through one listing and hasRemoteVideoTracks disposed it
+        // with the next, so an incoming video call showed no remote frames at
+        // all (vin1, vin2, 2026-09-15).
+        val listing = Regex("""\.transceivers\b|\.receivers\b|getTransceivers\(|getReceivers\(""")
+        for ((name, src) in listOf("NativeWebRTCManager" to manager, "WebRTCPlugin" to plugin)) {
+            val hits = codeLines(src).filter { listing.containsMatchIn(it) }
+            assertTrue("$name must not list transceivers or receivers:\n${hits.joinToString("\n")}", hits.isEmpty())
+        }
+    }
+
+    @Test
+    fun remoteVideoTracks_areKeptInOnAddTrack_beforeThePluginShowsTheView() {
+        val body = functionBody(manager, "override\\s+fun\\s+onAddTrack\\s*\\(")
+        val keep = body.indexOf("remoteVideo.keepTrack(")
+        val forward = body.indexOf("listener.onAddTrack(")
+        assertTrue("onAddTrack must keep a remote video track:\n$body", keep >= 0)
+        assertTrue("the track must have the renderer before the plugin shows the view:\n$body", forward > keep)
+        assertFalse("the plugin must not attach remote sinks on its own", plugin.contains("addRemoteTrackSink("))
+    }
+
+    @Test
+    fun remoteRenderer_isAttachedAndCheckedThroughTheKeptTracks() {
+        val attach = functionBody(manager, "fun\\s+attachRemoteRenderer\\s*\\(")
+        assertTrue("attachRemoteRenderer must hand the renderer to the kept tracks:\n$attach", attach.contains("remoteVideo.attach(renderer)"))
+        val detach = functionBody(manager, "fun\\s+detachRemoteRenderer\\s*\\(")
+        assertTrue("detachRemoteRenderer must take the renderer off the kept tracks:\n$detach", detach.contains("remoteVideo.detach(renderer)"))
+        val has = functionBody(manager, "fun\\s+hasRemoteVideoTracks\\s*\\(")
+        assertTrue("hasRemoteVideoTracks must read the kept tracks:\n$has", has.contains("remoteVideo.tracks()"))
+    }
+
+    @Test
+    fun callScreen_detachesItsRemoteRenderer_beforeReleasingIt() {
+        // The manager kept the destroyed screen's renderer, so the next
+        // incoming call's track fed a released view (vin2: "Dropping frame -
+        // Not initialized or already released" for the whole call).
+        val body = functionBody(callActivity, "override\\s+fun\\s+onDestroy\\s*\\(")
+        val detach = body.indexOf("detachRemoteRenderer(remoteVideoView)")
+        val release = body.indexOf("remoteVideoView.release()")
+        assertTrue("onDestroy must detach the remote renderer:\n$body", detach >= 0)
+        assertTrue("the renderer must come off the tracks before it is released:\n$body", detach < release)
+    }
+
+    @Test
+    fun closedConnections_forgetTheirRemoteTracks() {
+        val close = functionBody(manager, "fun\\s+closePeerConnection\\s*\\(")
+        assertTrue("closePeerConnection must forget its tracks:\n$close", close.contains("remoteVideo.forgetPeer(peerId)"))
+        val closeAll = functionBody(manager, "private\\s+fun\\s+closeAllPeerConnectionsLocked\\s*\\(")
+        assertTrue("closing every connection must forget every track:\n$closeAll", closeAll.contains("remoteVideo.forgetAll()"))
+        val create = functionBody(manager, "fun\\s+createPeerConnection\\s*\\(")
+        val replaced = create.substring(0, create.indexOf("RTCConfiguration("))
+        assertTrue("a replaced connection must forget its tracks:\n$replaced", replaced.contains("remoteVideo.forgetPeer(peerId)"))
+    }
+
+    @Test
+    fun removedRemoteTracks_areForgotten() {
+        // The kept tracks are a cache, unlike the old listing, so a track the
+        // peer removes must leave it or the call screen keeps counting it.
+        val body = functionBody(manager, "override\\s+fun\\s+onRemoveTrack\\s*\\(")
+        assertTrue("onRemoveTrack must forget a removed remote video track:\n$body", body.contains("remoteVideo.forgetTrack(peerId,"))
+    }
+
+    private fun codeLines(src: String): List<String> = src.lines().filterNot {
+        val line = it.trimStart()
+        line.startsWith("//") || line.startsWith("*") || line.startsWith("/*")
+    }
+
     // -- helpers --------------------------------------------------------------
 
     private fun functionBody(src: String, signaturePattern: String): String {

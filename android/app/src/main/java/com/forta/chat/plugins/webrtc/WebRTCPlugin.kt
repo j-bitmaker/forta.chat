@@ -208,9 +208,8 @@ class WebRTCPlugin : Plugin() {
                     }
                     notifyListeners("onTrack", data)
 
-                    // Auto-attach remote video to renderer + notify CallActivity
+                    // The manager has already put the track on the call screen's renderer.
                     if (track is VideoTrack) {
-                        mgr.addRemoteTrackSink(track)
                         com.forta.chat.plugins.calls.CallActivity.onRemoteVideo?.invoke()
                     }
                 }

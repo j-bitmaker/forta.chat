@@ -350,6 +350,8 @@ class CallActivity : Activity(), SensorEventListener {
 
         try {
             localVideoView.release()
+            // Off the remote tracks first, or the next call's track feeds a released view.
+            WebRTCPlugin.manager?.detachRemoteRenderer(remoteVideoView)
             remoteVideoView.release()
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing renderers", e)
