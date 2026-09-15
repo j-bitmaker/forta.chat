@@ -1417,82 +1417,6 @@
     теперь ждёт `matrixReady`.
 - Статус: ☐ шаги 1–2 прошли 2026-09-14; шаги 3–4 не проверены
 
-### Отложенный ответ на один звонок не принимает следующий из той же комнаты
-- Коммит: `d25ea8a8`
-- Почему нужен человек: юнит-тесты доказывают правило. Отложенный ответ или
-  отказ с настоящим Matrix callId подходит только своему звонку, а по комнате
-  сопоставляется лишь метка с event_id или без id. Что следующий звонок после
-  ответа гарнитурой на смахнутый звонок звонит, а не соединяется сам, видно
-  только на аппарате: нужны смахивание, ответ по Bluetooth без JS и холодный
-  старт.
-- На чём: реальный Android с Bluetooth-гарнитурой; годится Samsung SM-A528B с
-  AirPods Pro 2 ↔ веб TEST1, сборка с FCM (`scratchpad/run-stage3-orphan.sh`).
-- Найдено 2026-09-13 при проверке «Освобождение осиротевшего слота не рвёт
-  звонок, который сняли параллельно» (`orphan3a`).
-  - Звонок A смахнули во время звонка, нажатие на ножку AirPods приняло его без
-    JS. На следующем старте `wire()` взял отложенный ответ с настоящим callId A.
-  - Через 6 с пришёл звонок B из той же комнаты. `consumePendingAnswerCallId`
-    сопоставил метку A с B по комнате: `matchesPendingCallMarker` сравнивал
-    комнату для любой метки моложе жизни invite.
-  - B соединился без участия пользователя, микрофон телефона 41 с уходил
-    собеседнику.
-- Шаги:
-  1. `adb logcat -v time > /tmp/run.log &`.
-  2. Позвонить с веба, не отвечать, смахнуть приложение во время звонка. Пока
-     звонок звенит в гарнитуре, принять его нажатием на ножку.
-  3. Открыть приложение и сразу позвонить с веба ещё раз из того же чата.
-     - **Ожидается:** второй звонок сам не соединяется. В логе нет
-       `Pre-accepted incoming call` с callId второго звонка, у веба нет
-       соединения без нажатия на телефоне.
-     - **Раньше:** `Pre-accepted incoming call, skipping ringer: <callId B>`
-       через ~2 с после `handleIncomingCall`, звонок соединялся, звук с
-       микрофона телефона шёл вебу.
-     - Первый звонок, принятый без JS, держит слот Telecom до 90 с (запись
-       «Звонок, принятый без JS, не висит ACTIVE бесконечно»), и второй звонок в
-       это время получает «занято».
-  4. Регресс холодного старта из пуша: свернуть приложение, убить процесс
-     (`am kill com.forta.chat`), позвонить с веба и принять на экране
-     входящего до загрузки приложения. **Ожидается:** в логе
-     `Pre-accepted incoming call` или `matrixCall ready, answering
-     (matchById=true` с callId этого же звонка, звук в обе стороны. Метку с event_id (пуш без `call_id`) этот сервер не шлёт — тот
-     путь закрыт только тестами.
-- Измерено 2026-09-15 (UTC) с владельцем на Samsung SM-A528B (Android 14), сборка
-  `044f25f5` с FCM, AirPods Pro 2 (`scratchpad/run-headset-orphan.sh`, логи
-  `scratchpad/runs/ho-reopen1-*` и `ho-talkcold1-*`, время по часам телефона).
-  - **Шаги 2–3 прошли** (`ho-reopen1`). Скрипт смахнул приложение во время звонка A,
-    владелец принял его нажатием на ножку, скрипт сразу открыл приложение, веб
-    положил трубку и тут же позвонил снова (B):
-    ```
-    04:04:40.659 I/BluetoothInCallService: BT - answering call(false)
-    04:04:40.680 D/CallConnection: onAnswer: callId=17894342616195kOdJDHdVurwedgx, roomId=!…
-    04:04:41.924 I/CallTeardown: endCall reason=COLD_START callId=null State(audioMode=3, otherCallLive=true, …)
-    04:04:44.553 I/Capacitor/Console: [NativeCallBridge] Pending answer queued, waiting for matrixCall: 17894342616195kOdJDHdVurwedgx room: !…
-    04:05:03.084 W/CallConnectionService: Incoming call while a call is established — reporting busy
-    04:05:14.937 W/Capacitor/Console: [NativeCallBridge] Timed out waiting for matrixCall: 17894342616195kOdJDHdVurwedgx
-    ```
-    За 35 с после звонка B без нажатий: `Pre-accepted incoming call` — 0, ответов JS и
-    `onAnswer` — 0, `reporting busy` — 2 (регистрации пуша и JS). Отложенный ответ с
-    callId A ждал только A и истёк. Владелец: приложение открылось само, второй звонок
-    звонил, на него не отвечали.
-  - Попутно: для B, уже получившего «занято», пуш через 160 мс всё равно поднял рингер
-    (`IncomingRinger: arm callId=1789434302209xTlBSEljOZ394BXp`), и звонок звонил 30 с до
-    `no answer in 30s … auto-rejecting`. Вынесено отдельной задачей.
-  - **Шаг 4 прошёл** (`ho-talkcold1`). Приложение смахнуто до звонка (`Killing 26802 …
-    remove task`), звонок поднял процесс пушем, скрипт нажал «Принять» до загрузки JS:
-    ```
-    04:10:19.949 I/ActivityManager: Start proc 31219:com.forta.chat/u0a294 for broadcast {com.forta.chat/com.google.firebase.iid.FirebaseInstanceIdReceiver}
-    04:10:31.017 D/IncomingCallActivity: Accept pressed
-    04:10:31.037 D/CallConnection: onAnswer: callId=1789434618863TSC8C4IF4PqxoKFK, roomId=!…
-    04:10:35.749 D/Capacitor/Console: FetchHttpApi: <-- POST …/_matrix/client/v3/login [538ms 200]
-    04:10:37.509 I/Capacitor/Console: [call-service] Pre-accepted incoming call, skipping ringer: 1789434618863TSC8C4IF4PqxoKFK
-    04:10:39.547 V/Capacitor: … methodName: reportCallConnected, methodData: {"callId":"1789434618863TSC8C4IF4PqxoKFK"}
-    ```
-    Разговор шёл 2,5 минуты, у веба `connected/stable`. От телефона к вебу шла почти
-    одна тишина: 14,8 КБ за 150 с, энергия 0,0027 к 60-й секунде и дальше не росла.
-    Слышен ли звук веба в AirPods, владелец пока не ответил.
-- Статус: ☐ шаги 2–3 прошли 2026-09-15; шаг 4 — ответ до загрузки подхвачен с тем же
-  callId, звук в обе стороны не подтверждён
-
 ### «Динамик» переключает звук через Telecom
 - Коммит: `4adc0eec`
 - Почему нужен человек: тесты доказывают три вещи. Устройства переводятся в
@@ -1625,34 +1549,6 @@
   - Android 13 и ниже (путь `setAudioRoute`) не проверялся — нет аппарата.
 - Статус: ☐ шаги 2, 3, 5, 6 прошли 2026-09-15; шаг 4 провален: выбор AirPods с динамика
   не срабатывает, а видеозвонок после ухода AirPods остаётся в трубке
-
-### Звонок во время разговора не выводит рингер, который нельзя принять
-- Коммит: `13ea87bf`
-- Почему нужен человек: контрактный тест (`EstablishedCallRingContractTest`)
-  доказывает проводку. Ветка приглашения в пуш-сервисе смотрит слот Telecom раньше,
-  чем занимает и показывает звонок. Если там идёт разговор, пуш только передаётся в
-  JS. Что второй звонок не выводит экран входящего и не звонит поверх разговора,
-  видно только на аппарате с настоящим Telecom и пушем.
-- На чём: реальный Android, сборка с FCM; годится Samsung SM-A528B ↔ веб TEST1 и
-  третий профиль `profile3`.
-- Найдено 2026-09-15 при проверке «Отложенный ответ на один звонок не принимает
-  следующий из той же комнаты» (`ho-reopen1`). Звонок A держал слот ACTIVE. Пуш
-  звонка B запустил экран входящего (`Started IncomingCallActivity`), его
-  регистрация в Telecom получила «занято», а через 161 мс экран взвёл рингер. Принять
-  B было нельзя, он звонил 30 с до `no answer in 30s … auto-rejecting`.
-- Шаги:
-  1. `adb logcat -v time > /tmp/run.log &`.
-  2. Позвонить телефону с веба TEST1, принять, разговаривать.
-  3. Не кладя трубку, позвонить телефону с третьего профиля.
-     - **Ожидается:** в логе `Call <callId B> while <callId A> is established — not
-       ringing`. Для B нет `Started IncomingCallActivity` и `IncomingRinger: arm`.
-       Экран разговора ничто не перекрывает, звук A идёт дальше. Второй звонящий
-       получает отказ от JS, как и раньше.
-     - **Раньше:** экран входящего B поверх разговора, рингтон 30 с,
-       `no answer in 30s … auto-rejecting`.
-  4. Регресс: без разговора звонок из пуша звонит как раньше —
-     `Started IncomingCallActivity`, `IncomingRinger: arm`, «Принять» соединяет.
-- Статус: ☐ не проверено
 
 ### Отбой из пуша закрывает только свой звонок
 - Коммит: `239b4d77`
@@ -3088,3 +2984,127 @@
   тапом, и он пришёл через `matchById=true`: это ровно та ветка, которая теперь
   запоминает ключ соединения, то есть путь пройден на живом аппарате, а не
   только в тестах. У перезвона ни `matrixCall ready`, ни `answerCall: begin`.
+
+### Отложенный ответ на один звонок не принимает следующий из той же комнаты
+- Коммит: `d25ea8a8`
+- Почему нужен человек: юнит-тесты доказывают правило. Отложенный ответ или
+  отказ с настоящим Matrix callId подходит только своему звонку, а по комнате
+  сопоставляется лишь метка с event_id или без id. Что следующий звонок после
+  ответа гарнитурой на смахнутый звонок звонит, а не соединяется сам, видно
+  только на аппарате: нужны смахивание, ответ по Bluetooth без JS и холодный
+  старт.
+- На чём: реальный Android с Bluetooth-гарнитурой; годится Samsung SM-A528B с
+  AirPods Pro 2 ↔ веб TEST1, сборка с FCM (`scratchpad/run-stage3-orphan.sh`).
+- Найдено 2026-09-13 при проверке «Освобождение осиротевшего слота не рвёт
+  звонок, который сняли параллельно» (`orphan3a`).
+  - Звонок A смахнули во время звонка, нажатие на ножку AirPods приняло его без
+    JS. На следующем старте `wire()` взял отложенный ответ с настоящим callId A.
+  - Через 6 с пришёл звонок B из той же комнаты. `consumePendingAnswerCallId`
+    сопоставил метку A с B по комнате: `matchesPendingCallMarker` сравнивал
+    комнату для любой метки моложе жизни invite.
+  - B соединился без участия пользователя, микрофон телефона 41 с уходил
+    собеседнику.
+- Шаги:
+  1. `adb logcat -v time > /tmp/run.log &`.
+  2. Позвонить с веба, не отвечать, смахнуть приложение во время звонка. Пока
+     звонок звенит в гарнитуре, принять его нажатием на ножку.
+  3. Открыть приложение и сразу позвонить с веба ещё раз из того же чата.
+     - **Ожидается:** второй звонок сам не соединяется. В логе нет
+       `Pre-accepted incoming call` с callId второго звонка, у веба нет
+       соединения без нажатия на телефоне.
+     - **Раньше:** `Pre-accepted incoming call, skipping ringer: <callId B>`
+       через ~2 с после `handleIncomingCall`, звонок соединялся, звук с
+       микрофона телефона шёл вебу.
+     - Первый звонок, принятый без JS, держит слот Telecom до 90 с (запись
+       «Звонок, принятый без JS, не висит ACTIVE бесконечно»), и второй звонок в
+       это время получает «занято».
+  4. Регресс холодного старта из пуша: свернуть приложение, убить процесс
+     (`am kill com.forta.chat`), позвонить с веба и принять на экране
+     входящего до загрузки приложения. **Ожидается:** в логе
+     `Pre-accepted incoming call` или `matrixCall ready, answering
+     (matchById=true` с callId этого же звонка, звук в обе стороны. Метку с event_id (пуш без `call_id`) этот сервер не шлёт — тот
+     путь закрыт только тестами.
+- Измерено 2026-09-15 (UTC) с владельцем на Samsung SM-A528B (Android 14), сборка
+  `044f25f5` с FCM, AirPods Pro 2 (`scratchpad/run-headset-orphan.sh`, логи
+  `scratchpad/runs/ho-reopen1-*` и `ho-talkcold1-*`, время по часам телефона).
+  - **Шаги 2–3 прошли** (`ho-reopen1`). Скрипт смахнул приложение во время звонка A,
+    владелец принял его нажатием на ножку, скрипт сразу открыл приложение, веб
+    положил трубку и тут же позвонил снова (B):
+    ```
+    04:04:40.659 I/BluetoothInCallService: BT - answering call(false)
+    04:04:40.680 D/CallConnection: onAnswer: callId=17894342616195kOdJDHdVurwedgx, roomId=!…
+    04:04:41.924 I/CallTeardown: endCall reason=COLD_START callId=null State(audioMode=3, otherCallLive=true, …)
+    04:04:44.553 I/Capacitor/Console: [NativeCallBridge] Pending answer queued, waiting for matrixCall: 17894342616195kOdJDHdVurwedgx room: !…
+    04:05:03.084 W/CallConnectionService: Incoming call while a call is established — reporting busy
+    04:05:14.937 W/Capacitor/Console: [NativeCallBridge] Timed out waiting for matrixCall: 17894342616195kOdJDHdVurwedgx
+    ```
+    За 35 с после звонка B без нажатий: `Pre-accepted incoming call` — 0, ответов JS и
+    `onAnswer` — 0, `reporting busy` — 2 (регистрации пуша и JS). Отложенный ответ с
+    callId A ждал только A и истёк. Владелец: приложение открылось само, второй звонок
+    звонил, на него не отвечали.
+  - Попутно: для B, уже получившего «занято», пуш через 160 мс всё равно поднял рингер
+    (`IncomingRinger: arm callId=1789434302209xTlBSEljOZ394BXp`), и звонок звонил 30 с до
+    `no answer in 30s … auto-rejecting`. Вынесено отдельной задачей, починено в `13ea87bf`.
+  - **Шаг 4 прошёл** (`ho-talkcold1`). Приложение смахнуто до звонка (`Killing 26802 …
+    remove task`), звонок поднял процесс пушем, скрипт нажал «Принять» до загрузки JS:
+    ```
+    04:10:19.949 I/ActivityManager: Start proc 31219:com.forta.chat/u0a294 for broadcast {com.forta.chat/com.google.firebase.iid.FirebaseInstanceIdReceiver}
+    04:10:31.017 D/IncomingCallActivity: Accept pressed
+    04:10:31.037 D/CallConnection: onAnswer: callId=1789434618863TSC8C4IF4PqxoKFK, roomId=!…
+    04:10:35.749 D/Capacitor/Console: FetchHttpApi: <-- POST …/_matrix/client/v3/login [538ms 200]
+    04:10:37.509 I/Capacitor/Console: [call-service] Pre-accepted incoming call, skipping ringer: 1789434618863TSC8C4IF4PqxoKFK
+    04:10:39.547 V/Capacitor: … methodName: reportCallConnected, methodData: {"callId":"1789434618863TSC8C4IF4PqxoKFK"}
+    ```
+    Разговор шёл 2,5 минуты, у веба `connected/stable`. От телефона к вебу звук дошёл:
+    энергия 0,0027 к 60-й секунде, дальше не росла (14,8 КБ за 150 с — в основном
+    тишина). Звук веба в AirPods владелец подтвердил: «Да, звук в airpods был».
+- Статус: ☑ шаги 2–4 проверены 2026-09-15
+
+### Звонок во время разговора не выводит рингер, который нельзя принять
+- Коммит: `13ea87bf`
+- Почему нужен человек: контрактный тест (`EstablishedCallRingContractTest`)
+  доказывает проводку. Ветка приглашения в пуш-сервисе смотрит слот Telecom раньше,
+  чем занимает и показывает звонок. Если там идёт разговор, пуш только передаётся в
+  JS. Что второй звонок не выводит экран входящего и не звонит поверх разговора,
+  видно только на аппарате с настоящим Telecom и пушем.
+- На чём: реальный Android, сборка с FCM; годится Samsung SM-A528B ↔ веб TEST1 и
+  третий профиль `profile3`.
+- Найдено 2026-09-15 при проверке «Отложенный ответ на один звонок не принимает
+  следующий из той же комнаты» (`ho-reopen1`). Звонок A держал слот ACTIVE. Пуш
+  звонка B запустил экран входящего (`Started IncomingCallActivity`), его
+  регистрация в Telecom получила «занято», а через 161 мс экран взвёл рингер. Принять
+  B было нельзя, он звонил 30 с до `no answer in 30s … auto-rejecting`.
+- Шаги:
+  1. `adb logcat -v time > /tmp/run.log &`.
+  2. Позвонить телефону с веба TEST1, принять, разговаривать.
+  3. Не кладя трубку, позвонить телефону с третьего профиля.
+     - **Ожидается:** в логе `Call <callId B> while <callId A> is established — not
+       ringing`. Для B нет `Started IncomingCallActivity` и `IncomingRinger: arm`.
+       Экран разговора ничто не перекрывает, звук A идёт дальше. Второй звонящий
+       получает отказ от JS, как и раньше.
+     - **Раньше:** экран входящего B поверх разговора, рингтон 30 с,
+       `no answer in 30s … auto-rejecting`.
+  4. Регресс: без разговора звонок из пуша звонит как раньше —
+     `Started IncomingCallActivity`, `IncomingRinger: arm`, «Принять» соединяет.
+- Измерено 2026-09-15 (UTC) без владельца на Samsung SM-A528B (Android 14), сборка
+  `87ebfd68` с FCM (`scratchpad/run-busy-ring.sh busyring1`, логи
+  `scratchpad/runs/busyring1-*`, время по часам телефона).
+  - **Шаги 2–3 прошли.** Веб TEST1 позвонил, скрипт принял звонок A на экране входящего.
+    Через 12 с, не кладя трубку, позвонил третий профиль (звонок B):
+    ```
+    13:48:56.586 I/Capacitor/Console: [call-service] handleIncomingCall: already in call, rejecting
+    13:48:56.646 I/FortaPush: Call 1789469335534X0rnZt1BrrA6AJVY while 1789469293197rvUo9qXm6wfEWYmB is established — not ringing
+    13:48:56.686 W/CallConnectionService: Incoming call while a call is established — reporting busy
+    ```
+    За 35 с после B: `Started IncomingCallActivity` +0, `IncomingRinger: arm` +0,
+    `no answer in 30s` +0, кнопок рингера на экране нет. У третьего профиля соединение
+    закрылось через секунду (`closed/closed`). A оставался `connected/stable`, байты от
+    телефона шли дальше.
+  - **Шаг 4 прошёл** на самом звонке A: без разговора пуш поднял экран входящего и рингер,
+    «Принять» соединило.
+    ```
+    13:48:14.342 D/FortaPush: Started IncomingCallActivity for …
+    13:48:14.598 D/IncomingRinger: arm callId=1789469293197rvUo9qXm6wfEWYmB
+    13:48:24.945 D/CallConnection: onAnswer: callId=1789469293197rvUo9qXm6wfEWYmB, roomId=!…
+    ```
+- Статус: ☑ шаги 2–4 проверены 2026-09-15
