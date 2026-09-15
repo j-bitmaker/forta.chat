@@ -327,12 +327,15 @@ class CallPlugin : Plugin() {
 
     @PluginMethod
     fun reportCallEnded(call: PluginCall) {
-        // Unconditional, and before the connection work: when /sync beats FCM to
-        // the hangup this is the only path that runs, and the FCM branch that
-        // used to be the sole caller of dismissIfShowing never fires. A null
-        // connection must not swallow the dismiss either, or the ringer keeps
-        // playing for a call that is already over.
-        IncomingCallActivity.dismissIfShowing()
+        val callId = call.getString("callId")
+        // Before the connection work and whatever the slot holds: when /sync
+        // beats FCM to the hangup this is the only path that runs, and the FCM
+        // branch that used to be the sole caller of dismissIfShowing never
+        // fires. A null connection must not swallow the dismiss either, or the
+        // ringer keeps playing for a call that is already over. Keyed on the
+        // reported call, so finalizing a stale invite leaves the call that
+        // rings now alone.
+        IncomingCallActivity.dismissIfShowing(callId)
         // onDisconnect vacates the slot itself, identity-guarded. Clearing it
         // again here is not just redundant: this method runs on Capacitor's
         // plugin thread while Telecom assigns a new connection on the main
@@ -340,7 +343,6 @@ class CallPlugin : Plugin() {
         // the *next* call and anything that reads it — leaving that call with
         // no Connection to answer, and its own ring backstop hanging it up 45
         // seconds after the user picked up.
-        val callId = call.getString("callId")
         val slot = CallConnectionService.currentConnection
         if (slot != null && !CallSlotPolicy.owns(slot.callId, callId)) {
             // The slot holds a different call — ending it here is how a
