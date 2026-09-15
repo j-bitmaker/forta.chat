@@ -1737,6 +1737,38 @@
   было и раньше. Когда гарнитура уйдёт, видеозвонок вернётся на динамик.
 - Статус: ☐ не проверено
 
+### Выбор AirPods с громкого динамика доходит до гарнитуры
+- Коммит: `<этот>`
+- Почему нужен человек: тесты доказывают правило (`AudioRoutePolicyTest`) и проводку
+  (`TelecomAudioRouteContractTest`). Пока Telecom на громком динамике, выбор Bluetooth
+  сначала переводит звонок в трубку. Когда Telecom сообщает о трубке, приложение просит
+  гарнитуру. Подключит ли Telecom после этого AirPods, видно только на аппарате.
+- На чём: реальный Android 14 (API 34+) с AirPods; годится Samsung SM-A528B ↔ веб TEST1.
+- Найдено 2026-09-15 при проверке «"Динамик" переключает звук через Telecom», шаг 4
+  (`route4`). С громкого динамика приходило `requestCallEndpointChange(BLUETOOTH): done`,
+  но Telecom так и не обработал `USER_SWITCH_BLUETOOTH` — 5 из 5. Из трубки тот же выбор
+  давал `USER_SWITCH_BLUETOOTH` и `connectAudio()`.
+- Шаги:
+  1. `adb logcat -v time > /tmp/run.log &`.
+  2. AirPods подключены к телефону. Позвонить телефону с веба TEST1, принять, «Аудио» →
+     «Динамик» — звук внизу.
+  3. «Аудио» → AirPods.
+     - **Ожидается:** в логе `setDevice: BLUETOOTH via EARPIECE — Telecom is on SPEAKER`.
+       У Telecom `USER_SWITCH_EARPIECE` и `Entering state ActiveEarpieceRoute`, затем
+       `Telecom moved the call to EARPIECE — asking for BLUETOOTH`, `USER_SWITCH_BLUETOOTH`,
+       `connectAudio()` и `Entering state ActiveBluetoothRoute`. Звук в AirPods; перед
+       этим трубка звучит коротко.
+     - **Раньше:** `requestCallEndpointChange(BLUETOOTH): done`, звук оставался на
+       динамике.
+  4. Повторить шаги 2–3 ещё четыре раза — AirPods каждый раз.
+  5. Регресс, из трубки: «Аудио» → «Динамик телефона», затем AirPods. Сразу
+     `USER_SWITCH_BLUETOOTH`, строки `via EARPIECE` нет.
+  6. Регресс, видеозвонок: шаги 2–3 с видеозвонком. Звук в AirPods: правило видеозвонка
+     не возвращает звук на динамик посреди перехода.
+- Остаточное: если Telecom дойдёт до трубки, но гарнитуру не подключит, звук останется в
+  трубке, а значок «Аудио» покажет AirPods.
+- Статус: ☐ не проверено
+
 ---
 
 ## Проверено

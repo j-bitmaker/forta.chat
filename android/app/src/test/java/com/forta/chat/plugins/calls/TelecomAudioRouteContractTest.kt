@@ -106,9 +106,38 @@ class TelecomAudioRouteContractTest {
     fun theRouter_tellsThePolicyTheCallType_soAVideoCallCanReturnToTheLoudspeaker() {
         val body = withoutComments(functionBody(router, "fun\\s+onTelecomRouteChanged\\s*\\("))
         assertTrue(
-            "the policy must know a video call from a voice call:\n$body",
-            body.contains("AudioRoutePolicy.onTelecomRouteChanged(route, pinnedDevice, callType)"),
+            "the policy must know a video call from a voice call, and a hop in progress:\n$body",
+            body.contains("AudioRoutePolicy.onTelecomRouteChanged(route, pinnedDevice, callType, headsetHop)"),
         )
+    }
+
+    @Test
+    fun theRouter_remembersTelecomsRoute_andLetsThePolicyEndTheHop() {
+        val body = withoutComments(functionBody(router, "fun\\s+onTelecomRouteChanged\\s*\\("))
+        val lock = body.indexOf("synchronized(routeLock)")
+        val recorded = body.indexOf("telecomRoute = route")
+        val decide = body.indexOf("AudioRoutePolicy.onTelecomRouteChanged(")
+        val hopDecided = body.indexOf("headsetHop = decision.keepHop")
+        assertTrue("Telecom's route must be recorded under routeLock:\n$body", lock in 0 until recorded)
+        assertTrue("Telecom's route must be recorded before deciding:\n$body", recorded in 0 until decide)
+        assertTrue("whether a hop goes on is the policy's call, applied after deciding:\n$body", decide in 0 until hopDecided)
+    }
+
+    @Test
+    fun aPick_takesThePolicysFirstStep_underTheRouteLock() {
+        val body = withoutComments(functionBody(router, "fun\\s+setDevice\\s*\\("))
+        val lock = body.indexOf("synchronized(routeLock)")
+        val step = body.indexOf("AudioRoutePolicy.firstStep(device, telecomRoute)")
+        assertTrue("a pick must ask the policy for its first step under routeLock:\n$body", lock in 0 until step)
+        assertTrue("a two-step pick must be marked:\n$body", body.contains("headsetHop = first != device"))
+        assertTrue("the first step is what Telecom is asked for:\n$body", body.contains("setDeviceInternal(first)"))
+    }
+
+    @Test
+    fun start_forgetsThePreviousCallsRouteAndHop() {
+        val body = withoutComments(functionBody(router, "fun\\s+start\\s*\\("))
+        assertTrue("start() must forget Telecom's last route:\n$body", body.contains("telecomRoute = null"))
+        assertTrue("start() must end any hop:\n$body", body.contains("headsetHop = false"))
     }
 
     /** Drops `//` comment tails so an assertion measures code, not prose. */
