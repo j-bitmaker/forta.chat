@@ -1483,54 +1483,8 @@
     ```
   - Android 13 и ниже (путь `setAudioRoute`) не проверялся — нет аппарата.
 - Статус: ☐ шаги 2, 3, 5, 6 прошли 2026-09-15; шаг 4 провален: выбор AirPods с динамика
-  не срабатывает, а видеозвонок после ухода AirPods остаётся в трубке
-
-### Видеозвонок возвращается на громкий динамик, когда гарнитура уходит
-- Коммит: `ca6710fe`
-- Почему нужен человек: тесты доказывают правило (`AudioRoutePolicyTest`) и проводку
-  (`TelecomAudioRouteContractTest`). Если Telecom переводит видеозвонок в трубку, а
-  устройство вручную не выбрано, приложение снова просит громкий динамик. Куда
-  на самом деле идёт звук после ухода гарнитуры, видно только на аппарате с Telecom и
-  Bluetooth-гарнитурой.
-- На чём: реальный Android 14 (API 34+) с AirPods или другой Bluetooth-гарнитурой;
-  годится Samsung SM-A528B ↔ веб TEST1. Путь Android 13 и ниже (`setAudioRoute`) не
-  проверялся — нет аппарата.
-- Найдено 2026-09-15 при проверке «"Динамик" переключает звук через Telecom», шаг 4
-  (`route7v`). После `BT_AUDIO_DISCONNECTED` Telecom перешёл в `ActiveEarpieceRoute`,
-  пина не было (`pinned=null`), и динамик больше никто не запросил.
-- Шаги:
-  1. `adb logcat -v time > /tmp/run.log &`.
-  2. AirPods подключены к телефону. Видеозвонок с веба TEST1, принять. Звук уходит в
-     AirPods — Telecom переключает сам.
-  3. Не трогая выбор звука, убрать AirPods в кейс.
-     - **Ожидается:** в логе `Entering state ActiveEarpieceRoute`, затем `Telecom moved
-       the call to EARPIECE — asking for SPEAKER`, `requestCallEndpointChange(SPEAKER):
-       done` и `Entering state ActiveSpeakerRoute`. APM выбирает
-       `AUDIO_DEVICE_OUT_SPEAKER`, звук из громкого динамика.
-     - **Раньше:** звук оставался в трубке.
-  4. Регресс, голосовой звонок: шаги 2–3 с голосовым звонком. Звук остаётся в трубке,
-     строки `asking for SPEAKER` нет.
-  5. Регресс, выбор вручную: видеозвонок без гарнитуры, в «Аудио» выбрать трубку. Звук
-     остаётся в трубке, строки `asking for SPEAKER` нет.
-- Остаточное: трубка, выбранная вручную, держится, пока не подключится гарнитура — так
-  было и раньше. Когда гарнитура уйдёт, видеозвонок вернётся на динамик.
-- Измерено 2026-09-15 (UTC) без владельца на Samsung SM-A528B (Android 14), сборка
-  `0249bf72` с FCM. Прогон `vin2`, фаза pick (`scratchpad/run-video-in2.sh`), гарнитуры нет.
-  Часы телефона — UTC+3.
-  - **Шаг 5 прошёл.** Трубку выбрал переключатель громкой связи в окне звонка приложения
-    (нажат через CDP); шторкой «Аудио» не проверялось. Входящий видеозвонок в уже запущенном
-    процессе принят и, как положено видеозвонку, ушёл на динамик:
-    ```
-    15:45:19.322 I/Telecom: … requestCallEndpointChange TC@35_1 Динамик
-    15:45:19.787 I/Telecom: … Entering state ActiveSpeakerRoute
-    15:45:28.629 D/AudioRouter: setDevice: EARPIECE (pinned)
-    15:45:28.634 I/Telecom: … Entering state ActiveEarpieceRoute: CSW.rCEC->CARSM.pM_USER_SWITCH_EARPIECE
-    15:45:29.199 D/CallConnection: requestCallEndpointChange(EARPIECE): done
-    ```
-    До отбоя в 15:46:02 строк `asking for SPEAKER` нет, других `Entering state Active…` тоже:
-    звонок 34 с оставался в трубке.
-- Статус: ☐ шаг 5 прошёл 2026-09-15 (через переключатель в окне звонка); шаги 2–4 ждут
-  AirPods
+  не срабатывает (и после `07e20893`, см. его запись), а видеозвонок после ухода AirPods
+  оставался в трубке — починено в `ca6710fe` и `4af24d71`, проверено 2026-09-15
 
 ### Выбор AirPods с громкого динамика доходит до гарнитуры
 - Коммит: `07e20893`
@@ -1560,9 +1514,57 @@
      `USER_SWITCH_BLUETOOTH`, строки `via EARPIECE` нет.
   6. Регресс, видеозвонок: шаги 2–3 с видеозвонком. Звук в AirPods: правило видеозвонка
      не возвращает звук на динамик посреди перехода.
+- Измерено 2026-09-15 с владельцем на Samsung SM-A528B (Android 14), сборка `49a2281b`, AirPods
+  Pro 2. Скрипт `scratchpad/run-airpods-route.sh`, логи `scratchpad/runs/airpods*`, время по часам
+  телефона (МСК). Выбор засчитан, если за ним у Telecom есть
+  `USER_SWITCH_BLUETOOTH` и `Entering state ActiveBluetoothRoute`.
+  - **Шаги 3–6 провалены.** Переход через трубку выполняется каждый раз, а гарнитуру Telecom
+    подключает не всегда. Промах оставляет звук в трубке — ровно остаточный риск ниже.
+    - `airpods1`, голосовой: с «Динамика» — 4 из 7 (шаги 3–4), прямо из трубки — 1 из 4 (шаг 5).
+      Владелец насчитал «2–3 раза» в AirPods, в остальные разы писк оставался в верхнем динамике.
+    - `airpods2`, видеозвонок (шаг 6): с «Динамика» — 0 из 4. Повторный выбор AirPods через 3–10 с
+      после промаха — 4 из 4, «Динамик» → «Динамик телефона» → AirPods — 2 из 2.
+  - Промахи одинаковы: наш приёмник пишет `done`, а Telecom `USER_SWITCH_BLUETOOTH` не
+    обрабатывает. После первого выбора в `airpods2` за 4 с — ни `USER_SWITCH_BLUETOOTH`, ни
+    `Entering state`:
+    ```
+    20:41:25.605 D/AudioRouter: setDevice: BLUETOOTH via EARPIECE — Telecom is on SPEAKER
+    20:41:25.612 I/Telecom: … Entering state ActiveEarpieceRoute: CSW.rCEC->CARSM.pM_USER_SWITCH_EARPIECE(cfc)@EIo
+    20:41:26.487 D/CallConnection: onCallEndpointChanged: 1789493951074OYP7WbadZdXmDZLL -> EARPIECE
+    20:41:26.487 D/AudioRouter: Telecom moved the call to EARPIECE — asking for BLUETOOTH
+    20:41:26.539 D/CallConnection: requestCallEndpointChange(BLUETOOTH): done
+    ```
+  - Все 31 выбор гарнитуры в `route4`, `airpods1` и `airpods2` подчиняются одному правилу.
+    - Когда выбор другого маршрута снял звук с гарнитуры (`DISCONNECT_BT`, `BT_AUDIO_LOST`),
+      Telecom молча отбрасывает запросы гарнитуры через `requestCallEndpointChange`.
+    - Отбрасывает, пока не пройдёт переключение между двумя маршрутами без гарнитуры, начатое хотя
+      бы за ~2 с до запроса. Время с потери гарнитуры не важно: прямые повторы без такого
+      переключения промахивались и через 42 с.
+    - Переход через трубку просит гарнитуру через 0,6–1,0 с после своего же переключения, поэтому
+      и промахивается. Механизм внутри Samsung Telecom не выяснен.
+  - **Пробная сборка** (`airpods-exp1`, голосовой): `49a2281b` с правкой вне репозитория — на
+    Android 14 запрос гарнитуры идёт через `setAudioRoute(ROUTE_BLUETOOTH)` в обход
+    `CallEndpointController`, без перехода через трубку.
+    - 5 выборов AirPods из 5 сработали с первого нажатия: 3 с «Динамика» и 2 с «Динамика
+      телефона», каждый через 8–14 с после того, как выбор другого маршрута снял звук с гарнитуры.
+      Такие прямые запросы через `requestCallEndpointChange` не сработали ни разу: 5 в `route4`
+      и 3 в `airpods1`.
+    - `USER_SWITCH_BLUETOOTH` приходил через 0–3 мс после запроса, `ActiveBluetoothRoute` — через
+      11–19 мс:
+      ```
+      21:25:35.717 I/Telecom: … Entering state ActiveSpeakerRoute
+      21:25:36.093 I/Telecom: BluetoothRouteManager: … received message: BT_AUDIO_LOST.
+      21:25:45.611 D/CallConnection: requestAudioRoute(BLUETOOTH): setAudioRoute experiment
+      21:25:45.614 I/Telecom: CallAudioRouteStateMachine: Message received: USER_SWITCH_BLUETOOTH=1102, arg1=0
+      21:25:45.628 I/Telecom: … Entering state ActiveBluetoothRoute
+      21:25:46.825 D/CallConnection: onCallEndpointChanged: 17894966957965x8ycyGxII0hTJz4 -> BLUETOOTH
+      ```
+    - AirPods в кейсе в конце звонка — звонок в трубке (`Entering state ActiveEarpieceRoute` в
+      21:27:58.410).
 - Остаточное: если Telecom дойдёт до трубки, но гарнитуру не подключит, звук останется в
   трубке, а значок «Аудио» покажет AirPods.
-- Статус: ☐ не проверено
+- Статус: ☐ провалено 2026-09-15 (`airpods1`, `airpods2`): переход через трубку подключает AirPods
+  не всегда; пробная сборка с `setAudioRoute` — 5 из 5
 
 ### Видеозвонок с выбранными вручную AirPods возвращается на динамик, когда они уходят
 - Коммит: `4af24d71`
@@ -1594,9 +1596,42 @@
   5. Регресс, без выбора вручную: шаги записи «Видеозвонок возвращается на громкий динамик,
      когда гарнитура уходит» — там по-прежнему `Telecom moved the call to EARPIECE — asking
      for SPEAKER`.
+- Измерено 2026-09-15 с владельцем на Samsung SM-A528B (Android 14), сборка `49a2281b`, AirPods
+  Pro 2. Скрипт `scratchpad/run-airpods-route.sh`, логи `scratchpad/runs/airpods*`, время по часам
+  телефона (МСК).
+  - **Шаг 2 прошёл со второй попытки** (`airpods2`, видеозвонок): с «Динамика» AirPods с первого
+    выбора не подключались (провал записи «Выбор AirPods с громкого динамика доходит до
+    гарнитуры»), повторный выбор подключал их 4 раза из 4.
+  - **Шаг 3 прошёл по логу** (`airpods2`). Закрепление AirPods пережило отчёт Telecom о трубке;
+    список устройств его снял и вернул видеозвонок на динамик:
+    ```
+    20:44:14.421 I/Telecom: … Entering state ActiveEarpieceRoute: BSR.oR->BRM.pM_201->CARSM.pM_BT_AUDIO_DISCONNECTED@ENg
+    20:44:15.057 D/CallConnection: onCallEndpointChanged: 1789493951074OYP7WbadZdXmDZLL -> EARPIECE
+    20:44:15.364 D/AudioRouter: Devices changed: available=[EARPIECE, SPEAKER], active=EARPIECE, pinned=BLUETOOTH
+    20:44:15.364 D/AudioRouter: Devices changed: routing to SPEAKER (pinned=null)
+    20:44:16.201 I/Telecom: … Entering state ActiveSpeakerRoute: CSW.rCEC->CARSM.pM_USER_SWITCH_SPEAKER(cfc)@EOA
+    20:44:16.424 V/APM_AudioPolicyManager: getNewOutputDevices selected devices {AUDIO_DEVICE_OUT_SPEAKER, @:}
+    20:44:16.563 D/CallConnection: requestCallEndpointChange(SPEAKER): done
+    ```
+    На слух не подтверждено: скрипт веба ушёл из звонка раньше, когда истёк его срок, и
+    собеседника к этому моменту уже не было слышно.
+  - **Шаг 4 прошёл** (`airpods1`, голосовой звонок). AirPods выбраны вручную
+    (`USER_SWITCH_BLUETOOTH` в 20:18:23). После кейса закрепление снято без смены маршрута, строк
+    `routing to` за весь звонок нет. Владелец: звук «сверху».
+    ```
+    20:18:23.093 D/CallConnection: onCallEndpointChanged: 17894924515009BhjKQHiUu54VaPa -> BLUETOOTH
+    20:18:35.576 I/Telecom: … Entering state ActiveEarpieceRoute: BSR.oR->BRM.pM_201->CARSM.pM_BT_AUDIO_DISCONNECTED@EAc
+    20:18:35.615 V/APM_AudioPolicyManager: getNewOutputDevices selected devices {AUDIO_DEVICE_OUT_EARPIECE, @:}
+    20:18:36.300 D/CallConnection: onCallEndpointChanged: 17894924515009BhjKQHiUu54VaPa -> EARPIECE
+    20:18:36.569 D/AudioRouter: Devices changed: available=[EARPIECE, SPEAKER], active=EARPIECE, pinned=BLUETOOTH
+    20:18:36.994 D/AudioRouter: Devices changed: available=[EARPIECE, SPEAKER], active=EARPIECE, pinned=null
+    ```
+  - **Шаг 5 прошёл** — см. «Видеозвонок возвращается на громкий динамик, когда гарнитура уходит»
+    (`airpods3b`, `vin2`).
 - Остаточное: если гарнитура отвалится от звонка, но останется в списке устройств (сбой
   SCO), звонок останется в трубке — так было и до правки.
-- Статус: ☐ не проверено
+- Статус: ☐ шаги 2, 4, 5 прошли 2026-09-15; шаг 3 прошёл по логу — послушать в следующей сессии с
+  AirPods
 
 ### Страница приложения не замирает в нативном звонке дольше минуты
 - Коммит: `822c9220`
@@ -1677,17 +1712,122 @@
     - ICE ушёл в `disconnected` через 5 с, JS дважды перезапустил ICE и через 30 с положил
       трубку по таймеру «ICE disconnected for too long».
     - Пауз в JS нет, экран звонка закрылся, `MODE_NORMAL`.
+- Измерено 2026-09-15 с владельцем на Samsung SM-A528B (Android 14), сборка `49a2281b`, AirPods
+  Pro 2. Скрипт `scratchpad/run-airpods-route.sh`, логи `scratchpad/runs/airpods*`, время по часам
+  телефона (МСК).
+  - **Шаг 6 прошёл** (`airpods1`, голосовой звонок 5 мин через громкий динамик, трубку и AirPods).
+    Владелец: гула и щелчков не заметил; писк временами звучал глуше или острее — в зависимости от
+    маршрута.
+  - **Найдено: заморозка вернулась** (`airpods4`, входящий голосовой, AirPods убраны в кейс через
+    37 с после открытия экрана звонка, дальше экран не трогали).
+    - Последняя строка JS пришла через 58,9 с после `CallActivity created`, дальше JS молчал
+      3 мин 17 с.
+    - Отбой собеседника дошёл пушем, натив завершил звонок, а экран звонка остался открытым. JS
+      ожил, когда владелец коснулся экрана, и тогда же закрыл экран:
+      ```
+      21:18:08.247 D/CallConnection: onAnswer: callId=1789496282703p4c4iwRVNRfs0iLM
+      21:18:09.400 D/CallActivity: CallActivity created: test3823818, type=voice
+      21:18:46.527 I/Telecom: … Entering state ActiveEarpieceRoute: BSR.oR->BRM.pM_201->CARSM.pM_BT_AUDIO_DISCONNECTED@Egs
+      21:19:08.326 I/Capacitor/Console: … {"progress":0,"isReady":false,"state":"STOPPED"}
+      21:19:20.752 D/FortaPush: Call ended remotely (type=m.call.hangup), tearing down incoming UI
+      21:19:20.764 I/CallTeardown: endCall reason=DISCONNECT callId=1789496282703p4c4iwRVNRfs0iLM …
+      21:22:25.936 I/Capacitor/Console: … {"peerId":"pc_5_1789496283892","state":"disconnected"}
+      21:22:26.199 V/Capacitor/Plugin: To native (Capacitor plugin): … pluginId: NativeWebRTC, methodName: dismissCallUI
+      ```
+    - В `airpods1`, `airpods2` (по 5 мин) и `airpods-exp1` (3,5 мин) пауз в JS дольше 5 с нет. Там
+      AirPods убирали в кейс под конец звонка, через минуты после открытия экрана; в `airpods4` —
+      до минутной отметки. Причина не выяснена.
 - Остаточное:
   - Тон включается только на Android: заморозка — механизм Chromium. На iOS нет нативного экрана
     NativeWebRTC, веб и Electron показывают звонок на самой странице.
   - После звонка свёрнутое приложение по-прежнему замирает через минуту, как любая скрытая
     страница. Звонки в это время приходят пушем.
   - Заморозку и её причину разбирали только на WebView 151.
-- Статус: ☐ не проверено
+- Статус: ☐ шаги 1–6 прошли 2026-09-15; заморозка вернулась в голосовом звонке, где AirPods ушли
+  до минутной отметки (`airpods4`)
 
 ---
 
 ## Проверено
+
+### Видеозвонок возвращается на громкий динамик, когда гарнитура уходит
+- Коммит: `ca6710fe`
+- Почему нужен человек: тесты доказывают правило (`AudioRoutePolicyTest`) и проводку
+  (`TelecomAudioRouteContractTest`). Если Telecom переводит видеозвонок в трубку, а
+  устройство вручную не выбрано, приложение снова просит громкий динамик. Куда
+  на самом деле идёт звук после ухода гарнитуры, видно только на аппарате с Telecom и
+  Bluetooth-гарнитурой.
+- На чём: реальный Android 14 (API 34+) с AirPods или другой Bluetooth-гарнитурой;
+  годится Samsung SM-A528B ↔ веб TEST1. Путь Android 13 и ниже (`setAudioRoute`) не
+  проверялся — нет аппарата.
+- Найдено 2026-09-15 при проверке «"Динамик" переключает звук через Telecom», шаг 4
+  (`route7v`). После `BT_AUDIO_DISCONNECTED` Telecom перешёл в `ActiveEarpieceRoute`,
+  пина не было (`pinned=null`), и динамик больше никто не запросил.
+- Шаги:
+  1. `adb logcat -v time > /tmp/run.log &`.
+  2. AirPods подключены к телефону. Видеозвонок с веба TEST1, принять. Звук уходит в
+     AirPods — Telecom переключает сам.
+  3. Не трогая выбор звука, убрать AirPods в кейс.
+     - **Ожидается:** в логе `Entering state ActiveEarpieceRoute`, затем `Telecom moved
+       the call to EARPIECE — asking for SPEAKER`, `requestCallEndpointChange(SPEAKER):
+       done` и `Entering state ActiveSpeakerRoute`. APM выбирает
+       `AUDIO_DEVICE_OUT_SPEAKER`, звук из громкого динамика.
+     - **Раньше:** звук оставался в трубке.
+  4. Регресс, голосовой звонок: шаги 2–3 с голосовым звонком. Звук остаётся в трубке,
+     строки `asking for SPEAKER` нет.
+  5. Регресс, выбор вручную: видеозвонок без гарнитуры, в «Аудио» выбрать трубку. Звук
+     остаётся в трубке, строки `asking for SPEAKER` нет.
+- Остаточное: трубка, выбранная вручную, держится, пока не подключится гарнитура — так
+  было и раньше. Когда гарнитура уйдёт, видеозвонок вернётся на динамик.
+- Измерено 2026-09-15 (UTC) без владельца на Samsung SM-A528B (Android 14), сборка
+  `0249bf72` с FCM. Прогон `vin2`, фаза pick (`scratchpad/run-video-in2.sh`), гарнитуры нет.
+  Часы телефона — UTC+3.
+  - **Шаг 5 прошёл.** Трубку выбрал переключатель громкой связи в окне звонка приложения
+    (нажат через CDP); шторкой «Аудио» не проверялось. Входящий видеозвонок в уже запущенном
+    процессе принят и, как положено видеозвонку, ушёл на динамик:
+    ```
+    15:45:19.322 I/Telecom: … requestCallEndpointChange TC@35_1 Динамик
+    15:45:19.787 I/Telecom: … Entering state ActiveSpeakerRoute
+    15:45:28.629 D/AudioRouter: setDevice: EARPIECE (pinned)
+    15:45:28.634 I/Telecom: … Entering state ActiveEarpieceRoute: CSW.rCEC->CARSM.pM_USER_SWITCH_EARPIECE
+    15:45:29.199 D/CallConnection: requestCallEndpointChange(EARPIECE): done
+    ```
+    До отбоя в 15:46:02 строк `asking for SPEAKER` нет, других `Entering state Active…` тоже:
+    звонок 34 с оставался в трубке.
+- Измерено 2026-09-15 с владельцем на Samsung SM-A528B (Android 14), сборка `49a2281b`, AirPods
+  Pro 2. Скрипт `scratchpad/run-airpods-route.sh`, логи `scratchpad/runs/airpods*`, время по часам
+  телефона (МСК). Видеозвонок — с `VIDEO=1`.
+  - **Шаг 2 прошёл** (`airpods3b`, видеозвонок с веба). Telecom сам перевёл звонок в AirPods ещё
+    до ответа, выбора вручную нет:
+    ```
+    21:14:50.629 I/Telecom: … Entering state ActiveBluetoothRoute
+    21:14:55.027 D/CallConnection: onAnswer: callId=1789496088629RnUEa09TimPN7Ez0
+    21:14:56.308 D/AudioRouter: Devices changed: available=[EARPIECE, SPEAKER, BLUETOOTH], active=BLUETOOTH, pinned=null
+    ```
+  - **Шаг 3 прошёл** (`airpods3b`). AirPods убраны в кейс через 27 с после ответа. Отчёт Telecom
+    о трубке дошёл до приложения через 0,66 с, динамик запрошен в ту же миллисекунду. Владелец:
+    звук «снизу».
+    ```
+    21:15:22.483 I/Telecom: … Entering state ActiveEarpieceRoute: BSR.oR->BRM.pM_201->CARSM.pM_BT_AUDIO_DISCONNECTED@EZY
+    21:15:23.145 D/CallConnection: onCallEndpointChanged: 1789496088629RnUEa09TimPN7Ez0 -> EARPIECE
+    21:15:23.145 D/AudioRouter: Telecom moved the call to EARPIECE — asking for SPEAKER
+    21:15:23.382 V/APM_AudioPolicyManager: getNewOutputDevices selected devices {AUDIO_DEVICE_OUT_SPEAKER, @:}
+    21:15:24.171 I/Telecom: … Entering state ActiveSpeakerRoute
+    21:15:24.234 D/CallConnection: requestCallEndpointChange(SPEAKER): done
+    ```
+    Первая попытка `airpods3` не в счёт: звонок не приняли, рингер закрылся по своему
+    30-секундному сроку.
+  - **Шаг 4 прошёл** (`airpods4`, голосовой звонок). AirPods убраны в кейс через 38 с после
+    ответа. Звонок перешёл в трубку у Telecom и у звуковой политики, строк `asking for SPEAKER` до
+    конца звонка в 21:19:20 нет. Владелец: звук «сверху».
+    ```
+    21:18:46.527 I/Telecom: … Entering state ActiveEarpieceRoute: BSR.oR->BRM.pM_201->CARSM.pM_BT_AUDIO_DISCONNECTED@Egs
+    21:18:46.533 V/APM_AudioPolicyManager: getNewOutputDevices selected devices {AUDIO_DEVICE_OUT_EARPIECE, @:}
+    21:18:47.539 D/CallConnection: onCallEndpointChanged: 1789496282703p4c4iwRVNRfs0iLM -> EARPIECE
+    21:18:47.795 D/AudioRouter: Devices changed: available=[EARPIECE, SPEAKER], active=EARPIECE, pinned=null
+    ```
+- Статус: ☑ проверено 2026-09-15: шаги 2–4 на сборке `49a2281b` с AirPods (`airpods3b`,
+  `airpods4`), шаг 5 на `0249bf72` (`vin2`)
 
 ### Быстрая смена режима или моста Tor применяется в порядке нажатий
 - Коммит: `49a2281b`
