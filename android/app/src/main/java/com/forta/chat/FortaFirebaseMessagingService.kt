@@ -15,6 +15,7 @@ import com.forta.chat.plugins.calls.CallConnectionService
 import com.forta.chat.plugins.calls.CallNotificationConfig
 import com.forta.chat.plugins.calls.CallSlotPolicy
 import com.forta.chat.plugins.calls.CancelledCallStore
+import com.forta.chat.plugins.calls.DisplacedConnectionPolicy
 import com.forta.chat.plugins.calls.IncomingCallActivity
 import com.forta.chat.plugins.calls.IncomingRinger
 import com.forta.chat.plugins.calls.InviteThrottleGuard
@@ -300,6 +301,18 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
                 // launch the ringer. JS sees the push and the app
                 // re-syncs Matrix — if the invite is genuinely live the
                 // SDK's normal flow will deliver it via /sync.
+                forwardToJs(data)
+                return
+            }
+
+            // A conversation in progress keeps the Telecom slot, and
+            // onCreateIncomingConnection answers this call BUSY: a ringer put up
+            // for it could never be answered and would ring for 30 s over the
+            // live call. JS still gets the push and turns the caller away.
+            val established = CallConnectionService.currentConnection
+                ?.takeUnless { DisplacedConnectionPolicy.mayRelease(it.state) }
+            if (established != null) {
+                Log.i(TAG, "Call $callId while ${established.callId} is established — not ringing")
                 forwardToJs(data)
                 return
             }

@@ -1280,10 +1280,10 @@ export function useCallService() {
       // Revisit this if busy-handling ever starts creating a connection:
       // finalize is global teardown (audio mode -> NORMAL, dismissCallUI,
       // closeAllPeerConnections), so running it for the *incoming* call would
-      // hang up the conversation the user is currently having. FCM may already
-      // have put a native ringer on screen for this second caller; releasing
-      // just that one needs per-callId Telecom connections, which the single
-      // `currentConnection` slot cannot express today — see
+      // hang up the conversation the user is currently having. While a call is
+      // established FCM puts no native ringer up for this second caller: it
+      // reads the Telecom slot first and only forwards the push here. A call
+      // that still rings is SecondRingPolicy's case — see
       // docs/call-bugs-needing-you.md, "Второй входящий во время разговора".
       matrixCall.reject();
       // Release the dedup slot: when the current call ends the user is
