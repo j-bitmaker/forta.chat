@@ -14,6 +14,8 @@ import { resetPowerLevel, isUserBanned } from "../lib/room-guards";
 import { categorizeJoinError, validateRoomId, type JoinRoomResult } from "../lib/join-error";
 import { getModeratorChange, isServiceRoomName, isWithinCreationBurst, isCreationBurstMemberEvent } from "../lib/system-event-filter";
 import { preservePendingRooms } from "../lib/preserve-pending-rooms";
+import { unreadPeerHangupCount, unreadCountWithoutHangups } from "../lib/call-hangup-unread";
+import { callHangupRuleSince } from "@/shared/lib/push/call-hangup-push-rule";
 import { buildExternalShareForward } from "../lib/external-share-forward";
 import type { ExternalShareData } from "@/shared/lib/share-target";
 import {
@@ -100,6 +102,30 @@ function isStreamHistoryVisibility(hv: string | null | undefined): boolean {
   return hv === "world_readable";
 }
 
+/**
+ * The room's unread count for the chat list: the server's count without the call
+ * hangups a peer sent, which the server counts once the account has the hangup push
+ * rule (`../lib/call-hangup-unread.ts`). Any failure leaves the server's count as is.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function roomUnreadCount(room: any, myUserId: string): number {
+  const total = (room.getUnreadNotificationCount?.("total") as number) ?? 0;
+  try {
+    // Read even at zero: the first sight of the rule dates the hangups it counts.
+    const since = callHangupRuleSince(myUserId, getMatrixClientService().client?.pushRules, Date.now(), localStorage);
+    if (since === null || total <= 0) return total;
+    const events = room.getLiveTimeline?.()?.getEvents?.() ?? [];
+    const hangups = unreadPeerHangupCount(events, {
+      myUserId,
+      since,
+      hasRead: (eventId) => room.hasUserReadEvent?.(myUserId, eventId) ?? true,
+    });
+    return unreadCountWithoutHangups(total, hangups);
+  } catch {
+    return total;
+  }
+}
+
 /** Convert a Matrix SDK room object into our ChatRoom type */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function matrixRoomToChatRoom(room: any, kit: MatrixKit, myUserId: string, nameHints?: Record<string, string>): ChatRoom {
@@ -132,8 +158,8 @@ function matrixRoomToChatRoom(room: any, kit: MatrixKit, myUserId: string, nameH
     // leave / ban — drop
   }
 
-  // Unread notification count
-  const unreadCount = (room.getUnreadNotificationCount?.("total") as number) ?? 0;
+  // Unread notification count, peer call hangups taken out
+  const unreadCount = roomUnreadCount(room, myUserId);
 
   // Get timeline events
   let timelineEvents: unknown[] = [];
@@ -3377,7 +3403,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
    *  Called on app resume and after initial sync to fix any accumulated drift. */
   /**
    * Sync all unread counts from Matrix SDK → Dexie.
-   * Matrix SDK's getUnreadNotificationCount("total") is the single source of truth.
+   * Matrix SDK's getUnreadNotificationCount("total") is the single source of truth,
+   * read through roomUnreadCount, which takes the peer's call hangups out.
    * This heals any poisoned counts left in Dexie from previous buggy increments.
    */
   const syncAllUnreadFromMatrix = async () => {
@@ -3388,14 +3415,15 @@ export const useChatStore = defineStore(NAMESPACE, () => {
 
     try {
       const matrixRooms = matrixService.getRooms() as any[];
+      const myUserId = matrixService.getUserId() ?? "";
       const updates: Array<{ id: string; count: number }> = [];
 
       for (const mxRoom of matrixRooms) {
         const roomId = mxRoom.roomId as string;
-        const serverCount: number = (mxRoom.getUnreadNotificationCount?.("total") as number) ?? 0;
+        const unreadCount = roomUnreadCount(mxRoom, myUserId);
         const localRoom = dexieRoomMap.get(roomId);
-        if (localRoom && localRoom.unreadCount !== serverCount) {
-          updates.push({ id: roomId, count: serverCount });
+        if (localRoom && localRoom.unreadCount !== unreadCount) {
+          updates.push({ id: roomId, count: unreadCount });
         }
       }
 
@@ -4720,7 +4748,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     if (room) {
       room.lastMessage = lastMessageFromMessage(message, dexieRoomMap.get(roomId));
       room.updatedAt = message.timestamp;
-      if (roomId !== activeRoomId.value && message.senderId !== useAuthStore().address) {
+      // A call record is not bumped: the server already counts the invite, and the
+      // hangup it counts under the account's hangup rule is taken out (roomUnreadCount).
+      if (roomId !== activeRoomId.value && message.senderId !== useAuthStore().address && !message.callInfo) {
         // Single writer — keeps Dexie + dexieRoomMap + sortedRooms in lock-step
         bumpUnreadCount(roomId, 1);
       }

@@ -3,6 +3,13 @@ import { isIOS, isNative } from '@/shared/lib/platform';
 import { PushData, type PushPayload } from './push-data-plugin';
 import { IOSVoIPPush } from './ios-voip-push';
 import { shouldRingForCallPush } from './call-push-dedup';
+import {
+  CALL_HANGUP_PUSH_RULE_ID,
+  CALL_HANGUP_PUSH_RULE_KIND,
+  buildCallHangupPushRule,
+  callHangupRuleSince,
+  findCallHangupPushRule,
+} from './call-hangup-push-rule';
 import { tRaw } from '@/shared/lib/i18n';
 import { interopLog } from '@/shared/lib/interop';
 
@@ -244,6 +251,33 @@ class PushService {
       );
     } catch {
       /* localStorage may be unavailable in degraded WebViews — non-fatal */
+    }
+  }
+
+  /**
+   * Install the account's `m.call.hangup` push rule when it is missing, so a caller's
+   * hangup reaches this phone while the app is dead (`call-hangup-push-rule.ts`). A
+   * rule already there is left alone, even one the user disabled. Best effort: without
+   * it a call whose caller hung up rings out its 30 s, as before.
+   */
+  private async ensureCallHangupPushRule(matrixClient: any): Promise<void> {
+    try {
+      let rules: unknown = await matrixClient.getPushRules();
+      if (!findCallHangupPushRule(rules)) {
+        await matrixClient.addPushRule(
+          'global',
+          CALL_HANGUP_PUSH_RULE_KIND,
+          CALL_HANGUP_PUSH_RULE_ID,
+          buildCallHangupPushRule(),
+        );
+        // addPushRule leaves client.pushRules stale, and the unread badge reads it.
+        rules = await matrixClient.getPushRules();
+        console.info('[PushService] Call hangup push rule added');
+      }
+      // Date the rule on this device now, before the first hangup it counts arrives.
+      callHangupRuleSince(matrixClient.getUserId?.() ?? '', rules, Date.now(), localStorage);
+    } catch (e) {
+      console.warn('[PushService] Could not ensure the call hangup push rule:', e);
     }
   }
 
@@ -649,6 +683,7 @@ class PushService {
       // FCM token received
       this.fcmToken = token;
       await this.registerPusher(matrixClient, token);
+      await this.ensureCallHangupPushRule(matrixClient);
       // WEE-44: if a previous boot left a dead-letter for the same token,
       // a successful registration just now means we can safely clear it.
       try {

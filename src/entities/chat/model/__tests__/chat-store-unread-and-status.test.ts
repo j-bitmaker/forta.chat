@@ -52,6 +52,22 @@ describe("chat-store: unreadCount single-writer invariant", () => {
     expect(store.sortedRooms.find(r => r.id === "!a:s")?.unreadCount).toBe(1);
   });
 
+  it("addMessage for a peer's call record does NOT bump unreadCount", () => {
+    // The server already counted the invite, and with the account's hangup push rule
+    // it counts the hangup too; the badge shows that count with the hangups taken out.
+    // A local +1 for the record on top made the badge jump until the next sync.
+    store.rooms = [makeRoom({ id: "!a:s", unreadCount: 1 })];
+    const missedCall = makeMsgFor("!a:s", {
+      senderId: "@peer:s",
+      timestamp: 1000,
+      status: MessageStatus.sent,
+      type: MessageType.system,
+      callInfo: { callType: "voice", missed: true },
+    });
+    store.addMessage("!a:s", missedCall);
+    expect(store.sortedRooms.find(r => r.id === "!a:s")?.unreadCount).toBe(1);
+  });
+
   it("addMessage from self does NOT bump unreadCount", () => {
     // We can't easily mock useAuthStore in this test, but the "active room" path
     // also blocks bumping — verify that when active, no bump happens.
