@@ -20,6 +20,9 @@ object CallSlotPolicy {
 
     private const val EVENT_ID_PREFIX = "$"
 
+    /** A Matrix event id — what a push carries in place of a call id when the homeserver sent none. */
+    fun isEventId(id: String): Boolean = id.startsWith(EVENT_ID_PREFIX)
+
     fun owns(slotCallId: String, requestedCallId: String?): Boolean {
         if (requestedCallId.isNullOrEmpty()) return true
         if (slotCallId.isEmpty()) return true

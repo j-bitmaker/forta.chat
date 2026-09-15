@@ -526,6 +526,14 @@ class PushService {
       return;
     }
 
+    // Any other call event — a hangup, a reject, another device's answer — is
+    // signalling, not a chat message. Native has already taken the ringer
+    // down; here it must not become "New message", an unread bump or a
+    // notification. The invite family stays with the branch above.
+    if (data.msg_type?.startsWith('m.call.') && !data.msg_type.startsWith('m.call.invite')) {
+      return;
+    }
+
     // Suppress notification if user is actively viewing this chat (app in foreground + room open)
     if (!document.hidden && this.getActiveRoomId?.() === roomId) {
       PushData.cancelNotification({ roomId }).catch(() => {});

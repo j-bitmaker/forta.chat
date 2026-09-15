@@ -20,6 +20,7 @@ import com.forta.chat.plugins.calls.IncomingCallActivity
 import com.forta.chat.plugins.calls.IncomingRinger
 import com.forta.chat.plugins.calls.InviteThrottleGuard
 import com.forta.chat.plugins.calls.InviteThrottleTracker
+import com.forta.chat.plugins.calls.RemoteHangupPolicy
 import com.forta.chat.plugins.calls.SecondRingPolicy
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
@@ -168,17 +169,27 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
         if (msgType == "m.call.hangup" || msgType == "m.call.reject" ||
             msgType == "m.call.select_answer") {
             Log.d(TAG, "Call ended remotely (type=$msgType), tearing down incoming UI")
-            IncomingCallActivity.dismissIfShowing()
-            com.forta.chat.plugins.calls.CallConnectionService.dismissIncomingCallNotification(this)
+            // Resolved before anything is touched: every surface below and the
+            // slot teardown are keyed on the call that ended. With a push rule
+            // for these events a late hangup for an earlier call can land while
+            // the next one rings; RemoteHangupPolicy leaves that call's surfaces
+            // up. A push without call_id names only its own event and takes
+            // down whatever shows, as before.
+            val endedCallId = data["call_id"] ?: data["event_id"]
+            IncomingCallActivity.dismissIfShowing(endedCallId)
+            if (RemoteHangupPolicy.endsSurface(CallConnectionService.currentConnection?.callId, endedCallId)) {
+                CallConnectionService.dismissIncomingCallNotification(this)
+            }
             // Session 41: Telecom helper above only cancels its own id 9999;
             // the FSI ringer notification posted by showSimpleCallNotification
             // lives at ("call_$roomId".hashCode()) and would keep ringing
             // (setOngoing=true blocks swipe-dismiss) until process death
-            // without an explicit cancel.
-            dismissPushCallNotification(this, roomId)
-            // Resolved before the slot is touched: the id of the call that ended
-            // is what the teardown below is keyed on.
-            val endedCallId = data["call_id"] ?: data["event_id"]
+            // without an explicit cancel. A redial that already rings in this
+            // room owns that notification now.
+            val ringingInRoom = IncomingRinger.ringingCallId?.takeIf { ringingRoomFor(it) == roomId }
+            if (RemoteHangupPolicy.endsSurface(ringingInRoom, endedCallId)) {
+                dismissPushCallNotification(this, roomId)
+            }
             var disconnectedConnection = false
             try {
                 // No unconditional `currentConnection = null` after this:

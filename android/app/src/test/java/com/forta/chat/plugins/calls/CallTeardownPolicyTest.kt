@@ -49,11 +49,28 @@ class CallTeardownPolicyTest {
     }
 
     @Test
-    fun `a push hangup and the cold start stop whatever rings`() {
-        // The push carries the event id, not the call id — no key to match.
+    fun `a push hangup for the ringing call stops its ring`() {
         assertEquals(
             listOf(Action.STOP_RINGER),
-            CallTeardownPolicy.decide(Reason.REMOTE_HANGUP, state(ringingCallId = "push-id"), "other-id"),
+            CallTeardownPolicy.decide(Reason.REMOTE_HANGUP, state(ringingCallId = "call-1"), "call-1"),
+        )
+    }
+
+    @Test
+    fun `a push hangup for another call leaves the ring alone`() {
+        // A late hangup for a call that ended earlier, while the next one rings.
+        assertEquals(
+            emptyList<Action>(),
+            CallTeardownPolicy.decide(Reason.REMOTE_HANGUP, state(ringingCallId = "call-2"), "call-1"),
+        )
+    }
+
+    @Test
+    fun `a push hangup that names no call and the cold start stop whatever rings`() {
+        // Without call_id the push id is the hangup's own event id — no key to match.
+        assertEquals(
+            listOf(Action.STOP_RINGER),
+            CallTeardownPolicy.decide(Reason.REMOTE_HANGUP, state(ringingCallId = "call-2"), "\$hangup-event"),
         )
         assertEquals(
             listOf(Action.STOP_RINGER),

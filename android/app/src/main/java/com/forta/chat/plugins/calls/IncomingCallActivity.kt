@@ -36,9 +36,18 @@ class IncomingCallActivity : Activity() {
         /** Static reference so FCM service can dismiss on call cancel/hangup */
         var currentInstance: IncomingCallActivity? = null
 
-        fun dismissIfShowing() {
-            IncomingRinger.stopAll()
-            currentInstance?.let {
+        /**
+         * A call ended somewhere else. [endedCallId] is that call when the
+         * caller knows it: the ring and this screen come down only if they
+         * belong to it, so a late hangup for an earlier call leaves the next
+         * one ringing (see [RemoteHangupPolicy]). Without an id whatever rings
+         * and shows comes down.
+         */
+        fun dismissIfShowing(endedCallId: String? = null) {
+            IncomingRinger.ringingCallId
+                ?.takeIf { RemoteHangupPolicy.endsSurface(it, endedCallId) }
+                ?.let { IncomingRinger.stop(it) }
+            currentInstance?.takeIf { RemoteHangupPolicy.endsSurface(it.shownCallId, endedCallId) }?.let {
                 Log.d(TAG, "Dismissing incoming call screen (remote hangup)")
                 it.handler.post { it.dismissByRemote() }
             }
