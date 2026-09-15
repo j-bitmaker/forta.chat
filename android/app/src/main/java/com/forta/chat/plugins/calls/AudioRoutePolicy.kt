@@ -41,10 +41,13 @@ object AudioRoutePolicy {
      * headset the moment one connects. A loudspeaker the user pinned is asked
      * back, the same way it holds against a device change; any other pin holds
      * only while Telecom is on it, and an unpinned route is simply what the call
-     * now uses.
+     * now uses — except the earpiece in a video call. Telecom falls back to the
+     * earpiece when a headset leaves, whatever the call type, and a video call
+     * belongs on the loudspeaker unless the user put it at the ear.
      */
-    fun onTelecomRouteChanged(route: Device, pinned: Device?): Decision = when {
+    fun onTelecomRouteChanged(route: Device, pinned: Device?, callType: String = "voice"): Decision = when {
         pinned == Device.SPEAKER && route != Device.SPEAKER -> Decision(Device.SPEAKER, keepPin = true)
+        pinned == null && callType == "video" && route == Device.EARPIECE -> Decision(Device.SPEAKER, keepPin = false)
         else -> Decision(target = null, keepPin = pinned != null && pinned == route)
     }
 

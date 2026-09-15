@@ -1070,7 +1070,8 @@ class AudioRouter private constructor(private val context: Context) {
      *
      * Telecom owns the route of a self-managed call and switches it on its own —
      * to a headset the moment one connects — so its report is what the call
-     * really uses and what the UI shows. A loudspeaker the user pinned is asked
+     * really uses and what the UI shows. A loudspeaker the user pinned, and the
+     * loudspeaker of a video call Telecom dropped onto the earpiece, are asked
      * back through [setDeviceInternal]; see [AudioRoutePolicy.onTelecomRouteChanged].
      * Reports before [start] are ignored: start picks the call's first route
      * itself and asks Telecom for it.
@@ -1078,12 +1079,12 @@ class AudioRouter private constructor(private val context: Context) {
     fun onTelecomRouteChanged(route: Device) {
         if (!isActive) return
         synchronized(routeLock) {
-            val decision = AudioRoutePolicy.onTelecomRouteChanged(route, pinnedDevice)
+            val decision = AudioRoutePolicy.onTelecomRouteChanged(route, pinnedDevice, callType)
             if (!decision.keepPin) pinnedDevice = null
             val target = decision.target
             if (target != null) {
-                Log.d(TAG, "Telecom moved the call to $route — restoring pinned $target")
-                timeline.record("route", "telecom moved to $route, restoring $target")
+                Log.d(TAG, "Telecom moved the call to $route — asking for $target")
+                timeline.record("route", "telecom moved to $route, asking for $target")
                 setDeviceInternal(target)
             } else if (activeDevice != route) {
                 activeDevice = route

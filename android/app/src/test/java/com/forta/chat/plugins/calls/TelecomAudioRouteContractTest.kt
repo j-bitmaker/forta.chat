@@ -102,6 +102,15 @@ class TelecomAudioRouteContractTest {
         )
     }
 
+    @Test
+    fun theRouter_tellsThePolicyTheCallType_soAVideoCallCanReturnToTheLoudspeaker() {
+        val body = withoutComments(functionBody(router, "fun\\s+onTelecomRouteChanged\\s*\\("))
+        assertTrue(
+            "the policy must know a video call from a voice call:\n$body",
+            body.contains("AudioRoutePolicy.onTelecomRouteChanged(route, pinnedDevice, callType)"),
+        )
+    }
+
     /** Drops `//` comment tails so an assertion measures code, not prose. */
     private fun withoutComments(body: String): String =
         body.lines().joinToString("\n") { line ->

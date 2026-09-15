@@ -148,4 +148,53 @@ class AudioRoutePolicyTest {
             )
         }
     }
+
+    // -- A video call Telecom drops onto the earpiece --------------------------------
+    //
+    // Telecom falls back to the earpiece when a headset leaves, whatever the call
+    // type. A video call starts on the loudspeaker without a pin, so nothing asked
+    // for it again and the call stayed at the ear (route7v, 2026-09-15).
+
+    @Test
+    fun anUnpinnedVideoCall_telecomDropsOnTheEarpiece_isAskedBackToTheLoudspeaker() {
+        assertEquals(
+            AudioRoutePolicy.Decision(Device.SPEAKER, keepPin = false),
+            AudioRoutePolicy.onTelecomRouteChanged(Device.EARPIECE, pinned = null, callType = "video"),
+        )
+    }
+
+    @Test
+    fun anEarpieceTheUserPicked_holdsInAVideoCall() {
+        assertEquals(
+            AudioRoutePolicy.Decision(target = null, keepPin = true),
+            AudioRoutePolicy.onTelecomRouteChanged(Device.EARPIECE, pinned = Device.EARPIECE, callType = "video"),
+        )
+    }
+
+    @Test
+    fun aHeadsetPickInProgress_isNotOverriddenByTheLoudspeaker() {
+        // A Bluetooth pick may pass through the earpiece before Telecom reaches
+        // the headset; asking for the loudspeaker there would undo the pick.
+        val decision = AudioRoutePolicy.onTelecomRouteChanged(Device.EARPIECE, pinned = Device.BLUETOOTH, callType = "video")
+        assertEquals(null, decision.target)
+    }
+
+    @Test
+    fun aVoiceCall_staysOnTheEarpieceTelecomChose() {
+        assertEquals(
+            AudioRoutePolicy.Decision(target = null, keepPin = false),
+            AudioRoutePolicy.onTelecomRouteChanged(Device.EARPIECE, pinned = null, callType = "voice"),
+        )
+    }
+
+    @Test
+    fun anUnpinnedVideoCall_followsTelecomEverywhereElse() {
+        for (route in Device.values().filter { it != Device.EARPIECE }) {
+            assertEquals(
+                "route $route",
+                AudioRoutePolicy.Decision(target = null, keepPin = false),
+                AudioRoutePolicy.onTelecomRouteChanged(route, pinned = null, callType = "video"),
+            )
+        }
+    }
 }
