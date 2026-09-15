@@ -37,7 +37,7 @@ class FakeGain extends FakeNode {
   gain = new FakeParam();
 }
 
-class FakeAudioContext {
+class FakeAudioContext extends EventTarget {
   static instances: FakeAudioContext[] = [];
   static initialState: AudioContextState = "running";
   state: AudioContextState = FakeAudioContext.initialState;
@@ -45,6 +45,7 @@ class FakeAudioContext {
   oscillators: FakeOscillator[] = [];
   gains: FakeGain[] = [];
   constructor() {
+    super();
     FakeAudioContext.instances.push(this);
   }
   createOscillator(): FakeOscillator {
@@ -65,6 +66,13 @@ class FakeAudioContext {
   });
 }
 
+// What Chromium does to a running context whose audio device fails
+// (AudioContext::HandleRenderError): it stops rendering and suspends it.
+function dropTone(ctx: FakeAudioContext): void {
+  ctx.state = "suspended";
+  ctx.dispatchEvent(new Event("statechange"));
+}
+
 describe("page-awake tone", () => {
   beforeEach(() => {
     __resetPageAwakeToneForTests();
@@ -76,6 +84,7 @@ describe("page-awake tone", () => {
 
   afterEach(() => {
     __resetPageAwakeToneForTests();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -194,6 +203,68 @@ describe("page-awake tone", () => {
     holdPageAwake("call-b");
 
     expect(ctx.resume).toHaveBeenCalledOnce();
+    expect(FakeAudioContext.instances).toHaveLength(1);
+  });
+
+  it("resumes the tone when the audio device drops it during the call", async () => {
+    // On a Samsung the tone's stream opened just as the call audio moved to
+    // AirPods; the WebView logged the render error, the tone stayed suspended
+    // and the page froze a minute later with the call screen open (airpods4,
+    // 2026-09-15).
+    vi.useFakeTimers();
+    holdPageAwake("call-a");
+    const [ctx] = FakeAudioContext.instances;
+
+    dropTone(ctx);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(ctx.resume).toHaveBeenCalledOnce();
+    expect(ctx.state).toBe("running");
+    expect(FakeAudioContext.instances).toHaveLength(1);
+  });
+
+  it("resumes once for a burst of drops while the audio route settles", async () => {
+    vi.useFakeTimers();
+    holdPageAwake("call-a");
+    const [ctx] = FakeAudioContext.instances;
+
+    dropTone(ctx);
+    dropTone(ctx);
+    dropTone(ctx);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(ctx.resume).toHaveBeenCalledOnce();
+  });
+
+  it("starts a fresh tone when the dropped one will not resume", async () => {
+    vi.useFakeTimers();
+    holdPageAwake("call-a");
+    const [ctx] = FakeAudioContext.instances;
+    ctx.resume.mockRejectedValueOnce(new Error("InvalidStateError"));
+
+    dropTone(ctx);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(ctx.close).toHaveBeenCalledOnce();
+    expect(FakeAudioContext.instances).toHaveLength(2);
+    const fresh = FakeAudioContext.instances[1];
+    expect(fresh.oscillators[0].start).toHaveBeenCalledOnce();
+
+    // The fresh tone is the same calls' tone: their last release stops it.
+    releasePageAwake("call-a");
+    expect(fresh.close).toHaveBeenCalledOnce();
+  });
+
+  it("does not bring the tone back when the call ends before it resumes", async () => {
+    vi.useFakeTimers();
+    holdPageAwake("call-a");
+    const [ctx] = FakeAudioContext.instances;
+
+    dropTone(ctx);
+    releasePageAwake("call-a");
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(ctx.resume).not.toHaveBeenCalled();
     expect(FakeAudioContext.instances).toHaveLength(1);
   });
 

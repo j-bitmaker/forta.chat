@@ -17,6 +17,13 @@
  *
  * Held per callId, so finalizing one call cannot silence the page while
  * another call is still live, and a call that has ended cannot hold it again.
+ *
+ * Chromium suspends a context whose audio device fails
+ * (AudioContext::HandleRenderError) and never resumes it by itself. On a
+ * Samsung the tone's stream opened just as the call audio moved to AirPods,
+ * the tone stayed suspended and the page froze a minute later with the call
+ * screen open (airpods4, 2026-09-15). A dropped tone is resumed, or replaced
+ * when it will not resume.
  */
 
 const TONE_HZ = 20;
@@ -27,6 +34,10 @@ const TONE_GAIN = 0.002;
 // caller who hangs up in between is released before that late hold arrives.
 // Remembering recent releases keeps it from playing for the rest of the process.
 const MAX_ENDED_CALLS = 32;
+// While the call audio is still moving between devices the resumed stream can
+// fail again, so a dropped tone waits a moment and a burst of drops resumes it
+// once. Chromium freezes the page only a minute after the tone goes quiet.
+const RESUME_DELAY_MS = 1000;
 
 interface Tone {
   ctx: AudioContext;
@@ -37,6 +48,7 @@ interface Tone {
 const holders = new Set<string>();
 const endedCalls = new Set<string>();
 let tone: Tone | null = null;
+let resumeTimer: ReturnType<typeof setTimeout> | null = null;
 
 function createTone(): Tone | null {
   const AudioContextCtor = globalThis.AudioContext;
@@ -59,12 +71,32 @@ function createTone(): Tone | null {
     osc.connect(gain);
     gain.connect(ctx.destination);
     osc.start();
-    return { ctx, osc, gain };
+    const created: Tone = { ctx, osc, gain };
+    ctx.addEventListener("statechange", () => onToneStateChange(created));
+    return created;
   } catch (e) {
     console.warn("[page-awake-tone] could not start the tone:", e);
     closeContext(ctx);
     return null;
   }
+}
+
+function onToneStateChange(changed: Tone): void {
+  if (tone !== changed || changed.ctx.state !== "suspended" || resumeTimer) return;
+  console.warn("[page-awake-tone] the tone was suspended, resuming it");
+  resumeTimer = setTimeout(resumeDroppedTone, RESUME_DELAY_MS);
+}
+
+function resumeDroppedTone(): void {
+  resumeTimer = null;
+  const dropped = tone;
+  if (!dropped || dropped.ctx.state !== "suspended") return;
+  dropped.ctx.resume().catch((e: unknown) => {
+    if (tone !== dropped) return;
+    console.warn("[page-awake-tone] resume failed, starting a new tone:", e);
+    stopTone();
+    tone = createTone();
+  });
 }
 
 function closeContext(ctx: AudioContext): void {
@@ -76,6 +108,10 @@ function closeContext(ctx: AudioContext): void {
 }
 
 function stopTone(): void {
+  if (resumeTimer) {
+    clearTimeout(resumeTimer);
+    resumeTimer = null;
+  }
   const current = tone;
   tone = null;
   if (!current) return;
