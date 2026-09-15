@@ -267,11 +267,77 @@ class AudioRoutePolicyTest {
         }
     }
 
+    // -- A headset the user picked, leaving ---------------------------------------------
+    //
+    // When a headset leaves, Telecom falls back to the earpiece and reports it about
+    // 200 ms before the device list loses the headset (route7v, 2026-09-15). Ending the
+    // pin on that report left the device change nothing to act on — the earpiece was
+    // still available — and a video call whose headset the user had picked stayed at
+    // the ear. The pin now ends where the class says: when the device itself goes away.
+
     @Test
-    fun anEarpieceReportWithoutAHop_stillEndsAHeadsetPin() {
+    fun telecomFallingBackToTheEarpiece_keepsAHeadsetPin_forTheDeviceList() {
+        for (headset in listOf(Device.BLUETOOTH, Device.WIRED_HEADSET)) {
+            for (callType in listOf("voice", "video")) {
+                assertEquals(
+                    "$headset, $callType",
+                    AudioRoutePolicy.Decision(target = null, keepPin = true),
+                    AudioRoutePolicy.onTelecomRouteChanged(Device.EARPIECE, pinned = headset, callType = callType),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun telecomMovingAHeadsetPinnedCallAnywhereElse_stillEndsThePin() {
+        val moves = listOf(
+            Device.BLUETOOTH to Device.SPEAKER,
+            Device.BLUETOOTH to Device.WIRED_HEADSET,
+            Device.WIRED_HEADSET to Device.SPEAKER,
+            Device.WIRED_HEADSET to Device.BLUETOOTH,
+        )
+        for ((headset, route) in moves) {
+            assertEquals("$headset → $route", false, AudioRoutePolicy.onTelecomRouteChanged(route, pinned = headset).keepPin)
+        }
+    }
+
+    @Test
+    fun aPickedHeadsetGone_afterTelecomLeftIt_returnsAVideoCallToTheLoudspeaker() {
+        for (headset in listOf(Device.BLUETOOTH, Device.WIRED_HEADSET)) {
+            assertEquals(
+                "$headset",
+                AudioRoutePolicy.Decision(Device.SPEAKER, keepPin = false),
+                decide(Device.EARPIECE, builtIn, pinned = headset, callType = "video"),
+            )
+        }
+    }
+
+    @Test
+    fun aPickedHeadsetGone_afterTelecomLeftIt_leavesAVoiceCallOnTheEarpiece() {
+        // The earpiece is where a voice call falls back, and Telecom is already there.
         assertEquals(
             AudioRoutePolicy.Decision(target = null, keepPin = false),
-            AudioRoutePolicy.onTelecomRouteChanged(Device.EARPIECE, pinned = Device.BLUETOOTH, headsetHop = false),
+            decide(Device.EARPIECE, builtIn, pinned = Device.BLUETOOTH, callType = "voice"),
         )
+    }
+
+    @Test
+    fun aVideoCallsPickedHeadsetLeaving_endsOnTheLoudspeaker_whenTelecomReportsFirst() {
+        // route7v order. The router mirrors Telecom's earpiece before the device change.
+        var pin: Device? = Device.BLUETOOTH
+        val report = AudioRoutePolicy.onTelecomRouteChanged(Device.EARPIECE, pin, callType = "video")
+        assertEquals(null, report.target)
+        if (!report.keepPin) pin = null
+        assertEquals(Device.SPEAKER, decide(Device.EARPIECE, builtIn, pinned = pin, callType = "video").target)
+    }
+
+    @Test
+    fun aVideoCallsPickedHeadsetLeaving_endsOnTheLoudspeaker_whenTheDeviceListReportsFirst() {
+        var pin: Device? = Device.BLUETOOTH
+        val devices = decide(Device.BLUETOOTH, builtIn, pinned = pin, callType = "video")
+        assertEquals(Device.SPEAKER, devices.target)
+        if (!devices.keepPin) pin = null
+        // Telecom's own fallback to the earpiece, reported before it acts on the request.
+        assertEquals(Device.SPEAKER, AudioRoutePolicy.onTelecomRouteChanged(Device.EARPIECE, pin, callType = "video").target)
     }
 }

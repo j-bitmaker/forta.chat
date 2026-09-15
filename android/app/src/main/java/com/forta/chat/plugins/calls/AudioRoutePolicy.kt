@@ -32,10 +32,14 @@ object AudioRoutePolicy {
         val target = when {
             Device.BLUETOOTH in available && active != Device.BLUETOOTH && pin != Device.SPEAKER -> Device.BLUETOOTH
             active !in available -> fallback(available, callType)
+            // A pinned headset gone after Telecom already left it (see onTelecomRouteChanged).
+            pinned != null && pin == null -> fallback(available, callType).takeIf { it != active }
             else -> null
         }
         return Decision(target, keepPin = pin != null)
     }
+
+    private val HEADSETS = setOf(Device.BLUETOOTH, Device.WIRED_HEADSET)
 
     /**
      * The route after Telecom reports one it switched to on its own.
@@ -47,6 +51,10 @@ object AudioRoutePolicy {
      * now uses — except the earpiece in a video call. Telecom falls back to the
      * earpiece when a headset leaves, whatever the call type, and a video call
      * belongs on the loudspeaker unless the user put it at the ear.
+     *
+     * A headset pin outlives that fallback. Telecom reports the earpiece about
+     * 200 ms before the device list loses the headset (route7v), so ending the pin
+     * here left [onDevicesChanged] nothing to act on; the pin ends there instead.
      *
      * [headsetHop] marks a headset pick that went to the earpiece first (see
      * [firstStep]): Telecom reaching the earpiece is the cue to ask for the headset.
@@ -64,7 +72,10 @@ object AudioRoutePolicy {
             Decision(target = null, keepPin = true, keepHop = true)
         pinned == Device.SPEAKER && route != Device.SPEAKER -> Decision(Device.SPEAKER, keepPin = true)
         pinned == null && callType == "video" && route == Device.EARPIECE -> Decision(Device.SPEAKER, keepPin = false)
-        else -> Decision(target = null, keepPin = pinned != null && pinned == route)
+        else -> Decision(
+            target = null,
+            keepPin = pinned != null && (pinned == route || pinned in HEADSETS && route == Device.EARPIECE),
+        )
     }
 
     /**
