@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 
 // ---------------------------------------------------------------------------
 // Mocks — must be set up before importing call-service
@@ -260,6 +262,14 @@ vi.mock('./call-tab-lock', () => ({
   checkOtherTabHasCall: vi.fn().mockResolvedValue(false),
 }));
 
+// The page-awake tone keeps Chromium from freezing the page while the native
+// call screen hides it; these tests only check which call holds it, and when.
+const mockHoldPageAwake = vi.fn();
+vi.mock('./page-awake-tone', () => ({
+  holdPageAwake: mockHoldPageAwake,
+  releasePageAwake: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -347,6 +357,22 @@ describe('call-service permission flow', () => {
       await service.startCall('!room:matrix.org', 'voice');
 
       expect(mockStartAudioRouting).not.toHaveBeenCalled();
+    });
+
+    it('keeps the page audible for an outgoing call before the native call screen hides it', async () => {
+      // Chromium freezes a hidden, silent page after a minute. A frozen page
+      // never hears the peer hang up, so the call screen stays open.
+      const { useCallService } = await import('./call-service');
+      const service = useCallService();
+      await service.startCall('!room:matrix.org', 'voice');
+
+      expect(mockNativeWebRTCMethods.launchCallUI).toHaveBeenCalledWith(
+        expect.objectContaining({ callId: 'test-call-id', direction: 'outgoing' }),
+      );
+      expect(mockHoldPageAwake).toHaveBeenCalledWith('test-call-id');
+      expect(mockHoldPageAwake.mock.invocationCallOrder[0]).toBeLessThan(
+        mockNativeWebRTCMethods.launchCallUI.mock.invocationCallOrder[0],
+      );
     });
 
     // WEE-49 / forta-bugs#460: a fast double-tap on the dial button (or a
@@ -994,6 +1020,73 @@ describe('call-service permission flow', () => {
       const answerOrder = mockAnswer.mock.invocationCallOrder[0];
       const routingOrder = mockStartAudioRouting.mock.invocationCallOrder[0];
       expect(answerOrder).toBeLessThan(routingOrder);
+    });
+
+    it('keeps the page audible for the answered call before the native call screen hides it', async () => {
+      seedIncomingCall('voice');
+
+      const { useCallService } = await import('./call-service');
+      const service = useCallService();
+      await service.answerCall();
+
+      expect(mockHoldPageAwake).toHaveBeenCalledWith('incoming-call-id');
+      expect(mockHoldPageAwake.mock.invocationCallOrder[0]).toBeLessThan(
+        mockNativeWebRTCMethods.launchCallUI.mock.invocationCallOrder[0],
+      );
+    });
+  });
+
+  describe('pre-accepted incoming call', () => {
+    it('keeps the page audible before the fast path launches the call screen', async () => {
+      const { consumePendingAnswerCallId } = await import('@/shared/lib/native-calls');
+      vi.mocked(consumePendingAnswerCallId).mockResolvedValueOnce(true);
+      const call = {
+        callId: 'pre-accepted-call-id',
+        roomId: '!room:matrix.org',
+        type: 'voice',
+        on: mockOn,
+        off: mockOff,
+        answer: mockAnswer,
+        reject: mockReject,
+        localUsermediaStream: null,
+        localScreensharingStream: null,
+        remoteUsermediaStream: null,
+        remoteScreensharingStream: null,
+        remoteUsermediaFeed: null,
+        getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+      };
+      mockCallStore.matrixCall = call;
+
+      const { useCallService } = await import('./call-service');
+      await useCallService().handleIncomingCall(call as never);
+
+      expect(mockNativeWebRTCMethods.launchCallUI).toHaveBeenCalledWith(
+        expect.objectContaining({ callId: 'pre-accepted-call-id', direction: 'incoming' }),
+      );
+      expect(mockHoldPageAwake).toHaveBeenCalledWith('pre-accepted-call-id');
+      expect(mockHoldPageAwake.mock.invocationCallOrder[0]).toBeLessThan(
+        mockNativeWebRTCMethods.launchCallUI.mock.invocationCallOrder[0],
+      );
+      // Let the fast path's own answerCall finish inside this test.
+      await vi.waitFor(() => expect(mockAnswer).toHaveBeenCalled());
+    });
+  });
+
+  describe('native call screen launch site', () => {
+    it('launches the native call screen only through the helper that keeps the page audible', () => {
+      // The tests above cover today's three launches. A fourth one calling
+      // NativeWebRTC.launchCallUI directly would bring the frozen page back
+      // for its calls, so every launch has to go through one place.
+      const code = readFileSync(resolve(__dirname, 'call-service.ts'), 'utf-8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '');
+
+      expect(code.match(/NativeWebRTC\.launchCallUI\(/g)).toHaveLength(1);
+      // Android only: the freeze is Chromium's. The iOS WKWebView has no such
+      // freeze, and a tone there would share the audio session with the call.
+      expect(code).toMatch(
+        /if \(isAndroid\) holdPageAwake\(options\.callId\);\s*return NativeWebRTC\.launchCallUI\(options\);/,
+      );
     });
   });
 

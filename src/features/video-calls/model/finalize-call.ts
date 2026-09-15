@@ -1,6 +1,7 @@
 import { isNative } from "@/shared/lib/platform";
 import { nativeCallBridge, retirePendingMarkers } from "@/shared/lib/native-calls";
 import { NativeWebRTC } from "@/shared/lib/native-webrtc";
+import { releasePageAwake } from "./page-awake-tone";
 
 /**
  * Centralized call cleanup. Every termination path (hangup, reject,
@@ -21,6 +22,8 @@ import { NativeWebRTC } from "@/shared/lib/native-webrtc";
  *      (this is what abandons audio focus and releases the wake lock)
  *   4. closeAllPeerConnections → AudioSource/AudioTrack disposed,
  *      AudioRecord released so the mic is free for the next call / music
+ *   5. releasePageAwake → this call no longer keeps the page audible, so a
+ *      hidden page may be frozen again (see page-awake-tone.ts)
  *
  * Without step 4 in particular, a leaked AudioRecord can lock the
  * microphone for the whole device until the OS process is killed.
@@ -128,6 +131,11 @@ export async function finalizeCall(
       if (isNative) {
         await safeStep("closeAllPeerConnections", callId, () => NativeWebRTC.closeAllPeerConnections());
       }
+
+      // Step 5: let the page fall silent. The tone kept Chromium from freezing
+      // the page behind the native call screen, and every step above waits on
+      // a native reply that a frozen page would never receive.
+      await safeStep("releasePageAwake", callId, () => releasePageAwake(callId));
 
       emit({ type: "call_finalized", reason, callId });
     } finally {

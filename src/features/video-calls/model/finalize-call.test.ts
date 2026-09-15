@@ -50,6 +50,12 @@ vi.mock("@/shared/lib/native-webrtc", () => ({
   }),
 }));
 
+const mockReleasePageAwake: Mock = vi.fn();
+
+vi.mock("./page-awake-tone", () => ({
+  releasePageAwake: mockReleasePageAwake,
+}));
+
 // ---------------------------------------------------------------------------
 
 describe("finalizeCall — central call cleanup", () => {
@@ -124,6 +130,31 @@ describe("finalizeCall — central call cleanup", () => {
     expect(stopOrder).toBeLessThan(reportOrder);
     expect(reportOrder).toBeLessThan(dismissOrder);
     expect(dismissOrder).toBeLessThan(closeOrder);
+  });
+
+  it("lets the page fall silent for this call only after the native teardown", async () => {
+    // The page-awake tone keeps Chromium from freezing the page while the
+    // native call screen hides it. Every step above waits on a native reply
+    // that a frozen page never receives, so the tone goes last.
+    const { finalizeCall } = await import("./finalize-call");
+    await finalizeCall("hangup", "callId-tone");
+
+    expect(mockReleasePageAwake).toHaveBeenCalledWith("callId-tone");
+    expect(mockReleasePageAwake.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mockCloseAllPeerConnections.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("releases the page-awake tone even when every native step fails", async () => {
+    mockStopAudioRouting.mockRejectedValueOnce(new Error("a"));
+    mockReportCallEnded.mockRejectedValueOnce(new Error("b"));
+    mockDismissCallUI.mockRejectedValueOnce(new Error("c"));
+    mockCloseAllPeerConnections.mockRejectedValueOnce(new Error("d"));
+
+    const { finalizeCall } = await import("./finalize-call");
+    await finalizeCall("error", "callId-tone-allfail");
+
+    expect(mockReleasePageAwake).toHaveBeenCalledWith("callId-tone-allfail");
   });
 
   it("invokes the same four steps for reject", async () => {

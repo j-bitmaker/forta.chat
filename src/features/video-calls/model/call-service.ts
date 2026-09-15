@@ -29,6 +29,7 @@ import {
 } from "@/shared/lib/native-calls";
 import { ensureCallPermissions, PermissionDeniedError, callPermissionError } from "./permissions";
 import { finalizeCall } from "./finalize-call";
+import { holdPageAwake } from "./page-awake-tone";
 import {
   isLegacyWebView,
   shouldWarnLegacyWebView,
@@ -983,6 +984,18 @@ async function warnIfCallBypassesTor(): Promise<void> {
   }
 }
 
+/**
+ * Every native call screen goes up through here. The screen covers the page,
+ * and Chromium freezes a hidden page that stays silent for a minute; a frozen
+ * page never hears the peer hang up (see page-awake-tone.ts). finalizeCall
+ * releases the hold. Android only: the freeze is Chromium's, and iOS has no
+ * NativeWebRTC call screen to cover the page.
+ */
+function launchNativeCallScreen(options: Parameters<typeof NativeWebRTC.launchCallUI>[0]): Promise<void> {
+  if (isAndroid) holdPageAwake(options.callId);
+  return NativeWebRTC.launchCallUI(options);
+}
+
 // O05/O14: the bug report's call section gets the last connection's ICE
 // facts and the Tor state from here; shared/ cannot import this feature.
 registerCallDiagnosticsExtras(async () => ({
@@ -1155,7 +1168,7 @@ export function useCallService() {
           hasVideo: type === 'video',
         });
       }).catch(() => {});
-      NativeWebRTC.launchCallUI({
+      launchNativeCallScreen({
         callerName: peerName,
         callType: type,
         callId: call.callId,
@@ -1369,7 +1382,7 @@ export function useCallService() {
       // CallActivity covers the Vue UI, so the user doesn't see the
       // incoming-ring screen flash through before answerCall() sets
       // status=connecting a moment later.
-      NativeWebRTC.launchCallUI({
+      launchNativeCallScreen({
         callerName: peerName,
         callType: callInfo.type,
         callId: matrixCall.callId,
@@ -1652,7 +1665,7 @@ export function useCallService() {
 
       // Non-blocking native UX transitions.
       if (isNative && callStore.activeCall) {
-        NativeWebRTC.launchCallUI({
+        launchNativeCallScreen({
           callerName: callStore.activeCall.peerName,
           callType: callStore.activeCall.type,
           callId: call.callId,
