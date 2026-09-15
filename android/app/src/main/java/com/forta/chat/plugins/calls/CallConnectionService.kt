@@ -837,14 +837,15 @@ class CallConnection(
      * Android 14, AudioRouter's setCommunicationDevice was recorded and ignored
      * through 16 speaker picks, while Telecom's own switch to a headset was the
      * only change anyone heard (stage 3, 2026-09-13). API 34 takes an endpoint
-     * Telecom offered; before that, or when none of the offered endpoints
+     * Telecom offered; before that, for a Bluetooth headset (see
+     * [TelecomAudioRoute.viaCallEndpoint]), or when none of the offered endpoints
      * matches, the route constant.
      *
      * @return false when this connection can no longer carry a request.
      */
     fun requestAudioRoute(device: AudioRouter.Device): Boolean {
         if (released.get()) return false
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && TelecomAudioRoute.viaCallEndpoint(device)) {
             val type = TelecomAudioRoute.endpointTypeFor(device)
             val endpoint = availableEndpoints.firstOrNull { it.endpointType == type }
             if (endpoint != null) {
@@ -864,6 +865,7 @@ class CallConnection(
                 return true
             }
         }
+        Log.d("CallConnection", "setAudioRoute($device)")
         @Suppress("DEPRECATION")
         setAudioRoute(TelecomAudioRoute.routeFor(device))
         return true

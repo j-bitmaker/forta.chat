@@ -541,8 +541,6 @@ class AudioRouter private constructor(private val context: Context) {
 
         activeDevice = if (callType == "video") Device.SPEAKER else Device.EARPIECE
         pinnedDevice = null
-        telecomRoute = null
-        headsetHop = false
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
         timeline.record("mode", "MODE_IN_COMMUNICATION")
         // From here the session has a real owner with its own watchdog; the
@@ -1061,25 +1059,11 @@ class AudioRouter private constructor(private val context: Context) {
         Log.d(TAG, "setDevice: $device (pinned)")
         synchronized(routeLock) {
             pinnedDevice = device
-            val first = AudioRoutePolicy.firstStep(device, telecomRoute)
-            headsetHop = first != device
-            if (headsetHop) {
-                Log.d(TAG, "setDevice: $device via $first — Telecom is on $telecomRoute")
-                timeline.record("route", "$device via $first")
-            }
-            setDeviceInternal(first)
-            // While Telecom takes the first step, the UI shows the pick.
-            if (headsetHop) activeDevice = device
+            setDeviceInternal(device)
         }
         notifyListener()
         return true
     }
-
-    // The route Telecom last reported for this call, and whether a headset pick is
-    // on its way through the earpiece (see AudioRoutePolicy.firstStep). Written
-    // under routeLock; start() clears both along with the pin.
-    @Volatile private var telecomRoute: Device? = null
-    @Volatile private var headsetHop = false
 
     /**
      * Telecom switched this call's audio route.
@@ -1089,17 +1073,13 @@ class AudioRouter private constructor(private val context: Context) {
      * really uses and what the UI shows. A loudspeaker the user pinned, and the
      * loudspeaker of a video call Telecom dropped onto the earpiece, are asked
      * back through [setDeviceInternal]; see [AudioRoutePolicy.onTelecomRouteChanged].
-     * A headset pick on its way through the earpiece continues once Telecom
-     * reports the earpiece; the policy decides whether a report ends the hop.
      * Reports before [start] are ignored: start picks the call's first route
      * itself and asks Telecom for it.
      */
     fun onTelecomRouteChanged(route: Device) {
         if (!isActive) return
         synchronized(routeLock) {
-            telecomRoute = route
-            val decision = AudioRoutePolicy.onTelecomRouteChanged(route, pinnedDevice, callType, headsetHop)
-            headsetHop = decision.keepHop
+            val decision = AudioRoutePolicy.onTelecomRouteChanged(route, pinnedDevice, callType)
             if (!decision.keepPin) pinnedDevice = null
             val target = decision.target
             if (target != null) {

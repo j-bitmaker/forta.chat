@@ -61,6 +61,17 @@ class TelecomAudioRouteContractTest {
     }
 
     @Test
+    fun aHeadsetRequest_skipsTheEndpointPath_onApi34() {
+        // After a pick took the audio off the AirPods, Samsung's Android 14 Telecom
+        // acknowledged requestCallEndpointChange(BLUETOOTH) and never switched (airpods1,
+        // airpods2, 2026-09-15); setAudioRoute(ROUTE_BLUETOOTH) switched 5 of 5 (airpods-exp1).
+        val body = withoutComments(functionBody(service, "fun\\s+requestAudioRoute\\s*\\("))
+        val gate = body.indexOf("Build.VERSION_CODES.UPSIDE_DOWN_CAKE && TelecomAudioRoute.viaCallEndpoint(device)")
+        val endpoint = body.indexOf("requestCallEndpointChange(")
+        assertTrue("the endpoint path must be gated on the device as well as the API level:\n$body", gate in 0 until endpoint)
+    }
+
+    @Test
     fun theConnection_keepsTheEndpointsTelecomOffers() {
         val body = functionBody(service, "override\\s+fun\\s+onAvailableCallEndpointsChanged\\s*\\(")
         assertTrue(body.contains("this.availableEndpoints = "))
@@ -106,38 +117,22 @@ class TelecomAudioRouteContractTest {
     fun theRouter_tellsThePolicyTheCallType_soAVideoCallCanReturnToTheLoudspeaker() {
         val body = withoutComments(functionBody(router, "fun\\s+onTelecomRouteChanged\\s*\\("))
         assertTrue(
-            "the policy must know a video call from a voice call, and a hop in progress:\n$body",
-            body.contains("AudioRoutePolicy.onTelecomRouteChanged(route, pinnedDevice, callType, headsetHop)"),
+            "the policy must know a video call from a voice call:\n$body",
+            body.contains("AudioRoutePolicy.onTelecomRouteChanged(route, pinnedDevice, callType)"),
         )
     }
 
     @Test
-    fun theRouter_remembersTelecomsRoute_andLetsThePolicyEndTheHop() {
-        val body = withoutComments(functionBody(router, "fun\\s+onTelecomRouteChanged\\s*\\("))
-        val lock = body.indexOf("synchronized(routeLock)")
-        val recorded = body.indexOf("telecomRoute = route")
-        val decide = body.indexOf("AudioRoutePolicy.onTelecomRouteChanged(")
-        val hopDecided = body.indexOf("headsetHop = decision.keepHop")
-        assertTrue("Telecom's route must be recorded under routeLock:\n$body", lock in 0 until recorded)
-        assertTrue("Telecom's route must be recorded before deciding:\n$body", recorded in 0 until decide)
-        assertTrue("whether a hop goes on is the policy's call, applied after deciding:\n$body", decide in 0 until hopDecided)
-    }
-
-    @Test
-    fun aPick_takesThePolicysFirstStep_underTheRouteLock() {
+    fun aPick_asksTelecomForThePickedDevice() {
+        // 07e20893 sent a headset pick from the loudspeaker through the earpiece first. On
+        // the Samsung the hop's own switch came too soon before the headset request to get
+        // Telecom past its drop (airpods2: 0 of 4); a request that skips the endpoint path
+        // needs no first step.
         val body = withoutComments(functionBody(router, "fun\\s+setDevice\\s*\\("))
         val lock = body.indexOf("synchronized(routeLock)")
-        val step = body.indexOf("AudioRoutePolicy.firstStep(device, telecomRoute)")
-        assertTrue("a pick must ask the policy for its first step under routeLock:\n$body", lock in 0 until step)
-        assertTrue("a two-step pick must be marked:\n$body", body.contains("headsetHop = first != device"))
-        assertTrue("the first step is what Telecom is asked for:\n$body", body.contains("setDeviceInternal(first)"))
-    }
-
-    @Test
-    fun start_forgetsThePreviousCallsRouteAndHop() {
-        val body = withoutComments(functionBody(router, "fun\\s+start\\s*\\("))
-        assertTrue("start() must forget Telecom's last route:\n$body", body.contains("telecomRoute = null"))
-        assertTrue("start() must end any hop:\n$body", body.contains("headsetHop = false"))
+        val ask = body.indexOf("setDeviceInternal(device)")
+        assertTrue("a pick must ask for the picked device under routeLock:\n$body", lock in 0 until ask)
+        assertFalse("a pick must not route through another device first:\n$body", body.contains("firstStep"))
     }
 
     /** Drops `//` comment tails so an assertion measures code, not prose. */

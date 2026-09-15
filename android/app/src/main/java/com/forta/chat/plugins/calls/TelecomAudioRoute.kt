@@ -8,10 +8,11 @@ import com.forta.chat.plugins.calls.AudioRouter.Device
  * Translates the router's devices into Telecom's route vocabularies and back.
  *
  * Telecom owns the audio route of a self-managed call, so a pick has to reach it
- * as a `CallAudioState.ROUTE_*` constant (API 23-33) or as a `CallEndpoint` of
- * the matching type (API 34+), and Telecom's reports have to come back as a
- * [Device]. Pure so the table is testable without Telecom; the constants are
- * compile-time values, so nothing here loads an API 34 class on older Android.
+ * as a `CallAudioState.ROUTE_*` constant (API 23-33, and a Bluetooth headset on
+ * any API — see [viaCallEndpoint]) or as a `CallEndpoint` of the matching type (API 34+),
+ * and Telecom's reports have to come back as a [Device]. Pure so the table is
+ * testable without Telecom; the constants are compile-time values, so nothing
+ * here loads an API 34 class on older Android.
  */
 object TelecomAudioRoute {
 
@@ -37,6 +38,19 @@ object TelecomAudioRoute {
         Device.WIRED_HEADSET -> CallEndpoint.TYPE_WIRED_HEADSET
         Device.SPEAKER -> CallEndpoint.TYPE_SPEAKER
     }
+
+    /**
+     * Whether an API 34+ request for [device] names a `CallEndpoint` rather than
+     * the route constant.
+     *
+     * A Bluetooth headset does not. On a Samsung with Android 14, once a pick had
+     * taken the audio off the AirPods, Telecom acknowledged
+     * `requestCallEndpointChange` for the headset and never switched to it until a
+     * switch between two other routes had settled (airpods1, airpods2, 2026-09-15).
+     * `setAudioRoute(ROUTE_BLUETOOTH)` goes straight to Telecom's route state
+     * machine and reached the headset 5 of 5 in the same situation (airpods-exp1).
+     */
+    fun viaCallEndpoint(device: Device): Boolean = device != Device.BLUETOOTH
 
     /** Null for an endpoint no in-call control can show: streaming or unknown. */
     fun deviceForEndpointType(type: Int): Device? = when (type) {

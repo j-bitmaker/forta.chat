@@ -57,6 +57,16 @@ class TelecomAudioRouteTest {
     }
 
     @Test
+    fun onlyABluetoothRequest_skipsTheEndpointPath() {
+        // Samsung's Android 14 Telecom dropped endpoint requests for the AirPods after a
+        // pick took the audio off them; the route constant reached the headset 5 of 5.
+        assertEquals(false, TelecomAudioRoute.viaCallEndpoint(Device.BLUETOOTH))
+        for (device in Device.values().filter { it != Device.BLUETOOTH }) {
+            assertEquals("$device", true, TelecomAudioRoute.viaCallEndpoint(device))
+        }
+    }
+
+    @Test
     fun everyDevice_survivesBothRoundTrips() {
         for (device in Device.values()) {
             assertEquals(device, TelecomAudioRoute.deviceForRoute(TelecomAudioRoute.routeFor(device)))

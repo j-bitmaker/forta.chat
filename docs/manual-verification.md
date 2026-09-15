@@ -1564,7 +1564,52 @@
 - Остаточное: если Telecom дойдёт до трубки, но гарнитуру не подключит, звук останется в
   трубке, а значок «Аудио» покажет AirPods.
 - Статус: ☐ провалено 2026-09-15 (`airpods1`, `airpods2`): переход через трубку подключает AirPods
-  не всегда; пробная сборка с `setAudioRoute` — 5 из 5
+  не всегда; пробная сборка с `setAudioRoute` — 5 из 5. Починка «Выбор AirPods доходит до гарнитуры с
+  любого маршрута» убрала переход через трубку, так что шаги 3–6 в этом виде не повторить
+
+### Выбор AirPods доходит до гарнитуры с любого маршрута
+- Коммит: `<этот>`
+- Почему нужен человек: тесты доказывают правило и проводку.
+  - На Android 14 запрос Bluetooth-гарнитуры идёт через `setAudioRoute(ROUTE_BLUETOOTH)`, а не через
+    `requestCallEndpointChange`; динамик и трубка — по-прежнему через endpoint (`TelecomAudioRouteTest`,
+    `TelecomAudioRouteContractTest`).
+  - Выбор просит само выбранное устройство: перехода через трубку из `07e20893` больше нет
+    (`TelecomAudioRouteContractTest`).
+  - Подключит ли Telecom гарнитуру, видно только на аппарате с AirPods.
+- На чём: реальный Android 14 (API 34+) с AirPods; годится Samsung SM-A528B ↔ веб TEST1
+  (`scratchpad/run-airpods-route.sh`, видеозвонок — `VIDEO=1`). На Android 13 и ниже гарнитура и раньше
+  шла через `setAudioRoute`.
+- Найдено 2026-09-15 при проверке `07e20893` с владельцем (`airpods1`, `airpods2`).
+  - Когда выбор другого маршрута снял звук с гарнитуры, Telecom на Samsung молча отбрасывал
+    `requestCallEndpointChange(BLUETOOTH)` — до переключения между двумя маршрутами без гарнитуры,
+    начатого хотя бы за ~2 с до запроса. Переход через трубку просил гарнитуру слишком рано: с «Динамика»
+    AirPods подключались 4 из 7 и 0 из 4.
+  - Пробная сборка с `setAudioRoute` (`airpods-exp1`) подключила AirPods 5 из 5 с первого нажатия.
+- Шаги:
+  1. `adb logcat -v time > /tmp/run.log &`.
+  2. AirPods подключены к телефону. Голосовой звонок с веба TEST1, принять, «Аудио» → «Динамик» — звук
+     внизу.
+  3. «Аудио» → AirPods.
+     - **Ожидается:** в логе `setDevice: BLUETOOTH (pinned)` и `setAudioRoute(BLUETOOTH)`. У Telecom в
+       пределах ~50 мс `USER_SWITCH_BLUETOOTH` и `Entering state ActiveBluetoothRoute`, затем
+       `onCallEndpointChanged: … -> BLUETOOTH`. Звук в AirPods, трубка перед этим не звучит. Строк
+       `via EARPIECE` и `requestCallEndpointChange(BLUETOOTH)` нет.
+     - **Раньше:** `setDevice: BLUETOOTH via EARPIECE`, `requestCallEndpointChange(BLUETOOTH): done` — и
+       часто звук оставался в трубке.
+  4. Повторить шаги 2–3 ещё четыре раза подряд — AirPods каждый раз.
+  5. Из трубки: «Аудио» → «Динамик телефона», затем AirPods — как в шаге 3. Ещё четыре раза.
+  6. Видеозвонок: шаги 2–3 — звук в AirPods. Убрать AirPods в кейс — звук на громком динамике
+     (`routing to SPEAKER`, как в записи «Видеозвонок с выбранными вручную AirPods…»).
+  7. Регресс: «Динамик» и «Динамик телефона» по-прежнему дают `requestCallEndpointChange(SPEAKER): done`
+     и `requestCallEndpointChange(EARPIECE): done`, звук там, где выбран.
+- Остаточное:
+  - `setAudioRoute` не называет гарнитуру: при двух Bluetooth-гарнитурах Telecom подключит свою активную.
+    В интерфейсе и так один пункт Bluetooth.
+  - Механизм отказа внутри Samsung Telecom не выяснен. Путь `setAudioRoute` для гарнитуры проверен только
+    на Samsung с Android 14: другие производители и Android 15 и новее не проверялись.
+  - Если Telecom гарнитуру всё же не подключит, значок «Аудио» покажет AirPods, пока Telecom не сообщит
+    свой маршрут. Так было и раньше.
+- Статус: ☐ не проверено
 
 ### Видеозвонок с выбранными вручную AirPods возвращается на динамик, когда они уходят
 - Коммит: `4af24d71`

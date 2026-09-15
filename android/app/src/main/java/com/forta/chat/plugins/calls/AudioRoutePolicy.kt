@@ -16,11 +16,8 @@ import com.forta.chat.plugins.calls.AudioRouter.Device
  */
 object AudioRoutePolicy {
 
-    /**
-     * [target] null = leave the route alone; [keepPin] false = the pin is gone;
-     * [keepHop] true = a headset pick is still on its way through the earpiece.
-     */
-    data class Decision(val target: Device?, val keepPin: Boolean, val keepHop: Boolean = false)
+    /** [target] null = leave the route alone; [keepPin] false = the pin is gone. */
+    data class Decision(val target: Device?, val keepPin: Boolean)
 
     fun onDevicesChanged(
         active: Device,
@@ -55,21 +52,8 @@ object AudioRoutePolicy {
      * A headset pin outlives that fallback. Telecom reports the earpiece about
      * 200 ms before the device list loses the headset (route7v), so ending the pin
      * here left [onDevicesChanged] nothing to act on; the pin ends there instead.
-     *
-     * [headsetHop] marks a headset pick that went to the earpiece first (see
-     * [firstStep]): Telecom reaching the earpiece is the cue to ask for the headset.
-     * A loudspeaker report in between is noise — before API 34 every audio state
-     * change repeats the route — so the hop and the pin wait for the earpiece.
      */
-    fun onTelecomRouteChanged(
-        route: Device,
-        pinned: Device?,
-        callType: String = "voice",
-        headsetHop: Boolean = false,
-    ): Decision = when {
-        headsetHop && pinned == Device.BLUETOOTH && route == Device.EARPIECE -> Decision(Device.BLUETOOTH, keepPin = true)
-        headsetHop && pinned == Device.BLUETOOTH && route == Device.SPEAKER ->
-            Decision(target = null, keepPin = true, keepHop = true)
+    fun onTelecomRouteChanged(route: Device, pinned: Device?, callType: String = "voice"): Decision = when {
         pinned == Device.SPEAKER && route != Device.SPEAKER -> Decision(Device.SPEAKER, keepPin = true)
         pinned == null && callType == "video" && route == Device.EARPIECE -> Decision(Device.SPEAKER, keepPin = false)
         else -> Decision(
@@ -77,19 +61,6 @@ object AudioRoutePolicy {
             keepPin = pinned != null && (pinned == route || pinned in HEADSETS && route == Device.EARPIECE),
         )
     }
-
-    /**
-     * The first route to ask Telecom for when the user picks [device] while
-     * Telecom last reported [telecomRoute].
-     *
-     * On a Samsung with Android 14 a Bluetooth request made while Telecom is on
-     * the loudspeaker is acknowledged and dropped — Telecom never processes
-     * USER_SWITCH_BLUETOOTH — while the same request from the earpiece connects
-     * the headset (route4, 2026-09-15). Such a pick goes to the earpiece first,
-     * and [onTelecomRouteChanged] asks for the headset once Telecom reports it.
-     */
-    fun firstStep(device: Device, telecomRoute: Device?): Device =
-        if (device == Device.BLUETOOTH && telecomRoute == Device.SPEAKER) Device.EARPIECE else device
 
     /** The route for a call whose device just vanished. */
     fun fallback(available: Set<Device>, callType: String): Device = when {
