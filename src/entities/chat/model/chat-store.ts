@@ -14,7 +14,8 @@ import { resetPowerLevel, isUserBanned } from "../lib/room-guards";
 import { categorizeJoinError, validateRoomId, type JoinRoomResult } from "../lib/join-error";
 import { getModeratorChange, isServiceRoomName, isWithinCreationBurst, isCreationBurstMemberEvent } from "../lib/system-event-filter";
 import { preservePendingRooms } from "../lib/preserve-pending-rooms";
-import { unreadPeerHangupCount, unreadCountWithoutHangups } from "../lib/call-hangup-unread";
+import { unreadPeerHangupCount, unreadCountWithoutHangups, hasCallEvent } from "../lib/call-hangup-unread";
+import { createHangupGapCounter } from "./hangup-gap-counter";
 import { callHangupRuleSince } from "@/shared/lib/push/call-hangup-push-rule";
 import { buildExternalShareForward } from "../lib/external-share-forward";
 import type { ExternalShareData } from "@/shared/lib/share-target";
@@ -102,6 +103,18 @@ function isStreamHistoryVisibility(hv: string | null | undefined): boolean {
   return hv === "world_readable";
 }
 
+/** Recounts the badge once a timeline gap's hangups are counted; set by the store. */
+let onHangupGapCounted: (() => void) | null = null;
+
+const hangupGapCounter = createHangupGapCounter({
+  fetchHangups: (roomId, fromToken, limit) => getMatrixClientService().fetchRoomHangups(roomId, fromToken, limit),
+  fetchEventTs: async (roomId, eventId) => {
+    const event = await getMatrixClientService().fetchRoomEvent(roomId, eventId);
+    return typeof event?.origin_server_ts === "number" ? event.origin_server_ts : null;
+  },
+  onResolved: () => onHangupGapCounted?.(),
+});
+
 /**
  * The room's unread count for the chat list: the server's count without the call
  * hangups a peer sent, which the server counts once the account has the hangup push
@@ -114,12 +127,37 @@ function roomUnreadCount(room: any, myUserId: string): number {
     // Read even at zero: the first sight of the rule dates the hangups it counts.
     const since = callHangupRuleSince(myUserId, getMatrixClientService().client?.pushRules, Date.now(), localStorage);
     if (since === null || total <= 0) return total;
-    const events = room.getLiveTimeline?.()?.getEvents?.() ?? [];
-    const hangups = unreadPeerHangupCount(events, {
+    const liveTimeline = room.getLiveTimeline?.();
+    const events = liveTimeline?.getEvents?.() ?? [];
+    let hangups = unreadPeerHangupCount(events, {
       myUserId,
       since,
       hasRead: (eventId) => room.hasUserReadEvent?.(myUserId, eventId) ?? true,
     });
+    // The server counts everything after the real receipt, own events in between or not
+    // (an answered call added its invite and hangup, `hcount-rule`). When that receipt's
+    // event is not in the live timeline, a limited sync cut the timeline short and the
+    // hangups in the gap are unread too.
+    const receipt = room.getReadReceiptForUserId?.(myUserId, true);
+    const receiptEventId: string | null = receipt?.eventId ?? null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const covered = receiptEventId !== null && events.some((e: any) => e.getId?.() === receiptEventId);
+    // Only a room with a call in view asks /messages: hangups pile up right after calls, and
+    // asking for every unread room would send one request per chat after a long offline stretch.
+    const fromToken: string | null =
+      covered || !hasCallEvent(events) ? null : (liveTimeline?.getPaginationToken?.("b") ?? null);
+    if (fromToken) {
+      // A receipt sent before the rule was seen bounds nothing `since` does not; skip its fetch.
+      const receiptTs = receipt?.data?.ts;
+      const readBeforeRule = typeof receiptTs === "number" && receiptTs < since;
+      hangups += hangupGapCounter.get({
+        roomId: room.roomId as string,
+        fromToken,
+        receiptEventId: readBeforeRule ? null : receiptEventId,
+        myUserId,
+        since,
+      }) ?? 0;
+    }
     return unreadCountWithoutHangups(total, hangups);
   } catch {
     return total;
@@ -3448,6 +3486,16 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     } catch (e) {
       console.warn("[chat-store] syncAllUnreadFromMatrix failed:", e);
     }
+  };
+
+  // Gap counts land one room at a time; a burst of them recounts the badge once.
+  let hangupRecountTimer: ReturnType<typeof setTimeout> | null = null;
+  onHangupGapCounted = () => {
+    if (hangupRecountTimer !== null) return;
+    hangupRecountTimer = setTimeout(() => {
+      hangupRecountTimer = null;
+      void syncAllUnreadFromMatrix();
+    }, 300);
   };
 
   /**

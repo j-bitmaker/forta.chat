@@ -46,4 +46,21 @@ describe("chat-store: unread counts leave out peer call hangups", () => {
     expect(body).toContain("unreadPeerHangupCount(");
     expect(body).toContain("unreadCountWithoutHangups(");
   });
+
+  it("roomUnreadCount also counts the hangups a timeline gap hides from it", () => {
+    // hburst1: three missed calls with JS dead, then the app opened — the live timeline held
+    // one hangup of five and the badge went 2 → 9 instead of 2 → 5.
+    const body = bodyAfter(/function roomUnreadCount\s*\([^)]*\)\s*:\s*number\s*\{/);
+    expect(body).toContain("getReadReceiptForUserId?.(myUserId, true)");
+    expect(body).toContain("getPaginationToken?.(");
+    expect(body).toContain("hangupGapCounter.get(");
+    // Only rooms with a call in view ask /messages, or every unread chat would.
+    expect(body).toContain("hasCallEvent(events)");
+  });
+
+  it("the gap counter fetches through the Matrix service and recounts the badge when done", () => {
+    expect(source).toContain("createHangupGapCounter(");
+    expect(source).toContain("fetchRoomHangups(");
+    expect(source).toMatch(/onHangupGapCounted\s*=\s*\(\)\s*=>/);
+  });
 });

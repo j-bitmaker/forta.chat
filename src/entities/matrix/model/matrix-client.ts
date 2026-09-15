@@ -1202,6 +1202,25 @@ export class MatrixClientService {
     }
   }
 
+  /** One page of a room's call hangups, newest first, backwards from a pagination token.
+   *  The unread badge counts the hangups a gap in the live timeline hides from it. */
+  async fetchRoomHangups(
+    roomId: string,
+    fromToken: string,
+    limit: number,
+  ): Promise<{ chunk: Record<string, unknown>[]; end: string | null } | null> {
+    if (!this.client) return null;
+    try {
+      const filter = new sdk.Filter(this.client.getUserId());
+      filter.setDefinition({ room: { timeline: { types: ["m.call.hangup"] } } });
+      const res = await this.client.createMessagesRequest(roomId, fromToken, limit, sdk.Direction.Backward, filter);
+      return { chunk: (res?.chunk ?? []) as Record<string, unknown>[], end: res?.end ?? null };
+    } catch (e) {
+      console.warn("[matrix-client] fetchRoomHangups error:", e);
+      return null;
+    }
+  }
+
   /** Fetch a specific event and its surrounding context from the server.
    *  Uses the Matrix SDK timeline API. Returns raw timeline events. */
   async fetchEventContext(roomId: string, eventId: string, limit = 50): Promise<unknown[]> {
