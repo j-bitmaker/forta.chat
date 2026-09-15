@@ -1550,28 +1550,6 @@
 - Статус: ☐ шаги 2, 3, 5, 6 прошли 2026-09-15; шаг 4 провален: выбор AirPods с динамика
   не срабатывает, а видеозвонок после ухода AirPods остаётся в трубке
 
-### Отчёт JS о завершённом звонке закрывает только его рингер
-- Коммит: `efdeb9bc`
-- Почему нужен человек: контрактный тест (`ReportCallEndedContractTest`) доказывает
-  проводку: `reportCallEnded` передаёт `callId` в `dismissIfShowing`, правило —
-  `RemoteHangupPolicy`. Что обычный отбой по-прежнему закрывает рингер, видно только на
-  аппарате. Пока у аккаунта нет правила hangup-пушей, рингер после отбоя собеседника
-  закрывает именно этот путь.
-- На чём: реальный Android; годится Samsung SM-A528B ↔ веб TEST1.
-- Шаги:
-  1. `adb logcat -v time > /tmp/run.log &`.
-  2. Приложение свёрнуто, процесс жив. Позвонить телефону с веба TEST1, не отвечать,
-     через 5–10 с положить трубку на вебе.
-     - **Ожидается:** рингер и экран входящего закрываются вскоре после отбоя. В логе
-       `IncomingRinger: stop callId=<callId>` и `Dismissing incoming call screen (remote
-       hangup)` с тем же callId, что в `onCreateIncomingConnection:`.
-  3. То же при открытом приложении.
-  4. Сам фикс на стенде не воспроизвести. Нужен просроченный invite из другой комнаты,
-     который пришёл через /sync без отбоя в той же пачке, пока нативный рингер звонит
-     для другого звонка. JS завершает такой invite (`incoming call already ended by the
-     SDK (expired invite)`), и раньше это закрывало чужой рингер.
-- Статус: ☐ не проверено
-
 ### Видеозвонок возвращается на громкий динамик, когда гарнитура уходит
 - Коммит: `ca6710fe`
 - Почему нужен человек: тесты доказывают правило (`AudioRoutePolicyTest`) и проводку
@@ -1672,6 +1650,55 @@
 ---
 
 ## Проверено
+
+### Отчёт JS о завершённом звонке закрывает только его рингер
+- Коммит: `efdeb9bc`
+- Почему нужен человек: контрактный тест (`ReportCallEndedContractTest`) доказывает
+  проводку: `reportCallEnded` передаёт `callId` в `dismissIfShowing`, правило —
+  `RemoteHangupPolicy`. Что обычный отбой по-прежнему закрывает рингер, видно только на
+  аппарате. Пока у аккаунта нет правила hangup-пушей, рингер после отбоя собеседника
+  закрывает именно этот путь.
+- На чём: реальный Android; годится Samsung SM-A528B ↔ веб TEST1.
+- Шаги:
+  1. `adb logcat -v time > /tmp/run.log &`.
+  2. Приложение свёрнуто, процесс жив. Позвонить телефону с веба TEST1, не отвечать,
+     через 5–10 с положить трубку на вебе.
+     - **Ожидается:** рингер и экран входящего закрываются вскоре после отбоя. В логе
+       `IncomingRinger: stop callId=<callId>` и `Dismissing incoming call screen (remote
+       hangup)` с тем же callId, что в `onCreateIncomingConnection:`.
+  3. То же при открытом приложении.
+  4. Сам фикс на стенде не воспроизвести. Нужен просроченный invite из другой комнаты,
+     который пришёл через /sync без отбоя в той же пачке, пока нативный рингер звонит
+     для другого звонка. JS завершает такой invite (`incoming call already ended by the
+     SDK (expired invite)`), и раньше это закрывало чужой рингер.
+- Измерено 2026-09-15 (UTC) без владельца на Samsung SM-A528B (Android 14), сборка `0249bf72` с
+  FCM (`scratchpad/run-js-end.sh jsend1`, логи `scratchpad/runs/jsend1-*` и `hcount-gap1-*`; время
+  в выдержках по часам телефона). У аккаунта теперь стоит правило hangup-пушей, поэтому к отбою
+  приходят оба сигнала — `reportCallEnded` из JS и hangup-пуш; в выдержках видно, какой был первым.
+  - **Шаг 2 прошёл.** Приложение свёрнуто кнопкой «Домой», процесс жив. JS закрыл рингер своего
+    звонка раньше пуша:
+    ```
+    15:27:11.991 D/CallConnectionService: onCreateIncomingConnection: callId=1789475230860kNehyCyzUxIhf9Uz, caller=test3823818, roomId=!…
+    15:27:20.518 V/Capacitor: callback: 79360735, pluginId: NativeCall, methodName: reportCallEnded, methodData: {"callId":"1789475230860kNehyCyzUxIhf9Uz"}
+    15:27:20.538 D/IncomingRinger: stop callId=1789475230860kNehyCyzUxIhf9Uz
+    15:27:20.538 D/IncomingCallActivity: Dismissing incoming call screen (remote hangup)
+    15:27:20.540 I/CallTeardown: endCall reason=DISCONNECT callId=1789475230860kNehyCyzUxIhf9Uz …
+    15:27:20.566 D/FortaPush: Call ended remotely (type=m.call.hangup), tearing down incoming UI
+    ```
+    Пуш пришёл через 28 мс и завершил уже закрытый звонок (`endCall reason=REMOTE_HANGUP`).
+    Через 8 с после отбоя — `MainActivity`, `MODE_NORMAL`.
+  - **Шаг 3 прошёл.** Приложение открыто на списке чатов. `reportCallEnded` с тем же callId пришёл
+    за 8 мс до пуша (в `hcount-gap1` — за 15 мс), рингер и экран закрылись по этому callId:
+    ```
+    15:28:07.532 V/Capacitor: callback: 79360797, pluginId: NativeCall, methodName: reportCallEnded, methodData: {"callId":"1789475277944IHCsc1XemhZR1uuk"}
+    15:28:07.540 D/FortaPush: Call ended remotely (type=m.call.hangup), tearing down incoming UI
+    15:28:07.540 D/IncomingCallActivity: Dismissing incoming call screen (remote hangup)
+    15:28:07.543 I/CallTeardown: endCall reason=DISCONNECT callId=1789475277944IHCsc1XemhZR1uuk …
+    15:28:07.570 D/IncomingRinger: stop callId=1789475277944IHCsc1XemhZR1uuk
+    ```
+    Какой из двух сигналов закрыл экран здесь, по логу не разделить: оба пришли в пределах 8 мс.
+  - Шаг 4 на стенде не воспроизводится (см. сам шаг).
+- Статус: ☑ проверено 2026-09-15 (шаги 2–3); шаг 4 на стенде не воспроизводится
 
 ### Приложение ставит правило hangup-пушей, отбой собеседника не растит счётчик
 - Коммит: `8dff0a4b`
