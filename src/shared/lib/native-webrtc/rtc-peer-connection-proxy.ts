@@ -599,6 +599,12 @@ class NativeRTCPeerConnection extends EventTarget {
     // against close() racing with init so we don't call native on a
     // torn-down peer.
     if (this._closed) return;
+    // A finished native restart already waits for its offer (offline or mid-exchange). Restarting again
+    // would fire a second offer when that native call completes, right after the waiting one went out.
+    if (this._iceRestartOfferPending) {
+      this._requestIceRestartOffer();
+      return;
+    }
     const now = Date.now();
     const sinceLast = now - this._lastRestartIceAt;
     if (sinceLast < NativeRTCPeerConnection.RESTART_ICE_DEBOUNCE_MS) {

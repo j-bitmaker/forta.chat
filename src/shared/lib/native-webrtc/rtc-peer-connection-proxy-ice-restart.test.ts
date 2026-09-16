@@ -237,6 +237,28 @@ describe("NativeRTCPeerConnection — the restart offer waits for the network", 
     expect(offersNeeded()).toBe(0);
   });
 
+  it("sends one offer when the network-change handler restarts ICE as the network comes back", async () => {
+    // Samsung, offline-restart1: the handler's restartIce ran a second native restart while the held offer
+    // went out on `online`, and its completion fired a second offer. The web applied both, the phone
+    // failed to apply the first answer ("Called in wrong state: stable").
+    let now = 100_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { pc, offersNeeded } = await connection();
+    online = false;
+    pc.restartIce();
+    await flush();
+
+    now += 8_000;
+    online = true;
+    pc.restartIce();
+    window.dispatchEvent(new Event("online"));
+    await flush();
+
+    expect(bridge("restartIce")).toHaveBeenCalledOnce();
+    expect(offersNeeded()).toBe(1);
+    pc.close();
+  });
+
   it("treats a restart right after the held offer went out as the same restart", async () => {
     let now = 100_000;
     vi.spyOn(Date, "now").mockImplementation(() => now);
