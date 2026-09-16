@@ -339,14 +339,17 @@ export class RoomRepository {
       lastMessageSenderId: senderId,
       lastMessageType: type,
       updatedAt: Math.max(timestamp, existing?.updatedAt ?? 0),
-      // New last message = clear old reaction (no double DB write)
-      lastMessageReaction: null,
       lastMessageDecryptionStatus: undefined,
       lastMessageCallInfo: callInfo ?? undefined,
       lastMessageSystemMeta: systemMeta ?? undefined,
     };
     if (eventId !== undefined) {
       changes.lastMessageEventId = eventId;
+    }
+    // A new last message clears the old reaction (no double DB write). The same
+    // event written again — opening the chat re-writes it from history — keeps it.
+    if (eventId === undefined || existing?.lastMessageEventId !== eventId) {
+      changes.lastMessageReaction = null;
     }
     const updated = await this.db.rooms.update(roomId, changes);
     if (updated === 0 && existing) {
