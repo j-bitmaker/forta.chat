@@ -1286,7 +1286,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     if (lr && lr.unreadCount !== safeCount) {
       lr.unreadCount = safeCount;
       _dexieRoomMapVersion.value++;
-      patchSortedRooms([{ type: "upsert", room: lr }]);
+      // An inbound message's +1 joins the sidebar coalescer that its preview
+      // write goes through; applied at once, the row showed the new count next
+      // to the previous message's preview and reaction for ~400 ms.
+      if (source === "bump") sidebarDeltaCoalescer.push([{ type: "upsert", room: lr }]);
+      else patchSortedRooms([{ type: "upsert", room: lr }]);
     }
     perfCount(`unreadCount:${source}`);
 
@@ -1902,7 +1906,13 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   const sidebarDeltaCoalescer = createBurstCoalescer<RoomChange>(
     (batch) => {
       if (batch.length > 100) scheduleFullSortedRebuild();
-      else patchSortedRooms(batch);
+      // Patch with each room as dexieRoomMap holds it now. A queued room object
+      // can be stale: an unread bump queues the map's object, the bump's own
+      // Dexie write replaces it without a visible change, and a read then
+      // clears the new object — the queued one would bring the count back.
+      else patchSortedRooms(batch.map((c): RoomChange =>
+        c.type === "upsert" ? { type: "upsert", room: dexieRoomMap.get(c.room.id) ?? c.room } : c,
+      ));
     },
     { settleMs: SIDEBAR_DELTA_SETTLE_MS, maxWaitMs: SIDEBAR_DELTA_MAX_WAIT_MS },
   );
@@ -4801,6 +4811,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   });
   const scheduleMessagesTrigger = () => messagesTriggerScheduler.schedule([null]);
 
+  /** Whether /sync has already delivered this event into memory — a push that
+   *  trails it must not write its placeholder preview or count it again. */
+  const hasMessage = (roomId: string, eventId: string): boolean =>
+    messages.value[roomId]?.some((m) => m.id === eventId) ?? false;
+
   const addMessage = (roomId: string, message: Message) => {
     if (!messages.value[roomId]) {
       messages.value[roomId] = [];
@@ -4827,7 +4842,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       room.updatedAt = message.timestamp;
       // A call record is not bumped: the server already counts the invite, and the
       // hangup it counts under the account's hangup rule is taken out (roomUnreadCount).
-      if (roomId !== activeRoomId.value && message.senderId !== useAuthStore().address && !message.callInfo) {
+      // A push for this very event already wrote its placeholder and counted it.
+      const countedByPush = dexieRoomMap.get(roomId)?.lastMessageEventId === message.id;
+      if (roomId !== activeRoomId.value && message.senderId !== useAuthStore().address && !message.callInfo && !countedByPush) {
         // Single writer — keeps Dexie + dexieRoomMap + sortedRooms in lock-step
         bumpUnreadCount(roomId, 1);
       }
@@ -7643,6 +7660,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     chatDbKitRef,
     setChatDbKit,
     getDbKit,
+    hasMessage,
     dexieMessagesReady,
     dexieRoomMap,
     getPreOpenUnreadCount,

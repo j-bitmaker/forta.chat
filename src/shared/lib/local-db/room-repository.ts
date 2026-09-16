@@ -1,6 +1,6 @@
 import Dexie from "dexie";
 import type { ChatDatabase, LocalRoom, LocalMessageStatus } from "./schema";
-import type { MessageType } from "@/entities/chat/model/types";
+import { MessageType } from "@/entities/chat/model/types";
 
 /**
  * The row an `updating` hook is about to store. Dexie reports a nested object's
@@ -590,8 +590,15 @@ export class RoomRepository {
       unreadCount: (existing.unreadCount ?? 0) + 1,
     };
 
+    // The placeholder replaces the previous last message: drop what belonged to
+    // it, or the row reads as that message (its call preview, its reaction)
+    // until /sync delivers the real event.
+    changes.lastMessageReaction = null;
+    changes.lastMessageCallInfo = undefined;
+    changes.lastMessageSystemMeta = undefined;
+    changes.lastMessageDecryptionStatus = undefined;
+    changes.lastMessageType = messageType ?? MessageType.text;
     if (senderId) changes.lastMessageSenderId = senderId;
-    if (messageType) changes.lastMessageType = messageType;
     // WEE-44 / forta-bugs#785 follow-up: stamp the pushed event_id so that
     // when /sync later delivers the real event, updateLastMessage() can
     // recognize "same event — replace my optimistic placeholder" and bypass
