@@ -17,7 +17,7 @@ Constraints:
 
 ## Stack
 
-Vue 3 (Composition API) + Pinia + TypeScript (strict) + Vite + Vitest + Tailwind. Capacitor 8 for Android/iOS, Electron 40 for desktop. Matrix SDK `matrix-js-sdk-bastyon`; Dexie (IndexedDB) for local-first storage; WebRTC for calls. Node.js 18+, JDK 21 for Gradle, Xcode 16+ for iOS.
+Vue 3 (Composition API) + Pinia + TypeScript (strict) + Vite + Vitest + Tailwind. Capacitor 8 for Android/iOS, Electron 40 for desktop. Matrix SDK `matrix-js-sdk-bastyon`; Dexie (IndexedDB) for local-first storage; WebRTC for calls. Node.js 22+, JDK 21 for Gradle, Xcode 16+ for iOS.
 
 Versions, plugins, config files, platform requirements: [docs/agent/stack.md](docs/agent/stack.md).
 

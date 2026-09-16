@@ -11,7 +11,7 @@ Detail reference for [AGENTS.md](../../AGENTS.md). Versions are ranges from `pac
 
 ## Runtime
 
-- Node.js 18+, npm 7+
+- Node.js 22+, npm 10+
 - Browser / Electron (Chromium)
 - Android + iOS via Capacitor 8 (`@capacitor/core` ^8.2, `@capacitor/ios` ^8.3.3)
 - Lockfile: `package-lock.json` (`lockfileVersion: 3`)
@@ -44,7 +44,7 @@ Detail reference for [AGENTS.md](../../AGENTS.md). Versions are ranges from `pac
 
 ## Platform requirements
 
-- Node.js 18+, npm 7+
+- Node.js 22+, npm 10+
 - Android 7.0+ (API 24+), JDK 21 for Gradle builds
 - iOS 15.0+ (macOS 14+, Xcode 16+)
 - Windows 10+, macOS 10.13+, Linux (glibc 2.28+)
