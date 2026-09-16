@@ -636,6 +636,8 @@ export const en = {
   "call.warning.torBypassed": "Calls don't go through Tor: the other party can see your IP address.",
   "call.error.connectionLost": "Call connection lost.",
   "call.error.legacyWebView": "Your device's browser engine is too old for stable calls. Update Android System WebView from the Play Store.",
+  "call.info.waitingForServer": "Connecting to the server, the call will start automatically…",
+  "call.error.matrixNotReady": "Couldn't connect to the server. Try calling again in a moment.",
 
   // ── External call providers (WEE-57) ──
   "call.fortaNative": "Forta (built-in)",

@@ -30,6 +30,7 @@ import {
 import { ensureCallPermissions, PermissionDeniedError, callPermissionError } from "./permissions";
 import { finalizeCall } from "./finalize-call";
 import { holdPageAwake } from "./page-awake-tone";
+import { waitUntil } from "@/shared/lib/wait-until";
 import {
   isLegacyWebView,
   shouldWarnLegacyWebView,
@@ -719,6 +720,15 @@ function clearIncomingTimeout() {
 const CONNECTING_WATCHDOG_MS = 30_000;
 let connectingWatchdogId: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * How long a dial waits for Matrix after a cold start. The chat list is up
+ * (Dexie-first) seconds before `matrixReady` flips, and a tap in that window
+ * used to find no client and drop the call without a word. Ten seconds
+ * covers the usual connect; a degraded re-login (26 s seen once on the test
+ * phone) gets a "try again in a moment" instead of a half-minute of nothing.
+ */
+export const MATRIX_READY_WAIT_MS = 10_000;
+
 function clearConnectingWatchdog() {
   if (connectingWatchdogId !== null) {
     clearTimeout(connectingWatchdogId);
@@ -996,6 +1006,43 @@ function launchNativeCallScreen(options: Parameters<typeof NativeWebRTC.launchCa
   return NativeWebRTC.launchCallUI(options);
 }
 
+/**
+ * True once Matrix is ready to place a call, waiting up to
+ * MATRIX_READY_WAIT_MS for it. Tells the user both that it is waiting and
+ * when it gave up — a dial that vanishes silently is the bug this closes.
+ *
+ * The auth store is imported lazily: `entities/auth` imports this module
+ * for the native call bridge, and a static import back would pull the
+ * whole store graph into every consumer of call-service.
+ */
+async function waitForMatrixReady(): Promise<boolean> {
+  const { message, toast, close } = useToast();
+  try {
+    const { useAuthStore } = await import("@/entities/auth");
+    const auth = useAuthStore();
+    if (auth.matrixReady) return true;
+
+    console.warn("[call-service] Matrix not ready — waiting up to", MATRIX_READY_WAIT_MS, "ms");
+    const waitingText = tRaw("call.info.waitingForServer");
+    toast(waitingText, "info", MATRIX_READY_WAIT_MS);
+    const ready = await waitUntil(() => auth.matrixReady, MATRIX_READY_WAIT_MS);
+    if (ready) {
+      // The toast is one global slot: close only our own text, not whatever
+      // another feature may have shown during the wait.
+      if (message.value === waitingText) close();
+      return true;
+    }
+    console.error("[call-service] Matrix not ready after wait — call dropped");
+  } catch (e) {
+    // Every caller fires startCall without awaiting it, so an exception
+    // here would be an unhandled rejection and the dial would vanish
+    // silently — the very bug this wait exists to close.
+    console.error("[call-service] readiness wait failed — call dropped:", e);
+  }
+  toast(tRaw("call.error.matrixNotReady"), "error", 5000);
+  return false;
+}
+
 // O05/O14: the bug report's call section gets the last connection's ICE
 // facts and the Tor state from here; shared/ cannot import this feature.
 registerCallDiagnosticsExtras(async () => ({
@@ -1033,6 +1080,15 @@ export function useCallService() {
     outgoingCallInProgress = true;
 
     try {
+      // Right after a cold start the buttons are live before Matrix is.
+      // Wait under the lock so a second tap does not queue a second dial,
+      // and before the mic preflight so nothing is captured for a call
+      // that may not happen.
+      if (!(await waitForMatrixReady())) return;
+      if (callStore.hasLiveCall) {
+        console.warn("[call-service] a call arrived while waiting for Matrix — not dialling");
+        return;
+      }
       await startCallInner(roomId, type);
     } finally {
       outgoingCallInProgress = false;
@@ -1062,6 +1118,18 @@ export function useCallService() {
     // guard + native exclusion live inside maybeWarnLegacyWebView.
     maybeWarnLegacyWebView();
 
+    // `matrixReady` was true a moment ago; the client can still be gone
+    // (logout or account switch racing the dial). Check before the mic
+    // preflight so no stream is captured for a call that cannot be placed,
+    // and say so — this branch used to return without a word.
+    const matrixService = getMatrixClientService();
+    const client = matrixService.client;
+    if (!client) {
+      console.error("[call-service] No Matrix client");
+      useToast().toast(tRaw("call.error.matrixNotReady"), "error", 5000);
+      return;
+    }
+
     // Preflight: mic (+ camera for video). Throws PermissionDeniedError
     // if the OS denied access, or if getUserMedia returns a stream with
     // empty tracks. If we skip this and let the SDK's getUserMedia fail
@@ -1086,13 +1154,6 @@ export function useCallService() {
       }
       callStore.updateStatus(CallStatus.failed);
       callStore.scheduleClearCall(1500);
-      return;
-    }
-
-    const matrixService = getMatrixClientService();
-    const client = matrixService.client;
-    if (!client) {
-      console.error("[call-service] No Matrix client");
       return;
     }
 

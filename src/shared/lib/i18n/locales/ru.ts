@@ -638,6 +638,8 @@ export const ru: Record<TranslationKey, string> = {
   "call.warning.torBypassed": "Звонки идут мимо Tor: собеседник может видеть ваш IP-адрес.",
   "call.error.connectionLost": "Соединение со звонком потеряно.",
   "call.error.legacyWebView": "Браузерный движок устройства слишком старый для стабильных звонков. Обновите «Android System WebView» в Play Store.",
+  "call.info.waitingForServer": "Подключаемся к серверу, звонок начнётся автоматически…",
+  "call.error.matrixNotReady": "Не удалось подключиться к серверу. Попробуйте позвонить чуть позже.",
 
   // ── External call providers (WEE-57) ──
   "call.fortaNative": "Forta (встроенный)",
