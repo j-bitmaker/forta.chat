@@ -1599,7 +1599,31 @@
   3. В п.1 нажать кнопку дважды во время ожидания.
      - **Ожидается:** один исходящий звонок, в логе один
        `startCall ignored — outgoing call already in progress`.
-- Статус: ☐ не проверено
+- Измерено 2026-09-16 без владельца на Samsung SM-A528B (Android 14), сборка `ed78978d`, Wi-Fi.
+  Скрипт `scratchpad/run-early-call.sh`: Home, `am kill`, запуск, чат TEST1 и кнопка «Голосовой звонок»
+  нажимаются через DevTools, как только появляются; веб TEST1 отвечает и через 8 с кладёт трубку. Логи
+  `scratchpad/runs/early1-*`, `early2-*`, время по часам телефона.
+  - **Шаг 1 прошёл** (`early1`). Кнопка нажата через 3 с после запуска, `matrixReady` в этот момент
+    false. Тост «Подключаемся к серверу, звонок начнётся автоматически…» был на экране все 2 с опроса. Разрешение
+    на микрофон запрошено только после готовности Matrix; экран звонка открылся через 8,3 с после начала
+    ожидания, веб ответил:
+    ```
+    16:24:07.216 W/Capacitor/Console: [call-service] Matrix not ready — waiting up to 10000 ms
+    16:24:15.119 I/Capacitor/Console: [matrix-client] CallEventHandler started eagerly, SDK auto-start unregistered
+    16:24:15.164 V/Capacitor/Plugin: To native (Capacitor plugin): … pluginId: NativeCall, methodName: requestAudioPermission
+    16:24:15.535 D/CallActivity: CallActivity created: test3823818, type=voice
+    16:24:16.222 D/CallConnectionService: onCreateOutgoingConnection: callId=1789565055248PfDEHI73rDmgyBV8, callee=test3823818
+    ```
+  - **Шаг 3 прошёл** (`early2`, второе нажатие через 400 мс). Ожидание длилось 0,7 с, второе нажатие
+    пришлось на него: один `startCall ignored`, одно исходящее соединение, веб ответил.
+    ```
+    16:25:30.949 W/Capacitor/Console: [call-service] Matrix not ready — waiting up to 10000 ms
+    16:25:31.375 W/Capacitor/Console: [call-service] startCall ignored — outgoing call already in progress
+    16:25:31.632 D/CallActivity: CallActivity created: test3823818, type=voice
+    16:25:31.813 D/CallConnectionService: onCreateOutgoingConnection: callId=1789565131404MAEJkQYBrrnPshjU, callee=test3823818
+    ```
+  - Шаг 2 требует авиарежима — это системная настройка телефона, стенд её не меняет.
+- Статус: ☐ шаги 1 и 3 прошли 2026-09-16; шаг 2 (авиарежим) — с владельцем
 
 ## Проверено
 
