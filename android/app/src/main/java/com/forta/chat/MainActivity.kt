@@ -325,6 +325,8 @@ class MainActivity : BridgeActivity() {
         val js = """
             (function() {
                 var d = document.documentElement;
+                // Cold start: insets can arrive before the page has a document.
+                if (!d) return;
                 var s = d.style;
                 s.setProperty('--safe-area-inset-top',    '${insetTop}px');
                 s.setProperty('--safe-area-inset-bottom', '${effectiveBottom}px');
