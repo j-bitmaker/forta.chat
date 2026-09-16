@@ -222,6 +222,12 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
                     )
                 }.onFailure { Log.w(TAG, "teardown after remote hangup threw", it) }
             }
+            // JS closes the call screen when it hears the end; a page frozen
+            // behind the screen never does. Hangup only: a select_answer push
+            // names a call this device may just have answered.
+            if (msgType == "m.call.hangup") {
+                com.forta.chat.plugins.calls.CallActivity.scheduleRemoteHangupClose(endedCallId)
+            }
             // End-of-call signal also clears the dedup marker so a
             // genuinely new invite (new call_id) can ring again.
             if (endedCallId != null && lastRingingCallId == endedCallId) {

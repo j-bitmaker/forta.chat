@@ -83,6 +83,29 @@ class CallActivity : Activity(), SensorEventListener {
         // Static callback for remote video mute state changes
         var onRemoteVideoMuted: ((Boolean) -> Unit)? = null
 
+        /** The call screen on display, for [scheduleRemoteHangupClose]. */
+        @Volatile
+        private var currentInstance: CallActivity? = null
+
+        private val backstopHandler by lazy { Handler(Looper.getMainLooper()) }
+
+        /**
+         * The peer's hangup push ended [endedCallId]. JS closes this screen when it
+         * processes the end; a page Chromium froze behind the screen never does, and
+         * the finished call stayed on screen. If that call's screen still shows after
+         * [CallScreenBackstopPolicy.GRACE_MS], native closes it.
+         */
+        fun scheduleRemoteHangupClose(endedCallId: String?) {
+            backstopHandler.postDelayed({
+                val screen = currentInstance ?: return@postDelayed
+                if (screen.isFinishing || !CallScreenBackstopPolicy.closes(screen.shownCallId, endedCallId)) {
+                    return@postDelayed
+                }
+                Log.w(TAG, "call screen for $endedCallId still open ${CallScreenBackstopPolicy.GRACE_MS} ms after the hangup push, closing it")
+                screen.finish()
+            }, CallScreenBackstopPolicy.GRACE_MS)
+        }
+
         fun launch(context: Context, callerName: String, callType: String, callId: String, direction: String) {
             val intent = Intent(context, CallActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -126,6 +149,8 @@ class CallActivity : Activity(), SensorEventListener {
     private var callerName = "Unknown"
     private var callDurationSeconds = 0
     private var isConnected = false
+    /** Matrix call id this screen shows, from the launch intent. */
+    private var shownCallId = ""
 
     // Shared audio router — obtained via AudioRouter.getSharedInstance in
     // onCreate; lifecycle-wise the Activity only attaches / detaches its UI
@@ -214,6 +239,7 @@ class CallActivity : Activity(), SensorEventListener {
         // Read extras
         callerName = intent.getStringExtra(EXTRA_CALLER_NAME) ?: "Unknown"
         callType = intent.getStringExtra(EXTRA_CALL_TYPE) ?: "video"
+        shownCallId = intent.getStringExtra(EXTRA_CALL_ID).orEmpty()
         isVideoEnabled = callType == "video"
 
         callerNameText.text = callerName
@@ -273,6 +299,7 @@ class CallActivity : Activity(), SensorEventListener {
         }
         updateButtonStates()
 
+        currentInstance = this
         // Register for call end
         onCallEnded = { runOnUiThread { finish() } }
         // Register for remote video
@@ -338,7 +365,14 @@ class CallActivity : Activity(), SensorEventListener {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // SINGLE_TOP: JS launches the screen again once the call is answered.
+        intent.getStringExtra(EXTRA_CALL_ID)?.takeIf { it.isNotEmpty() }?.let { shownCallId = it }
+    }
+
     override fun onDestroy() {
+        if (currentInstance === this) currentInstance = null
         handler.removeCallbacks(timerRunnable)
         handler.removeCallbacks(hideControlsRunnable)
         pulseAnimator?.cancel()
