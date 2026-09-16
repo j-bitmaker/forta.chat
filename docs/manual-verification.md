@@ -1610,6 +1610,24 @@
        консоли в звонке по Wi-Fi — пока офлайн, предложения нет, после возврата сети оно одно и звонок жив.
   4. Регресс: обычный звонок без смены сети.
      - **Ожидается:** строки `firing negotiationneeded for the restart offer` нет, лишнего `m.call.negotiate` нет.
+- Измерено 2026-09-17 без владельца, Samsung SM-A528B ↔ веб TEST1 по Wi-Fi, APK `59a4d321` (`scratchpad/run-cell.sh`).
+  Настоящей смены сети не было: у SIM стенда сервер недоступен.
+  - `offline-restart2` — половина шага 3 без владельца (`OFFLINE_AT=12`, `phone-offline-restart.mjs`). На 8 с офлайн
+    через CDP, `restartIce` при `connected`:
+    ```
+    +0.66 s  [NativeRTCProxy] restartIce: offline, the restart offer waits for the network
+    +8.67 s  [call-service] network none→wifi, restartIce
+    +8.67 s  [NativeRTCProxy] restartIce: firing negotiationneeded for the restart offer
+    +9.32 s  onNegotiateReceived() set remote description: answer
+    ```
+    Нативный перезапуск один, предложение одно, ошибок `setRemoteDescription` нет. Ufrag телефона у веба сменился
+    один раз, ICE у веба `connected` все секунды, входящий звук у веба рос каждую секунду, звонок дожил до отбоя.
+  - `restart-wifi1` — перезапуск без офлайна (`RESTART_AT=12`): одно предложение, ufrag у веба сменился один раз,
+    `connected` без перерыва, звук без остановок. Шаги 1–2 это подтверждают только наполовину: новые ICE-данные
+    доходят до веба, но сеть не менялась.
+  - `regress-plain1` — шаг 4: строк `restartIce: invoked` и `firing negotiationneeded…` нет, ufrag не менялся.
+  - Не проверены: шаги 1–2 с настоящей сменой сети (нужна SIM с доступным сервером или вторая Wi-Fi) и шаг 3 с
+    настоящим выключением Wi-Fi.
 - Статус: ☐ не проверено
 
 ---
