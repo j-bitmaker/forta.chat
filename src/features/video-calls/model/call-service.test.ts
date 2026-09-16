@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
+import { reactive, ref } from 'vue';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+import { tRaw } from '@/shared/lib/i18n';
 
 // ---------------------------------------------------------------------------
 // Mocks — must be set up before importing call-service
@@ -195,23 +197,40 @@ vi.mock('matrix-js-sdk-bastyon/lib/webrtc/call', () => ({
   },
 }));
 
-// Mock matrix client service
+// Mock matrix client service. The client sits in a mutable holder so a test
+// can take it away (`matrixState.client = null`) — the state a dial finds
+// right after a cold start, before Matrix has connected.
+function makeMockClient() {
+  return {
+    getRoom: vi.fn(() => ({
+      getJoinedMembers: () => [
+        { userId: '@me:matrix.org' },
+        { userId: '@peer:matrix.org' },
+      ],
+    })),
+    supportsVoip: vi.fn(() => true),
+    getMediaHandler: vi.fn(() => ({
+      restoreMediaSettings: vi.fn(),
+    })),
+  };
+}
+const matrixState: { client: ReturnType<typeof makeMockClient> | null } = {
+  client: makeMockClient(),
+};
 vi.mock('@/entities/matrix', () => ({
   getMatrixClientService: vi.fn(() => ({
-    client: {
-      getRoom: vi.fn(() => ({
-        getJoinedMembers: () => [
-          { userId: '@me:matrix.org' },
-          { userId: '@peer:matrix.org' },
-        ],
-      })),
-      supportsVoip: vi.fn(() => true),
-      getMediaHandler: vi.fn(() => ({
-        restoreMediaSettings: vi.fn(),
-      })),
+    get client() {
+      return matrixState.client;
     },
     getUserId: vi.fn(() => '@me:matrix.org'),
   })),
+}));
+
+// The auth store is read lazily by the dial path for `matrixReady`; a reactive
+// holder lets a test flip readiness mid-wait the way the real store does.
+const authState = reactive({ matrixReady: true });
+vi.mock('@/entities/auth', () => ({
+  useAuthStore: () => authState,
 }));
 
 // Hoisted user-store mock so individual tests can stage cold-cache and
@@ -246,9 +265,15 @@ const torState = { isEnabled: false, isConnected: false };
 vi.mock('@/entities/tor', () => ({
   useTorStore: () => torState,
 }));
-const toastSpy = vi.fn();
+// One global toast slot, like the real composable: `message` holds whatever
+// was shown last, so a test can stage an unrelated toast during a wait.
+const toastMessage = ref('');
+const toastSpy = vi.fn((msg: string, _type?: string, _duration?: number) => {
+  toastMessage.value = msg;
+});
+const toastCloseSpy = vi.fn();
 vi.mock('@/shared/lib/use-toast', () => ({
-  useToast: () => ({ toast: toastSpy }),
+  useToast: () => ({ message: toastMessage, toast: toastSpy, close: toastCloseSpy }),
 }));
 
 vi.mock('./call-sounds', () => ({
@@ -284,6 +309,8 @@ describe('call-service permission flow', () => {
     mockCallStore.activeCall = null;
     mockCallStore.matrixCall = null;
     mockCallStore.videoMuted = false;
+    authState.matrixReady = true;
+    matrixState.client = makeMockClient();
     // Default: permissions resolve successfully. Individual tests override
     // with mockRejectedValueOnce(new MockPermissionDeniedError(...)).
     mockEnsureCallPermissions.mockResolvedValue(undefined);
@@ -393,9 +420,10 @@ describe('call-service permission flow', () => {
       const service = useCallService();
       const first = service.startCall('!room:matrix.org', 'voice');
 
-      // Yield to the microtask queue so the first call actually awaits
-      // ensureCallPermissions before we fire the second one.
-      await Promise.resolve();
+      // Let the first call actually reach ensureCallPermissions before we
+      // fire the second one — the readiness wait in front of it takes a few
+      // microtasks, so a single yield is not enough.
+      await vi.waitFor(() => expect(mockEnsureCallPermissions).toHaveBeenCalledTimes(1));
 
       const second = service.startCall('!room:matrix.org', 'voice');
       await second;
@@ -423,6 +451,142 @@ describe('call-service permission flow', () => {
       // path or the user would be locked out of dialing until reload.
       await service.startCall('!room:matrix.org', 'voice');
       expect(mockEnsureCallPermissions).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // Right after a cold start the chat list is up while Matrix is still
+  // connecting. A dial in that window used to find no client and return
+  // without a word — the button did nothing. Now it waits for `matrixReady`
+  // for a bounded time, and says so when the wait runs out.
+  describe('startCall before Matrix is ready', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('waits for matrixReady, then dials — once, without asking for the mic meanwhile', async () => {
+      vi.useFakeTimers();
+      authState.matrixReady = false;
+      const { useCallService, MATRIX_READY_WAIT_MS } = await import('./call-service');
+      const service = useCallService();
+
+      const pending = service.startCall('!room:matrix.org', 'voice');
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(toastSpy).toHaveBeenCalledWith(
+        tRaw('call.info.waitingForServer'),
+        'info',
+        MATRIX_READY_WAIT_MS,
+      );
+      expect(mockEnsureCallPermissions).not.toHaveBeenCalled();
+
+      // A second tap during the wait is the double-tap the outgoing lock
+      // already guards against — it must not queue a second dial.
+      await service.startCall('!room:matrix.org', 'voice');
+
+      await vi.advanceTimersByTimeAsync(2000);
+      authState.matrixReady = true;
+      await vi.advanceTimersByTimeAsync(0);
+      await pending;
+
+      expect(mockEnsureCallPermissions).toHaveBeenCalledTimes(1);
+      expect(mockEnsureCallPermissions).toHaveBeenCalledWith(false);
+      expect(mockPlaceVoiceCall).toHaveBeenCalledTimes(1);
+      // The "connecting…" toast must not sit over the call screen.
+      expect(toastCloseSpy).toHaveBeenCalled();
+      expect(toastSpy).not.toHaveBeenCalledWith(
+        tRaw('call.error.matrixNotReady'),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it('gives up after MATRIX_READY_WAIT_MS with an error toast and releases the lock', async () => {
+      vi.useFakeTimers();
+      authState.matrixReady = false;
+      const { useCallService, MATRIX_READY_WAIT_MS } = await import('./call-service');
+      const service = useCallService();
+
+      const pending = service.startCall('!room:matrix.org', 'voice');
+      await vi.advanceTimersByTimeAsync(MATRIX_READY_WAIT_MS - 1);
+      expect(toastSpy).not.toHaveBeenCalledWith(
+        tRaw('call.error.matrixNotReady'),
+        expect.anything(),
+        expect.anything(),
+      );
+
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+
+      expect(toastSpy).toHaveBeenCalledWith(
+        tRaw('call.error.matrixNotReady'),
+        'error',
+        expect.any(Number),
+      );
+      expect(mockEnsureCallPermissions).not.toHaveBeenCalled();
+      expect(mockPlaceVoiceCall).not.toHaveBeenCalled();
+      // No CallInfo was ever written, so there is no call to mark failed.
+      expect(mockUpdateStatus).not.toHaveBeenCalledWith('failed');
+
+      // The dropped dial must not lock the button: once Matrix is up, the
+      // next tap dials.
+      authState.matrixReady = true;
+      await service.startCall('!room:matrix.org', 'voice');
+      expect(mockPlaceVoiceCall).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not dial when a call arrived while it was waiting', async () => {
+      vi.useFakeTimers();
+      authState.matrixReady = false;
+      const { useCallService } = await import('./call-service');
+      const service = useCallService();
+
+      const pending = service.startCall('!room:matrix.org', 'voice');
+      await vi.advanceTimersByTimeAsync(1000);
+
+      // An incoming call rings (Telecom, no CallInfo yet) during the wait:
+      // dialling now would overwrite the single MatrixCall slot (#1183).
+      mockCallStore.hasLiveCall = true;
+      authState.matrixReady = true;
+      await vi.advanceTimersByTimeAsync(0);
+      await pending;
+
+      expect(mockEnsureCallPermissions).not.toHaveBeenCalled();
+      expect(mockPlaceVoiceCall).not.toHaveBeenCalled();
+    });
+
+    it('leaves an unrelated toast alone when the wait ends', async () => {
+      vi.useFakeTimers();
+      authState.matrixReady = false;
+      const { useCallService } = await import('./call-service');
+      const service = useCallService();
+
+      const pending = service.startCall('!room:matrix.org', 'voice');
+      await vi.advanceTimersByTimeAsync(1000);
+
+      // Another feature replaced the "connecting…" toast meanwhile.
+      toastMessage.value = 'link copied';
+      authState.matrixReady = true;
+      await vi.advanceTimersByTimeAsync(0);
+      await pending;
+
+      expect(mockPlaceVoiceCall).toHaveBeenCalledTimes(1);
+      expect(toastCloseSpy).not.toHaveBeenCalled();
+    });
+
+    it('tells the user when the client is gone although matrixReady says otherwise', async () => {
+      matrixState.client = null;
+      const { useCallService } = await import('./call-service');
+      const service = useCallService();
+
+      await service.startCall('!room:matrix.org', 'voice');
+
+      expect(toastSpy).toHaveBeenCalledWith(
+        tRaw('call.error.matrixNotReady'),
+        'error',
+        expect.any(Number),
+      );
+      expect(mockEnsureCallPermissions).not.toHaveBeenCalled();
+      expect(mockPlaceVoiceCall).not.toHaveBeenCalled();
     });
   });
 
