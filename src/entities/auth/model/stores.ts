@@ -27,7 +27,7 @@ import { deleteLegacyCache } from "@/shared/lib/cache/chat-cache";
 import { clearAccountLocalStorage } from "@/shared/lib/clear-account-storage";
 import { isNative } from "@/shared/lib/platform";
 import { interopLog } from "@/shared/lib/interop";
-import { onConnectivityChange } from "@/shared/lib/connectivity";
+import { onConnectivityChange, useConnectivity } from "@/shared/lib/connectivity";
 import { useLocalStorage } from "@/shared/lib/browser";
 import { convertToHexString } from "@/shared/lib/convert-to-hex-string";
 import { mergeObjects } from "@/shared/lib/merge-objects";
@@ -62,6 +62,7 @@ import {
   REQUIRED_ENCRYPTION_KEYS,
 } from "../lib";
 import { connectMatrixWithRetry } from "../lib/connect-matrix-with-retry";
+import { armMatrixReconnect, onForeground } from "../lib/matrix-reconnect";
 import { createKeyPair } from "./key-pair";
 import { generateEncryptionKeys, clearEncryptionKeysCache } from "./encryption-keys";
 
@@ -138,6 +139,13 @@ export type RegistrationPhase = 'init' | 'broadcasting' | 'confirming' | 'done' 
 // the SyncEngine stuck offline forever (#705, #496).
 let _connectivityUnsub: (() => void) | null = null;
 let _appStateHandle: { remove: () => Promise<void> } | null = null;
+// _matrixReconnectUnsub: armed while a Matrix start has failed (e.g. the app
+// launched without network); retries initMatrix() when the network or the app
+// comes back. See armMatrixReconnectAfterFailure.
+let _matrixReconnectUnsub: (() => void) | null = null;
+function stopMatrixReconnect(): void {
+  if (_matrixReconnectUnsub) { _matrixReconnectUnsub(); _matrixReconnectUnsub = null; }
+}
 let _blockHeightInterval: ReturnType<typeof setInterval> | null = null;
 // Per-room debounce timers for peer-keys recheck after member events.
 const _peerKeysRecheckTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -410,6 +418,29 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
     return _initMatrixPromise;
   };
 
+  /** A failed start is otherwise final: the chat list has already rendered
+   *  from Dexie and the boot screen is gone, so an app launched offline stayed
+   *  without Matrix until it was restarted. */
+  const armMatrixReconnectAfterFailure = (startedOffline: boolean) => {
+    stopMatrixReconnect();
+    // Signed out while the start was failing: logout already tore down.
+    if (!address.value || !privateKey.value) return;
+    _matrixReconnectUnsub = armMatrixReconnect(
+      { onConnectivityChange, onForeground },
+      {
+        canRetry: () => !matrixReady.value && !_initMatrixPromise && !!address.value && !!privateKey.value,
+        retry: () => {
+          console.info("[auth] network or app is back, retrying the Matrix start");
+          void initMatrix();
+        },
+        // The network came back while this start was still failing, so its
+        // transition has already been reported. Only a start that began offline
+        // gets this, which keeps an unreachable server from looping.
+        retryAfterMs: startedOffline && useConnectivity().isOnline.value ? 2_000 : undefined,
+      },
+    );
+  };
+
   /** Initialize Matrix client, kit and crypto after login */
   const initMatrixInner = async () => {
     if (!address.value || !privateKey.value) {
@@ -418,6 +449,7 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
       return;
     }
 
+    const startedOffline = !useConnectivity().isOnline.value;
     matrixReady.value = false;
     matrixError.value = "Initializing...";
 
@@ -784,6 +816,7 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
       ]);
 
       if (connectResult.ready) {
+        stopMatrixReconnect();
         bootStatus.setStep("sync");
         matrixReady.value = true;
         matrixError.value = null;
@@ -1087,6 +1120,7 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
           reason,
         );
         matrixError.value = reason;
+        armMatrixReconnectAfterFailure(startedOffline);
         if (bootStatus.state.value === "booting") {
           bootStatus.setError(reason, "matrix-unreachable");
         }
@@ -1094,6 +1128,7 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
     } catch (e) {
       console.error("[auth] Matrix init error:", e);
       matrixError.value = String(e);
+      armMatrixReconnectAfterFailure(startedOffline);
       if (bootStatus.state.value === 'booting') {
         bootStatus.setError(`Matrix initialization failed: ${matrixError.value}`);
       }
@@ -1476,6 +1511,7 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
 
     // ── 3. Clean up listeners & intervals ──
     if (_connectivityUnsub) { _connectivityUnsub(); _connectivityUnsub = null; }
+    stopMatrixReconnect();
     if (_blockHeightInterval) { clearInterval(_blockHeightInterval); _blockHeightInterval = null; }
     for (const t of _peerKeysRecheckTimers.values()) clearTimeout(t);
     _peerKeysRecheckTimers.clear();
@@ -2336,6 +2372,7 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
 
       // Cleanup listeners
       if (_connectivityUnsub) { _connectivityUnsub(); _connectivityUnsub = null; }
+      stopMatrixReconnect();
       if (_blockHeightInterval) { clearInterval(_blockHeightInterval); _blockHeightInterval = null; }
       for (const t of _peerKeysRecheckTimers.values()) clearTimeout(t);
       _peerKeysRecheckTimers.clear();
