@@ -186,6 +186,8 @@ class NativeRTCPeerConnection extends EventTarget {
   // _requestIceRestartOffer).
   private _iceRestartOfferPending = false;
   private _iceEverConnected = false;
+  // Set while a pending restart offer waits for the device to come back online.
+  private _onlineListener: (() => void) | null = null;
   private static readonly DISCONNECT_RESTART_DELAY_MS = 10_000;
   private static readonly DEAD_CONNECTION_TIMEOUT_MS = 20_000;
   private static readonly RESTART_ICE_DEBOUNCE_MS = 3_000;
@@ -628,18 +630,47 @@ class NativeRTCPeerConnection extends EventTarget {
    * Not before ICE has ever connected: an offer in the middle of call setup
    * is what addTrack's guard avoids, and there the restart stays a no-op as it
    * always was.
+   *
+   * Not while the device is offline: the WebView rejects the request at once
+   * and the SDK ends the call when the offer can't be sent. The SDK asks for a
+   * restart 2 s after ICE goes disconnected, so a short Wi-Fi drop would end
+   * every call; the offer goes out when the network is back.
    */
   private _requestIceRestartOffer(): void {
     if (!this._iceRestartOfferPending || this._closed || this._signalingState !== "stable") return;
-    this._iceRestartOfferPending = false;
     if (!this._iceEverConnected) {
+      this._iceRestartOfferPending = false;
       console.log("[NativeRTCProxy] restartIce: no restart offer, ICE has not connected yet");
       return;
     }
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      this._waitForOnline();
+      return;
+    }
+    this._iceRestartOfferPending = false;
+    // The offer is the restart: a restartIce from the same reconnect (the
+    // network-change handler, a watchdog) is debounced instead of restarting again.
+    this._lastRestartIceAt = Date.now();
     console.log("[NativeRTCProxy] restartIce: firing negotiationneeded for the restart offer");
     const event = new Event("negotiationneeded");
     this.onnegotiationneeded?.(event);
     this._fireEvent(event);
+  }
+
+  private _waitForOnline(): void {
+    if (this._onlineListener || typeof window === "undefined") return;
+    console.log("[NativeRTCProxy] restartIce: offline, the restart offer waits for the network");
+    this._onlineListener = () => {
+      this._stopWaitingForOnline();
+      this._requestIceRestartOffer();
+    };
+    window.addEventListener("online", this._onlineListener);
+  }
+
+  private _stopWaitingForOnline(): void {
+    if (!this._onlineListener) return;
+    window.removeEventListener("online", this._onlineListener);
+    this._onlineListener = null;
   }
 
   // -----------------------------------------------------------------------
@@ -680,6 +711,7 @@ class NativeRTCPeerConnection extends EventTarget {
   close(): void {
     if (this._closed) return;
     this._closed = true;
+    this._stopWaitingForOnline();
     this._iceConnectionState = "closed";
     this._connectionState = "closed";
     this._signalingState = "closed";

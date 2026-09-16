@@ -176,3 +176,87 @@ describe("NativeRTCPeerConnection — an ICE restart produces a restart offer", 
     pc.close();
   });
 });
+
+/**
+ * Regression for the fix above: with no network at all, the SDK fails to send the restart offer at once
+ * (the WebView rejects the request) and ends the call. The SDK asks for a restart 2 s after ICE goes
+ * disconnected, so a Wi-Fi drop with no other network ended the call within seconds, where before it
+ * could wait up to 30 s for the network to come back.
+ */
+describe("NativeRTCPeerConnection — the restart offer waits for the network", () => {
+  let online = true;
+
+  beforeEach(() => {
+    for (const m of Object.values(bridgeMethods)) m.mockReset().mockResolvedValue({});
+    for (const s of Object.values(nativeListeners)) s.clear();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    online = true;
+    vi.spyOn(navigator, "onLine", "get").mockImplementation(() => online);
+    installNativeWebRTCProxy();
+  });
+
+  afterEach(() => {
+    uninstallNativeWebRTCProxy();
+    vi.restoreAllMocks();
+  });
+
+  const goOnline = (): void => {
+    online = true;
+    window.dispatchEvent(new Event("online"));
+  };
+
+  it("holds the offer while the device is offline and sends it once the network is back", async () => {
+    const { pc, offersNeeded } = await connection();
+    online = false;
+
+    pc.restartIce();
+    await flush();
+    expect(bridge("restartIce")).toHaveBeenCalledOnce();
+    expect(offersNeeded()).toBe(0);
+
+    goOnline();
+    await flush();
+    expect(offersNeeded()).toBe(1);
+
+    goOnline();
+    await flush();
+    expect(offersNeeded()).toBe(1);
+    pc.close();
+  });
+
+  it("sends nothing when the connection closes before the network is back", async () => {
+    const { pc, offersNeeded } = await connection();
+    online = false;
+    pc.restartIce();
+    await flush();
+
+    pc.close();
+    goOnline();
+    await flush();
+
+    expect(offersNeeded()).toBe(0);
+  });
+
+  it("treats a restart right after the held offer went out as the same restart", async () => {
+    let now = 100_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { pc, offersNeeded } = await connection();
+    online = false;
+    pc.restartIce();
+    await flush();
+
+    now += 20_000;
+    goOnline();
+    await flush();
+    expect(offersNeeded()).toBe(1);
+
+    // The network-change handler reacts to the same reconnect.
+    now += 500;
+    pc.restartIce();
+    await flush();
+
+    expect(bridge("restartIce")).toHaveBeenCalledOnce();
+    expect(offersNeeded()).toBe(1);
+    pc.close();
+  });
+});
