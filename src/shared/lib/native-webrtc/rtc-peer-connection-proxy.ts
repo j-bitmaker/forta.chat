@@ -182,6 +182,10 @@ class NativeRTCPeerConnection extends EventTarget {
   // glare resolution). Two back-to-back native restarts while signaling is
   // mid-offer reliably wedge libwebrtc on Android — we must collapse them.
   private _lastRestartIceAt = 0;
+  // A finished native restart whose offer has not been asked for yet (see
+  // _requestIceRestartOffer).
+  private _iceRestartOfferPending = false;
+  private _iceEverConnected = false;
   private static readonly DISCONNECT_RESTART_DELAY_MS = 10_000;
   private static readonly DEAD_CONNECTION_TIMEOUT_MS = 20_000;
   private static readonly RESTART_ICE_DEBOUNCE_MS = 3_000;
@@ -605,11 +609,37 @@ class NativeRTCPeerConnection extends EventTarget {
     }
     this._lastRestartIceAt = now;
     this._waitReady()
-      .then(() => {
+      .then(async () => {
         if (this._closed) return;
-        return NativeWebRTC.restartIce({ peerId: this._peerId });
+        await NativeWebRTC.restartIce({ peerId: this._peerId });
+        this._iceRestartOfferPending = true;
+        this._requestIceRestartOffer();
       })
       .catch((e) => console.error("[NativeRTCProxy] restartIce failed:", e));
+  }
+
+  /**
+   * Native restartIce only marks the connection: libwebrtc then reports
+   * renegotiation-needed, and NativeWebRTCManager suppresses that event (it
+   * also fires for our own track management). Without negotiationneeded the
+   * SDK never sends the restart offer and the restart does nothing, so the
+   * proxy fires it — as a browser does, only once signaling is stable.
+   *
+   * Not before ICE has ever connected: an offer in the middle of call setup
+   * is what addTrack's guard avoids, and there the restart stays a no-op as it
+   * always was.
+   */
+  private _requestIceRestartOffer(): void {
+    if (!this._iceRestartOfferPending || this._closed || this._signalingState !== "stable") return;
+    this._iceRestartOfferPending = false;
+    if (!this._iceEverConnected) {
+      console.log("[NativeRTCProxy] restartIce: no restart offer, ICE has not connected yet");
+      return;
+    }
+    console.log("[NativeRTCProxy] restartIce: firing negotiationneeded for the restart offer");
+    const event = new Event("negotiationneeded");
+    this.onnegotiationneeded?.(event);
+    this._fireEvent(event);
   }
 
   // -----------------------------------------------------------------------
@@ -691,6 +721,9 @@ class NativeRTCPeerConnection extends EventTarget {
     this._signalingState = state;
     this.onsignalingstatechange?.(new Event("signalingstatechange"));
     this._fireEvent(new Event("signalingstatechange"));
+    // Outside the SDK's own signalingstatechange handling, which may still be
+    // finishing the exchange that just became stable.
+    if (state === "stable" && this._iceRestartOfferPending) queueMicrotask(() => this._requestIceRestartOffer());
   }
 
   /**
@@ -722,6 +755,7 @@ class NativeRTCPeerConnection extends EventTarget {
     this._iceConnectionState = ICE_STATE_MAP[state] ?? "new";
     if (state === "connected" || state === "completed") {
       this._connectionState = "connected";
+      this._iceEverConnected = true;
     } else if (state === "failed") {
       this._connectionState = "failed";
     } else if (state === "disconnected") {
