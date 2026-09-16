@@ -1552,6 +1552,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     readOutboundTs: number;
     lastMsgDecryptionStatus: string | undefined;
     callPreview: string;
+    reaction: string;
     room: ChatRoom;
   }>();
 
@@ -1565,6 +1566,12 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       call?.callType, call?.missed, call?.duration,
       meta?.template, meta?.senderAddr, meta?.targetAddr, meta?.extra,
     ]);
+  };
+
+  /** A reaction on the last message changes nothing else the cache keys on. */
+  const reactionKey = (lr: LocalRoom): string => {
+    const reaction = lr.lastMessageReaction;
+    return reaction ? `${reaction.emoji}|${reaction.senderAddress}|${reaction.timestamp}` : "";
   };
 
   // ---------------------------------------------------------------------------
@@ -1588,6 +1595,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     const lastMsgDecryptionStatus = lr.lastMessageDecryptionStatus;
     const lastMsgSenderId = lr.lastMessageSenderId ?? "";
     const callPreview = callPreviewKey(lr);
+    const reaction = reactionKey(lr);
     const cached = _chatRoomFromDexieCache.get(lr.id);
     if (
       cached &&
@@ -1603,7 +1611,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       cached.localStatus === localStatus &&
       cached.readOutboundTs === readOutboundTs &&
       cached.lastMsgDecryptionStatus === lastMsgDecryptionStatus &&
-      cached.callPreview === callPreview
+      cached.callPreview === callPreview &&
+      cached.reaction === reaction
     ) {
       return cached.room;
     }
@@ -1620,7 +1629,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       lastMessage: buildLastMessage(lr, decryptedPreview),
       lastMessageReaction: lr.lastMessageReaction ?? undefined,
     } as ChatRoom;
-    _chatRoomFromDexieCache.set(lr.id, { ts, updatedAt: effectiveSortKey, unread: lr.unreadCount, name: lr.name, membership: lr.membership, preview: effectivePreview, senderId: lastMsgSenderId, eventId: lr.lastMessageEventId ?? "", localStatus, readOutboundTs, lastMsgDecryptionStatus, callPreview, room });
+    _chatRoomFromDexieCache.set(lr.id, { ts, updatedAt: effectiveSortKey, unread: lr.unreadCount, name: lr.name, membership: lr.membership, preview: effectivePreview, senderId: lastMsgSenderId, eventId: lr.lastMessageEventId ?? "", localStatus, readOutboundTs, lastMsgDecryptionStatus, callPreview, reaction, room });
     return room;
   };
 

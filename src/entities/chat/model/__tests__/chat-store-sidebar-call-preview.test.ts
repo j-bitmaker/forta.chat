@@ -1,5 +1,5 @@
 /**
- * Regression: the chat list kept a call preview that Dexie had already changed.
+ * Regression: the chat list kept a last-message preview that Dexie had already changed.
  * A hangup record can be rewritten in place — same event, same timestamp, same
  * "[message]" placeholder — once the invite comes into view and the call reads
  * as missed (`entities/chat/lib/call-outcome.ts`). The sidebar only re-mapped a
@@ -122,7 +122,7 @@ async function waitFor(fn: () => boolean, timeout = 2000) {
   }
 }
 
-describe("chat-store — the chat list follows a call preview rewritten in place", () => {
+describe("chat-store — the chat list follows a last-message preview rewritten in place", () => {
   let store: ReturnType<typeof useChatStore>;
 
   beforeEach(() => {
@@ -155,5 +155,25 @@ describe("chat-store — the chat list follows a call preview rewritten in place
     capture.cb!([{ type: "upsert", room: renamed }]);
 
     await waitFor(() => store.sortedRooms[0].lastMessage?.systemMeta?.template === "system.videoCall");
+  });
+
+  // A reaction on the last message changes only lastMessageReaction: same event,
+  // timestamp and preview text. Seen on the Samsung: Dexie had the 👍, the list did not.
+  it("shows a reaction added to the last message", async () => {
+    const capture: { cb?: (changes: RoomChange[]) => void } = {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    store.setChatDbKit(makeKit(capture) as any);
+    await waitFor(() => store.sortedRooms.length === 1 && !!capture.cb);
+    expect(store.sortedRooms[0].lastMessageReaction).toBeUndefined();
+
+    const reacted = callRoom(false);
+    reacted.lastMessageReaction = { emoji: "👍", senderAddress: "peer", timestamp: 2000 };
+    capture.cb!([{ type: "upsert", room: reacted }]);
+    await waitFor(() => store.sortedRooms[0].lastMessageReaction?.emoji === "👍");
+
+    const changed = callRoom(false);
+    changed.lastMessageReaction = { emoji: "❤️", senderAddress: "peer", timestamp: 3000 };
+    capture.cb!([{ type: "upsert", room: changed }]);
+    await waitFor(() => store.sortedRooms[0].lastMessageReaction?.emoji === "❤️");
   });
 });
