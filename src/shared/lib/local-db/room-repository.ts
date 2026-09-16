@@ -1,5 +1,28 @@
+import Dexie from "dexie";
 import type { ChatDatabase, LocalRoom, LocalMessageStatus } from "./schema";
 import type { MessageType } from "@/entities/chat/model/types";
+
+/**
+ * The row an `updating` hook is about to store. Dexie reports a nested object's
+ * changes as key paths ("lastMessageCallInfo.missed"), not as the whole object, so
+ * a spread kept the stored call info and added a dotted key beside it: a call
+ * record that followed a call record showed the earlier call in the chat list.
+ * Only the top-level objects a path reaches are copied; the stored row is not touched.
+ */
+function applyRoomModifications(obj: LocalRoom, mods: object): LocalRoom {
+  const updated = { ...obj } as Record<string, unknown>;
+  const copied = new Set<string>();
+  for (const [keyPath, value] of Object.entries(mods)) {
+    const head = keyPath.split(".", 1)[0];
+    if (head !== keyPath && !copied.has(head)) {
+      updated[head] = Dexie.deepClone(updated[head]);
+      copied.add(head);
+    }
+    if (value === undefined) Dexie.delByKeyPath(updated, keyPath);
+    else Dexie.setByKeyPath(updated, keyPath, value);
+  }
+  return updated as unknown as LocalRoom;
+}
 
 /** Delta change reported by observeRoomChanges */
 export type RoomChange =
@@ -704,8 +727,7 @@ export class RoomRepository {
     };
 
     const onUpdating = function (this: any, mods: object, primKey: string, obj: LocalRoom) {
-      const updated = { ...obj, ...mods } as LocalRoom;
-      buffer.push({ type: "upsert", room: updated });
+      buffer.push({ type: "upsert", room: applyRoomModifications(obj, mods) });
       scheduleFlush();
     };
 

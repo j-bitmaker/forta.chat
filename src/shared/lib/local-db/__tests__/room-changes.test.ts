@@ -135,4 +135,35 @@ describe("observeRoomChanges", () => {
     // No new changes after unsubscribe
     expect(changes).toHaveLength(1);
   });
+
+  // Dexie hands the updating hook a nested object's changes as key paths
+  // ("lastMessageCallInfo.missed"), not as the whole object. A call record
+  // following a call record kept the earlier call's info in the chat list.
+  it("reports a nested preview object in full when only some of its fields change", async () => {
+    setup();
+    await db.rooms.put(makeLocalRoom({
+      id: "!call:test",
+      lastMessageTimestamp: 1000,
+      lastMessageEventId: "$hangup1",
+      lastMessagePreview: "[message]",
+      lastMessageCallInfo: { callType: "voice", missed: true, duration: 5 },
+      lastMessageSystemMeta: { template: "system.missedVoiceCall", senderAddr: "peer" },
+    }));
+    const changes: RoomChange[] = [];
+    repo.observeRoomChanges((batch) => changes.push(...batch));
+
+    await repo.updateLastMessage(
+      "!call:test", "[message]", 2000, "peer", undefined, "$hangup2",
+      { callType: "voice", missed: false },
+      { template: "system.voiceCall", senderAddr: "peer" },
+    );
+    await flushMicrotasks();
+
+    expect(changes).toHaveLength(1);
+    const room = (changes[0] as Extract<RoomChange, { type: "upsert" }>).room;
+    expect(room.lastMessageEventId).toBe("$hangup2");
+    expect(room.lastMessageCallInfo).toEqual({ callType: "voice", missed: false });
+    expect(room.lastMessageSystemMeta).toEqual({ template: "system.voiceCall", senderAddr: "peer" });
+    expect(Object.keys(room).filter((k) => k.includes("."))).toEqual([]);
+  });
 });

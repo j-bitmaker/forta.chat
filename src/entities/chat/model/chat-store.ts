@@ -1551,8 +1551,21 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     localStatus: string | null | undefined;
     readOutboundTs: number;
     lastMsgDecryptionStatus: string | undefined;
+    callPreview: string;
     room: ChatRoom;
   }>();
+
+  /** The call and system-message details the chat list renders from. A hangup
+   *  record is rewritten in place — same event, timestamp and placeholder text —
+   *  when it turns out to be a missed call, so these must count on their own. */
+  const callPreviewKey = (lr: LocalRoom): string => {
+    const call = lr.lastMessageCallInfo;
+    const meta = lr.lastMessageSystemMeta;
+    return JSON.stringify([
+      call?.callType, call?.missed, call?.duration,
+      meta?.template, meta?.senderAddr, meta?.targetAddr, meta?.extra,
+    ]);
+  };
 
   // ---------------------------------------------------------------------------
   // Map a single LocalRoom → ChatRoom (extracted from old computeSortedRooms)
@@ -1574,6 +1587,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     const readOutboundTs = lr.lastReadOutboundTs ?? 0;
     const lastMsgDecryptionStatus = lr.lastMessageDecryptionStatus;
     const lastMsgSenderId = lr.lastMessageSenderId ?? "";
+    const callPreview = callPreviewKey(lr);
     const cached = _chatRoomFromDexieCache.get(lr.id);
     if (
       cached &&
@@ -1588,7 +1602,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       cached.eventId === (lr.lastMessageEventId ?? "") &&
       cached.localStatus === localStatus &&
       cached.readOutboundTs === readOutboundTs &&
-      cached.lastMsgDecryptionStatus === lastMsgDecryptionStatus
+      cached.lastMsgDecryptionStatus === lastMsgDecryptionStatus &&
+      cached.callPreview === callPreview
     ) {
       return cached.room;
     }
@@ -1605,7 +1620,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       lastMessage: buildLastMessage(lr, decryptedPreview),
       lastMessageReaction: lr.lastMessageReaction ?? undefined,
     } as ChatRoom;
-    _chatRoomFromDexieCache.set(lr.id, { ts, updatedAt: effectiveSortKey, unread: lr.unreadCount, name: lr.name, membership: lr.membership, preview: effectivePreview, senderId: lastMsgSenderId, eventId: lr.lastMessageEventId ?? "", localStatus, readOutboundTs, lastMsgDecryptionStatus, room });
+    _chatRoomFromDexieCache.set(lr.id, { ts, updatedAt: effectiveSortKey, unread: lr.unreadCount, name: lr.name, membership: lr.membership, preview: effectivePreview, senderId: lastMsgSenderId, eventId: lr.lastMessageEventId ?? "", localStatus, readOutboundTs, lastMsgDecryptionStatus, callPreview, room });
     return room;
   };
 
@@ -1926,7 +1941,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       || prev.lastMessageDecryptionStatus !== next.lastMessageDecryptionStatus
       || prev.lastMessageReaction !== next.lastMessageReaction
       || prev.isDeleted !== next.isDeleted
-      || prev.topic !== next.topic;
+      || prev.topic !== next.topic
+      || callPreviewKey(prev) !== callPreviewKey(next);
   };
 
   const applyDexieDeltas = (changes: RoomChange[]) => {
