@@ -81,6 +81,21 @@ function encryptedRepairPatch(existing: LocalMessage, incoming: LocalMessage): P
   return null;
 }
 
+/** Mark a stored call record missed when a later write of the same hangup knows more.
+ *  Whether a cancelled call was missed depends on its invite being in view
+ *  (`entities/chat/lib/call-outcome.ts`); live sync keeps 4 events per room, so a hangup
+ *  after a gap is first stored as not missed, and the history load that sees the invite
+ *  rewrites the same event. Only false → true: a write that sees the invite sees every
+ *  answer after it, so a later "not missed" never knows more than the row.
+ *  Returns the patch to apply, or null to leave the row untouched. */
+function missedCallRepairPatch(existing: LocalMessage, incoming: LocalMessage): Partial<LocalMessage> | null {
+  if (!existing.callInfo || existing.callInfo.missed || !incoming.callInfo?.missed) return null;
+  return {
+    callInfo: { ...existing.callInfo, missed: true },
+    systemMeta: incoming.systemMeta ?? existing.systemMeta,
+  };
+}
+
 /** A local-only phantom: a pending message the user deleted before it ever
  *  reached the server. It has no `eventId` (never synced) and is deleted
  *  locally, so it must vanish from the timeline without a placeholder — there
@@ -278,7 +293,7 @@ export class MessageRepository {
         const healedFileInfo = healFileInfoFromEcho(existing.fileInfo, msg.fileInfo);
         // Inbound rows get clientId `srv_<eventId>` (EventWriter), so a
         // re-write of someone else's message lands here, not in step 2.
-        const repair = encryptedRepairPatch(existing, msg) ?? {};
+        const repair = encryptedRepairPatch(existing, msg) ?? missedCallRepairPatch(existing, msg) ?? {};
 
         // If upload is still in-flight (has localBlobUrl) and hasn't failed,
         // only store eventId — let confirmMediaSent handle the final status transition.
@@ -314,7 +329,7 @@ export class MessageRepository {
     if (msg.eventId) {
       const byEvent = await this.getByEventId(msg.eventId);
       if (byEvent) {
-        const patch = encryptedRepairPatch(byEvent, msg);
+        const patch = encryptedRepairPatch(byEvent, msg) ?? missedCallRepairPatch(byEvent, msg);
         if (patch && byEvent.localId) {
           await this.db.messages.update(byEvent.localId, patch);
           return "updated";
@@ -354,7 +369,7 @@ export class MessageRepository {
         if (!e.eventId) continue;
         existingEventIds.add(e.eventId);
         const incoming = incomingByEventId.get(e.eventId);
-        const patch = incoming && encryptedRepairPatch(e, incoming);
+        const patch = incoming && (encryptedRepairPatch(e, incoming) ?? missedCallRepairPatch(e, incoming));
         if (patch && e.localId) await this.db.messages.update(e.localId, patch);
       }
     }

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { setActivePinia } from "pinia";
 import { createTestingPinia } from "@pinia/testing";
 import { makeMsg, makeRoom } from "@/test-utils";
@@ -609,6 +609,46 @@ describe("chat-store", () => {
       expect(updated?.lastMessage).toBeDefined();
       expect(updated?.lastMessage?.callInfo?.callType).toBe("voice");
       expect(updated?.updatedAt).toBe(5000);
+    });
+
+    describe("hangup record from live sync", () => {
+      const callEvent = (type: string, sender: string, extra: Record<string, unknown> = {}) => ({
+        type,
+        sender,
+        event_id: `$${type}:${sender}`,
+        origin_server_ts: 7000,
+        room_id: "!live:s",
+        content: { call_id: "call-1", ...extra },
+      });
+      const withTimeline = (events: unknown[]) => {
+        const room = { selfMembership: "join", getLiveTimeline: () => ({ getEvents: () => events }) };
+        mockGetRoom.mockImplementation(() => room);
+      };
+      afterEach(() => {
+        mockGetRoom.mockImplementation(() => ({ selfMembership: "join" }));
+      });
+
+      it("reads a call the caller cancelled while it rang as missed", async () => {
+        const hangup = callEvent("m.call.hangup", "@peer:s", { reason: "user_hangup" });
+        withTimeline([callEvent("m.call.invite", "@peer:s"), hangup]);
+
+        await store.handleTimelineEvent(hangup, "!live:s");
+
+        const record = store.messages["!live:s"]?.[0];
+        expect(record?.callInfo?.missed).toBe(true);
+        expect(record?.systemMeta?.template).toBe("system.missedVoiceCall");
+      });
+
+      it("does not read an answered call the caller ended as missed", async () => {
+        const hangup = callEvent("m.call.hangup", "@peer:s", { reason: "user_hangup" });
+        withTimeline([callEvent("m.call.invite", "@peer:s"), callEvent("m.call.answer", "@me:server"), hangup]);
+
+        await store.handleTimelineEvent(hangup, "!live:s");
+
+        const record = store.messages["!live:s"]?.[0];
+        expect(record?.callInfo?.missed).toBe(false);
+        expect(record?.systemMeta?.template).toBe("system.voiceCall");
+      });
     });
   });
 });

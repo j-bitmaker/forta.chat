@@ -14,6 +14,7 @@ import { resetPowerLevel, isUserBanned } from "../lib/room-guards";
 import { categorizeJoinError, validateRoomId, type JoinRoomResult } from "../lib/join-error";
 import { getModeratorChange, isServiceRoomName, isWithinCreationBurst, isCreationBurstMemberEvent } from "../lib/system-event-filter";
 import { preservePendingRooms } from "../lib/preserve-pending-rooms";
+import { indexCallEvents, isMissedCallHangup, type CallEventIndex } from "../lib/call-outcome";
 import { unreadPeerHangupCount, unreadCountWithoutHangups, hasCallEvent } from "../lib/call-hangup-unread";
 import { createHangupGapCounter } from "./hangup-gap-counter";
 import { callHangupRuleSince } from "@/shared/lib/push/call-hangup-push-rule";
@@ -215,6 +216,8 @@ function matrixRoomToChatRoom(room: any, kit: MatrixKit, myUserId: string, nameH
   let lastMessage: Message | undefined;
   let lastSystemMessage: Message | undefined; // fallback: member/call events
   let lastTs = 0;
+  // Indexed on the first hangup only: most rooms have no call in view.
+  let callEvents: CallEventIndex | undefined;
   // An edit (m.replace relation) is a separate event whose origin_server_ts
   // is the *edit time*, not the original send time. Treating it as the
   // room's "last event" inflates lastMessageTimestamp past lastReadOutboundTs
@@ -336,19 +339,20 @@ function matrixRoomToChatRoom(room: any, kit: MatrixKit, myUserId: string, nameH
         }
       } else if (raw.type === "m.call.hangup") {
         const callContent = raw.content as Record<string, unknown>;
-        const reason = callContent.reason as string | undefined;
         const isVideo = (callContent as any).offer_type === "video"
           || (callContent as any).version === 1;
         const durationMs = typeof callContent.duration === "number" ? callContent.duration : 0;
         const sender = matrixIdToAddress(raw.sender as string);
-        const callTemplateKey = reason === "invite_timeout"
+        if (!callEvents) callEvents = indexCallEvents(timelineEvents.map(getRawEvent));
+        const missed = isMissedCallHangup(raw, callEvents);
+        const callTemplateKey = missed
           ? (isVideo ? "system.missedVideoCall" : "system.missedVoiceCall")
           : (isVideo ? "system.videoCall" : "system.voiceCall");
         lastSystemMessage = {
           id: raw.event_id as string, roomId, senderId: sender,
           content: "", timestamp: (raw.origin_server_ts as number) ?? 0,
           status: MessageStatus.sent, type: MessageType.system,
-          callInfo: { callType: isVideo ? "video" : "voice", missed: reason === "invite_timeout", duration: Math.round(durationMs / 1000), callId: callContent.call_id as string | undefined },
+          callInfo: { callType: isVideo ? "video" : "voice", missed, duration: Math.round(durationMs / 1000), callId: callContent.call_id as string | undefined },
           systemMeta: { template: callTemplateKey, senderAddr: sender },
         };
       }
@@ -5166,6 +5170,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     event: unknown,
     roomId: string,
     roomCrypto: PcryptoRoomInstance | undefined,
+    callEvents: CallEventIndex,
   ): Promise<Message | null> => {
     const raw = getRawEvent(event);
     if (!raw?.content) return null;
@@ -5179,13 +5184,13 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     // Handle call hangup events as system messages in timeline history
     if (raw.type === "m.call.hangup") {
       const callContent = raw.content as Record<string, unknown>;
-      const reason = callContent.reason as string | undefined;
       const isVideo = (callContent as any).offer_type === "video"
         || (callContent as any).version === 1;
       const durationMs = typeof callContent.duration === "number" ? callContent.duration : 0;
       const sender = matrixIdToAddress(raw.sender as string);
+      const missed = isMissedCallHangup(raw, callEvents);
       let callTemplateKey: string;
-      if (reason === "invite_timeout") {
+      if (missed) {
         callTemplateKey = isVideo ? "system.missedVideoCall" : "system.missedVoiceCall";
       } else {
         callTemplateKey = isVideo ? "system.videoCall" : "system.voiceCall";
@@ -5198,7 +5203,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         timestamp: (raw.origin_server_ts as number) ?? 0,
         status: MessageStatus.sent,
         type: MessageType.system,
-        callInfo: { callType: isVideo ? "video" : "voice", missed: reason === "invite_timeout", duration: Math.round(durationMs / 1000), callId: callContent.call_id as string | undefined },
+        callInfo: { callType: isVideo ? "video" : "voice", missed, duration: Math.round(durationMs / 1000), callId: callContent.call_id as string | undefined },
         systemMeta: { template: callTemplateKey, senderAddr: sender },
       };
     }
@@ -5477,9 +5482,12 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       }
     }
 
+    // A hangup reads as missed by the invite and answers around it (call-outcome.ts).
+    const callEvents = indexCallEvents(timelineEvents.map(getRawEvent));
+
     // Decrypt all messages in parallel
     const results = await Promise.all(
-      messageEvents.map((event) => parseSingleEvent(event, roomId, roomCrypto).catch(() => null))
+      messageEvents.map((event) => parseSingleEvent(event, roomId, roomCrypto, callEvents).catch(() => null))
     );
 
     const msgs = results.filter((m): m is Message => m !== null && (m.content !== "" || m.deleted === true || m.type === MessageType.system));
@@ -6424,13 +6432,15 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       // Handle call hangup events as system messages in the timeline
       if (raw.type === "m.call.hangup") {
         const callContent = raw.content as Record<string, unknown>;
-        const reason = callContent.reason as string | undefined;
         const isVideo = (callContent as any).offer_type === "video"
           || (callContent as any).version === 1;
         const durationMs = typeof callContent.duration === "number" ? callContent.duration : 0;
         const sender = matrixIdToAddress(raw.sender as string);
+        const matrixRoom = getMatrixClientService().getRoom(roomId);
+        const callEvents = indexCallEvents((matrixRoom ? getTimelineEvents(matrixRoom) : []).map(getRawEvent));
+        const missed = isMissedCallHangup(raw, callEvents);
         let callTemplateKey: string;
-        if (reason === "invite_timeout") {
+        if (missed) {
           callTemplateKey = isVideo ? "system.missedVideoCall" : "system.missedVoiceCall";
         } else {
           callTemplateKey = isVideo ? "system.videoCall" : "system.voiceCall";
@@ -6443,7 +6453,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           timestamp: (raw.origin_server_ts as number) ?? 0,
           status: MessageStatus.sent,
           type: MessageType.system,
-          callInfo: { callType: isVideo ? "video" : "voice", missed: reason === "invite_timeout", duration: Math.round(durationMs / 1000), callId: callContent.call_id as string | undefined },
+          callInfo: { callType: isVideo ? "video" : "voice", missed, duration: Math.round(durationMs / 1000), callId: callContent.call_id as string | undefined },
           systemMeta: { template: callTemplateKey, senderAddr: sender },
         };
         addMessage(roomId, sysMsg);
