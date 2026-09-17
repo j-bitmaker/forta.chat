@@ -1084,6 +1084,12 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
           } catch (err) {
             console.warn("[auth] Failed to init native call bridge:", err);
           }
+          try {
+            const { installCallHangupContextProvider } = await import('@/features/video-calls/model/call-hangup-context');
+            installCallHangupContextProvider();
+          } catch (err) {
+            console.warn("[auth] Failed to install the call hangup context:", err);
+          }
 
           // App-resume audio watchdog. Recovers from a stuck VoIP audio
           // mode when a previous call's finalize did not complete (JS

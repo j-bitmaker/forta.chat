@@ -30,11 +30,13 @@ object IdleProcessExitPolicy {
         val ringerArmed: Boolean,
         val busyServices: Int,
         val recentCallPush: Boolean,
+        /** A task swipe mid-call is sending m.call.hangup from native code ([CallHangupSignal]). */
+        val hangupSending: Boolean = false,
     )
 
     fun decide(snapshot: Snapshot, attempt: Int): Decision = when {
         snapshot.uiTaskRunning || snapshot.hasConnection -> Decision.STAY
-        snapshot.ringerArmed || snapshot.busyServices > 0 || snapshot.recentCallPush ->
+        snapshot.ringerArmed || snapshot.busyServices > 0 || snapshot.recentCallPush || snapshot.hangupSending ->
             if (attempt + 1 < MAX_ATTEMPTS) Decision.RETRY else Decision.STAY
         else -> Decision.EXIT
     }

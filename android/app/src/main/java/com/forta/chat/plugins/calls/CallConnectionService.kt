@@ -248,6 +248,15 @@ class CallConnectionService : ConnectionService() {
                 return false
             }
             Log.w(TAG, "Task removed while a connection was live — disconnecting ${connection.callId}")
+            // The swipe destroyed the WebView, so the SDK will not tell the peer.
+            // Before onDisconnect: its teardown forgets the target.
+            val hangup = CallHangupSignal.take(connection.callId)
+            if (hangup != null) {
+                runCatching { CallHangupSignal.sendAsync(hangup) }
+                    .onFailure { Log.w(TAG, "task-removed hangup send threw", it) }
+            } else {
+                Log.w(TAG, "no hangup target for ${connection.callId} — the peer learns of it from the connection")
+            }
             runCatching { connection.onDisconnect() }
                 .onFailure { Log.w(TAG, "task-removed release threw", it) }
             // Outside the runCatching on purpose: onDisconnect short-circuits on

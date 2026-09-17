@@ -275,6 +275,7 @@ class CallPlugin : Plugin() {
         val hasVideo = call.getBoolean("hasVideo", false) ?: false
 
         Log.d(TAG, "reportOutgoingCall: $callerName ($callId)")
+        captureHangupTarget(callId)
 
         try {
             val telecomManager = context.getSystemService(TelecomManager::class.java)
@@ -354,6 +355,30 @@ class CallPlugin : Plugin() {
         call.resolve()
     }
 
+    /**
+     * Reads the context native code needs to hang up [callId] itself if a task
+     * swipe destroys the WebView mid-call ([CallHangupSignal]). Taken while
+     * dialling and again once connected — the client may have failed over to
+     * another homeserver mirror in between.
+     */
+    private fun captureHangupTarget(callId: String?) {
+        if (callId.isNullOrEmpty()) return
+        val bridge = bridge ?: return
+        bridge.executeOnMainThread {
+            runCatching {
+                bridge.webView.evaluateJavascript(CallHangupSignal.captureScript(callId)) { result ->
+                    val target = CallHangupSignal.parse(result)?.takeIf { it.callId == callId }
+                    if (target != null) {
+                        CallHangupSignal.remember(target)
+                        Log.d(TAG, "hangup target ready: $target")
+                    } else {
+                        Log.w(TAG, "no hangup context from JS for $callId")
+                    }
+                }
+            }.onFailure { Log.w(TAG, "captureHangupTarget($callId) threw", it) }
+        }
+    }
+
     @PluginMethod
     fun reportCallConnected(call: PluginCall) {
         // setActive() here bypasses CallConnection.onAnswer(), so the silencing
@@ -362,6 +387,7 @@ class CallPlugin : Plugin() {
         IncomingRinger.stopAll()
         IncomingCallActivity.stopRingerIfShowing()
         val callId = call.getString("callId")
+        captureHangupTarget(callId)
         val connection = CallConnectionService.currentConnection?.takeIf { slot ->
             CallSlotPolicy.owns(slot.callId, callId).also { owns ->
                 if (!owns) Log.w(TAG, "reportCallConnected($callId): slot holds ${slot.callId}, leaving it")

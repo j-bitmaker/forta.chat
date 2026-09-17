@@ -46,6 +46,13 @@ class IdleProcessExitPolicyTest {
     }
 
     @Test
+    fun retries_whileAHangupIsStillBeingSent() {
+        // A swipe mid-call sends m.call.hangup from native code; ending the
+        // process before it leaves would put the peer back in a silent call.
+        assertEquals(Decision.RETRY, IdleProcessExitPolicy.decide(idle.copy(hangupSending = true), attempt = 0))
+    }
+
+    @Test
     fun retries_whileTheRingerStillRings() {
         assertEquals(Decision.RETRY, IdleProcessExitPolicy.decide(idle.copy(ringerArmed = true), attempt = 0))
     }

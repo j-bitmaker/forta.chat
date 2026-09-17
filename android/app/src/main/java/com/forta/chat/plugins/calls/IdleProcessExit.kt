@@ -113,6 +113,7 @@ object IdleProcessExit {
             ringerArmed = IncomingRinger.ringingCallId != null,
             busyServices = busyServices(context),
             recentCallPush = IdleProcessExitPolicy.isRecentCallPush(lastCallPushAtMs, SystemClock.elapsedRealtime()),
+            hangupSending = CallHangupSignal.isSending,
         )
     }
 

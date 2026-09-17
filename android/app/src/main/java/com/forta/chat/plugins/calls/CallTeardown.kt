@@ -19,6 +19,7 @@ object CallTeardown {
     private const val TAG = "CallTeardown"
 
     fun endCall(context: Context, reason: CallTeardownPolicy.Reason, callId: String?) {
+        CallHangupSignal.forget(callId)
         val app = context.applicationContext
         val state = try {
             collectState(app, callId)
