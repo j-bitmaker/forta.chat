@@ -14,6 +14,7 @@
  */
 
 import { NativeWebRTC } from "./native-webrtc-bridge";
+import { addLocalCandidatesToSdp } from "./sdp-local-candidates";
 import type { PluginListenerHandle } from "@capacitor/core";
 
 // Save original for fallback / non-call usage
@@ -149,6 +150,9 @@ class NativeRTCPeerConnection extends EventTarget {
   private _connectionState: RTCPeerConnectionState = "new";
   private _signalingState: RTCSignalingState = "stable";
   private _localDescription: RTCSessionDescription | null = null;
+  // Local candidates gathered so far. The native SDP carries none, and the SDK drops its queued
+  // candidates when it sends an offer or answer, expecting them in localDescription as in a browser.
+  private _localCandidates: RTCIceCandidateInit[] = [];
   private _remoteDescription: RTCSessionDescription | null = null;
 
   // Callback-style event handlers (SDK uses these)
@@ -255,11 +259,13 @@ class NativeRTCPeerConnection extends EventTarget {
             this._fireEvent(new Event("icegatheringstatechange"));
           }
 
-          const candidate = new RTCIceCandidate({
+          const init: RTCIceCandidateInit = {
             candidate: data.candidate,
             sdpMid: data.sdpMid,
             sdpMLineIndex: data.sdpMLineIndex,
-          });
+          };
+          this._localCandidates.push(init);
+          const candidate = new RTCIceCandidate(init);
           const event = new RTCPeerConnectionIceEvent("icecandidate", {
             candidate,
           });
@@ -410,13 +416,19 @@ class NativeRTCPeerConnection extends EventTarget {
     return this._signalingState;
   }
   get localDescription(): RTCSessionDescription | null {
-    return this._localDescription;
+    return this._describeLocal();
   }
   get remoteDescription(): RTCSessionDescription | null {
     return this._remoteDescription;
   }
   get currentLocalDescription(): RTCSessionDescription | null {
-    return this._localDescription;
+    return this._describeLocal();
+  }
+
+  private _describeLocal(): RTCSessionDescription | null {
+    const desc = this._localDescription;
+    if (!desc || this._localCandidates.length === 0) return desc;
+    return new RTCSessionDescription({ type: desc.type, sdp: addLocalCandidatesToSdp(desc.sdp, this._localCandidates) });
   }
   get currentRemoteDescription(): RTCSessionDescription | null {
     return this._remoteDescription;
