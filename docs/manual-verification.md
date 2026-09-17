@@ -657,38 +657,6 @@
     этого значения отчёт строит строку `| Full-screen intent | REVOKED |` (`collect-call-diagnostics.ts`, формат строки —
     `bug-report-sender.test.ts`).
 - Статус: ☐ Pixel: шаги 1–3 прошли 2026-09-17; Samsung: шаги 1 и 3 прошли 2026-09-14, шаг 2 не проверен
-### Слот Telecom по callId
-- Коммит: dac97dcb
-- Почему нужен человек: contract-тест доказывает вложенные extras и
-  проверку id у трёх читателей, `CallSlotPolicyTest` — правило. Не
-  доказано: что Telecom на реальных прошивках доносит вложенный bundle
-  (лог `onCreateOutgoingConnection: callId=<непустой>`) и что второй
-  входящий во время разговора больше не рвёт разговор (нужна третья
-  сторона).
-- На чём: Pixel ↔ Samsung + веб как третий звонящий, обе сборки. Шаги —
-  F32 в `docs/call-fix-checklist.md`.
-- Шаги:
-  1. Исходящий с Pixel: в логе непустой callId.
-     ✅ 2026-09-09 на Samsung SM-A528B (Android 14):
-     `onCreateOutgoingConnection: callId=1788954840884hVNAUhH8ehEk5JZ7`.
-  2. Второй входящий с веба в разговоре: «занято» второму, разговор
-     живёт, строка `leaving it` в логе; после конца — `MODE_NORMAL`.
-     Измерено 2026-09-10 на Samsung SM-A528B ↔ веб TEST1 + веб
-     `test23438111`, сборка `f83b30e7` с FCM (логи
-     `scratchpad/runs/3way-decline2-*`, `3way-accept1-*`).
-     - «Занято» второму — да: JS отправил `m.call.reject` через 21 мс после
-       приглашения, обе регистрации в Telecom получили `reporting busy`.
-     - Разговор жив, после конца — `MODE_NORMAL`.
-     - Строки
-       `reportCallEnded(<id второго>): slot holds <id первого>, leaving it` нет
-       ни в одном прогоне. В этом сценарии ей и неоткуда взяться: ветка
-       `hasLiveCall` в `call-service.ts` отклоняет второй звонок без
-       `finalizeCall` (так задумано, см. комментарий там), поэтому
-       `reportCallEnded` для него не вызывается. Проверку id в
-       `reportCallEnded` на аппарате ничто не задело — её доказывает только
-       `CallSlotContractTest`.
-- Статус: ☐ шаг 1 проверен, шаг 2 — частично (нет строки `leaving it`)
-
 ### Освобождение осиротевшего слота не рвёт звонок, который сняли параллельно
 - Коммит: `0acd1dae`
 - Почему нужен человек: гонку закрывает то, что проверка состояния и разрыв
@@ -848,6 +816,49 @@
 ---
 
 ## Проверено
+
+### Слот Telecom по callId
+- Коммит: dac97dcb
+- Почему нужен человек: contract-тест доказывает вложенные extras и
+  проверку id у трёх читателей, `CallSlotPolicyTest` — правило. Не
+  доказано: что Telecom на реальных прошивках доносит вложенный bundle
+  (лог `onCreateOutgoingConnection: callId=<непустой>`) и что второй
+  входящий во время разговора больше не рвёт разговор (нужна третья
+  сторона).
+- На чём: Pixel ↔ Samsung + веб как третий звонящий, обе сборки. Шаги —
+  F32 в `docs/call-fix-checklist.md`.
+- Шаги:
+  1. Исходящий с Pixel: в логе непустой callId.
+     ✅ 2026-09-09 на Samsung SM-A528B (Android 14):
+     `onCreateOutgoingConnection: callId=1788954840884hVNAUhH8ehEk5JZ7`.
+  2. Второй входящий с веба в разговоре: «занято» второму, разговор
+     живёт, строка `leaving it` в логе; после конца — `MODE_NORMAL`.
+     Измерено 2026-09-10 на Samsung SM-A528B ↔ веб TEST1 + веб
+     `test23438111`, сборка `f83b30e7` с FCM (логи
+     `scratchpad/runs/3way-decline2-*`, `3way-accept1-*`).
+     - «Занято» второму — да: JS отправил `m.call.reject` через 21 мс после
+       приглашения, обе регистрации в Telecom получили `reporting busy`.
+     - Разговор жив, после конца — `MODE_NORMAL`.
+     - Строки
+       `reportCallEnded(<id второго>): slot holds <id первого>, leaving it` нет
+       ни в одном прогоне. В этом сценарии ей и неоткуда взяться: ветка
+       `hasLiveCall` в `call-service.ts` отклоняет второй звонок без
+       `finalizeCall` (так задумано, см. комментарий там), поэтому
+       `reportCallEnded` для него не вызывается. Проверку id в
+       `reportCallEnded` на аппарате ничто не задело — её доказывает только
+       `CallSlotContractTest`.
+- Измерено 2026-09-17 без владельца на текущей сборке (`busyring2`, APK `6c459594`): Samsung ↔ веб TEST1 (A) +
+  веб `test23438111` (B), скрипт `scratchpad/run-busy-ring.sh`. A в разговоре, B звонит через 35 с:
+  ```
+  22:57:13.902 I/FortaPush: Call 1789675033169HiiwhCks4Mzfg38E while 1789674997347q6QaNvlNVAzMZPNA is established — not ringing
+  22:57:13.933 W/CallConnectionService: Incoming call while a call is established — reporting busy
+  ```
+  Экран входящего для B не поднимался, рингер не armed, разговор A жив (входящие байты 25 406 → 27 666 за 10 с).
+  После отбоя A — `endCall reason=DISCONNECT`, затем `MODE_NORMAL`.
+- Статус: ☑ шаг 1 проверен 2026-09-09; шаг 2 проверен 2026-09-10 и повторно 2026-09-17. Строка
+  `reportCallEnded(<id>): slot holds <id>, leaving it` на аппарате недостижима: `hasLiveCall` в `call-service.ts`
+  отклоняет второй звонок без `finalizeCall`, поэтому `reportCallEnded` для него не вызывается. Саму проверку id
+  держит `CallSlotContractTest`
 
 ### Событие о завершившемся звонке не роняет текущий (push-путь)
 - Коммит: `0acd1dae`
