@@ -208,7 +208,7 @@
   не говорит. obfs4 из приложения не выбрать: `TorBridgeType` — только
   `none | snowflake`, хотя `libobfs4proxy.so` в APK есть. obfs4 и сеть с
   блокировками остаются непроверенными.
-- Измерено 2026-09-17 без владельца на Samsung SM-A528B, APK этого коммита, Wi-Fi. Скрипты
+- Измерено 2026-09-17 без владельца на Samsung SM-A528B, APK `5dbad8be`, Wi-Fi. Скрипты
   `scratchpad/run-tor-message.sh` и `run-tor-session.sh`, логи `scratchpad/runs/tormsg1-*`, `tor4-*`.
   - Шаг 1 прошёл: режим «Всегда» → демон `RUNNING` за 15–26 с, индикатор «Connected». Проверка приложения
     (`verify`) отвечает `isTor: true`.
