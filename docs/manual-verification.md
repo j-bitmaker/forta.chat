@@ -303,7 +303,28 @@
     `MODE_NORMAL`.
   - Не проверены на Pixel: шаг 2 (экран блокировки с PIN) и шаг 3 (убитый процесс, выключенный экран) — PIN вводит
     владелец.
-- Статус: ☐ Samsung: шаги 1 и 4 прошли 2026-09-10; Pixel: шаги 1 и 4 прошли 2026-09-17; шаги 2–3 ждут владельца
+- Измерено 2026-09-17 с владельцем, Pixel-половина шагов 2 и 3. Samsung SM-A528B звонит на Pixel 9 (Android 17, PIN),
+  оба по Wi-Fi, APK `ee6e99a3`. Скрипт `scratchpad/run-pixel-lock.sh`, логи `scratchpad/runs/plock1-*` (шаг 2) и
+  `plock2-*` (шаг 3). Время по часам Pixel.
+  - Шаг 2 прошёл. Приложение живо, Pixel заблокирован, экран погашен. Звонок поднял экран входящего поверх экрана
+    блокировки, владелец ответил через 6 с. Оба телефона сообщили о соединении через 3 с после ответа, сверху
+    `CallActivity`, экран блокировки снят. Через 20 с разговор жив (`MODE_IN_COMMUNICATION` на обоих). После отбоя
+    Samsung через 30 с на обоих `MODE_NORMAL`.
+  - Шаг 3 прошёл. Владелец смахнул Forta из недавних, процесс завершился, Pixel заблокирован и погашен. Звонок пришёл
+    пушем через 2,6 с после отправки invite, владелец ответил на экране входящего через 5 с, ещё при показанном экране
+    блокировки. WebView ещё не было, ответ отложили и повторили, когда JS поднялся. Холодный старт увидел живой звонок и
+    не тронул его. Соединение — через 7 с после ответа:
+    ```
+    19:34:21.705 D/FortaPush: WebView not alive, skipping JS forward
+    19:34:26.081 D/IncomingCallActivity: Accept pressed
+    19:34:26.123 W/CallConnection: onAnswer: JS listener not wired, queued for replay
+    19:34:26.546 I/CallTeardown: endCall reason=COLD_START callId=… State(audioMode=3, otherCallLive=true, …) actions=[]
+    19:34:31.838 I/Capacitor/Console: [call-service] Pre-accepted incoming call, skipping ringer: …
+    19:34:33.133 D/NativeWebRTCManager: [pc_…] ICE connection state: CONNECTED
+    ```
+    Через 20 с разговор жив. Отбой Samsung пришёл пушем, соединение закрылось через 6 мс, через 30 с на обоих
+    `MODE_NORMAL`.
+- Статус: ☐ Pixel: шаги 1–4 прошли 2026-09-17; Samsung: шаги 1 и 4 прошли 2026-09-10, шаги 2–3 не проверены
 ### Громкая связь: отказ и пин ручного выбора
 - Коммит: 62581806
 - Почему нужен человек: `AudioRoutePolicyTest` доказывает таблицу
@@ -596,8 +617,18 @@
     Звонок без ответа закончился на 30-й секунде ринга — `no answer in 30s … auto-rejecting`, `endCall reason=REJECT`.
     Через 30 с на обоих `MODE_NORMAL`.
   - Громкость звонка после двух нажатий — 5 из 7 (`STREAM_RING streamVolume:5`); значение до прогона не снималось.
-- Статус: ☐ шаги 1 и 3 прошли на Samsung 2026-09-14 после починок; шаг 3 прошёл на Pixel 2026-09-17; шаги 1–2 на Pixel
-  и шаг 2 на Samsung не проверены
+- Измерено 2026-09-17 с владельцем, Pixel-половина шагов 1–2. Pixel 9 (Android 17), APK `ee6e99a3`. Скрипт
+  `scratchpad/run-pixel-fsi.sh`, лог `scratchpad/runs/pfsi1-*`, скриншоты `pfsi1-*.png`.
+  - Шаг 1 прошёл в обе стороны, без повторного открытия «Notifications».
+    - Владелец выключил разрешение на системном экране и вернулся «Назад»: баннер есть с первой проверки после
+      возврата, плагин — `{"allowed":false,"manageable":true}`.
+    - Кнопка баннера (`fsi-open`) открыла системный экран
+      (`com.android.settings/.spa.SpaActivity`). Владелец включил разрешение и вернулся: баннера нет с первой проверки,
+      `{"allowed":true}`.
+  - Шаг 2 — без отправки отчёта. При выключенном разрешении плагин вернул `{"allowed":false,"manageable":true}`; из
+    этого значения отчёт строит строку `| Full-screen intent | REVOKED |` (`collect-call-diagnostics.ts`, формат строки —
+    `bug-report-sender.test.ts`).
+- Статус: ☐ Pixel: шаги 1–3 прошли 2026-09-17; Samsung: шаги 1 и 3 прошли 2026-09-14, шаг 2 не проверен
 ### Слот Telecom по callId
 - Коммит: dac97dcb
 - Почему нужен человек: contract-тест доказывает вложенные extras и
