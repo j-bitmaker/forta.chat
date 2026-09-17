@@ -48,6 +48,16 @@ export function encodeCallHangupContext(callId: string, source: CallHangupContex
     .replace(/\+/g, "%20");
 }
 
+/**
+ * Installs the provider once, from wherever a call starts: the boot-time install
+ * in the auth store can still be pending when a dial lands seconds after a cold
+ * start, and native then captures nothing (`hswipe1`, first call after install).
+ */
+export function ensureCallHangupContextProvider(): void {
+  if (typeof window.__fortaCallHangupContext === "function") return;
+  installCallHangupContextProvider();
+}
+
 export function installCallHangupContextProvider(): void {
   window.__fortaCallHangupContext = (callId: string) => {
     try {

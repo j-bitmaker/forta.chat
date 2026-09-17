@@ -355,13 +355,16 @@ class CallPlugin : Plugin() {
         call.resolve()
     }
 
+    /** How long the page gets to install its provider before the capture is retried. */
+    private val CAPTURE_RETRY_MS = 2_000L
+
     /**
      * Reads the context native code needs to hang up [callId] itself if a task
      * swipe destroys the WebView mid-call ([CallHangupSignal]). Taken while
      * dialling and again once connected — the client may have failed over to
      * another homeserver mirror in between.
      */
-    private fun captureHangupTarget(callId: String?) {
+    private fun captureHangupTarget(callId: String?, retriesLeft: Int = 1) {
         if (callId.isNullOrEmpty()) return
         val bridge = bridge ?: return
         bridge.executeOnMainThread {
@@ -371,6 +374,14 @@ class CallPlugin : Plugin() {
                     if (target != null) {
                         CallHangupSignal.remember(target)
                         Log.d(TAG, "hangup target ready: $target")
+                    } else if (retriesLeft > 0) {
+                        // The page can still be starting when a dial lands right
+                        // after a cold start (`hswipe1`, first call after install).
+                        Log.d(TAG, "no hangup context from JS for $callId yet — retrying")
+                        bridge.webView.postDelayed(
+                            { captureHangupTarget(callId, retriesLeft - 1) },
+                            CAPTURE_RETRY_MS,
+                        )
                     } else {
                         Log.w(TAG, "no hangup context from JS for $callId")
                     }

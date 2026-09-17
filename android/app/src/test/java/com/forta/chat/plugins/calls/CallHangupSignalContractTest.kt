@@ -43,6 +43,8 @@ class CallHangupSignalContractTest {
         val capture = withoutComments(functionBody(plugin, "fun\\s+captureHangupTarget\\s*\\("))
         assertTrue("the target must be read with evaluateJavascript, not passed as plugin call data:\n$capture",
             capture.contains("evaluateJavascript(") && capture.contains("CallHangupSignal.captureScript("))
+        assertTrue("a page that has not installed its provider yet must be asked again:\n$capture",
+            capture.contains("retriesLeft > 0") && capture.contains("captureHangupTarget(callId, retriesLeft - 1)"))
     }
 
     @Test

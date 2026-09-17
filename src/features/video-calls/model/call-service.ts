@@ -2,6 +2,7 @@ import { createNewMatrixCall, CallEvent, CallState as SDKCallState, CallErrorCod
 import type { MatrixCall, CallEventHandlerMap } from "matrix-js-sdk-bastyon/lib/webrtc/call";
 import { getMatrixClientService } from "@/entities/matrix";
 import { useCallStore, CallStatus } from "@/entities/call";
+import { ensureCallHangupContextProvider } from "./call-hangup-context";
 import type { CallType, CallInfo, CallHistoryEntry } from "@/entities/call";
 import { matrixIdToAddress } from "@/entities/chat/lib/chat-helpers";
 import { useUserStore } from "@/entities/user";
@@ -1059,6 +1060,9 @@ export function useCallService() {
   const callStore = useCallStore();
 
   async function startCall(roomId: string, type: CallType) {
+    // Before the call reaches native code: the swipe hangup is read from the
+    // page while the call is dialled (call-hangup-context.ts).
+    ensureCallHangupContextProvider();
     // `hasLiveCall`, not `isInCall`: on Android an incoming call rings
     // through Telecom with no CallInfo written yet, so `isInCall` is false
     // for the whole ring and the call buttons stay live. Dialling from that
@@ -1292,6 +1296,7 @@ export function useCallService() {
   }
 
   async function handleIncomingCall(matrixCall: MatrixCall) {
+    ensureCallHangupContextProvider();
     console.log(
       "[call-service] handleIncomingCall: callId=" + matrixCall.callId +
       ", roomId=" + matrixCall.roomId +

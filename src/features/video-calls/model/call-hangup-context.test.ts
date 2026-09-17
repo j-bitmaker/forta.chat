@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { encodeCallHangupContext, installCallHangupContextProvider } from "./call-hangup-context";
+import {
+  encodeCallHangupContext,
+  ensureCallHangupContextProvider,
+  installCallHangupContextProvider,
+} from "./call-hangup-context";
 
 const matrixService = {
   client: null as null | { baseUrl: string; getAccessToken(): string | null; getDeviceId(): string | null },
@@ -74,6 +78,17 @@ describe("installCallHangupContextProvider", () => {
     const params = new URLSearchParams(window.__fortaCallHangupContext!("call-1")!);
     expect(params.get("partyId")).toBe("DEVICE");
     expect(params.get("viaTorProxy")).toBe("1");
+  });
+
+  it("is installed by ensure() when a call starts and keeps the one already there", () => {
+    // The boot-time install can still be pending when a dial lands right after a
+    // cold start — that call had no hangup context in `hswipe1`.
+    ensureCallHangupContextProvider();
+    expect(typeof window.__fortaCallHangupContext).toBe("function");
+
+    const installed = window.__fortaCallHangupContext;
+    ensureCallHangupContextProvider();
+    expect(window.__fortaCallHangupContext).toBe(installed);
   });
 
   it("returns null while there is no client or call", () => {
