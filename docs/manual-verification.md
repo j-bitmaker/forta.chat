@@ -284,8 +284,26 @@
       веба 11 541 → 216 335.
     - Веб положил трубку в 01:12:43 (`onDisconnect` → `CallTeardown: endCall
       reason=DISCONNECT`), после этого `MODE_NORMAL`.
-- Статус: ☐ не проверено
-
+- Измерено 2026-09-17 без владельца, Pixel-половина шагов 1 и 4 (`ee6e99a3`, три звонка на шаг 1 и два на шаг 4).
+  Samsung SM-A528B (Android 14) звонит на Pixel 9 (Android 17), оба по Wi-Fi, APK `ee6e99a3`. Скрипт
+  `scratchpad/run-pixel-shade.sh`, логи `scratchpad/runs/pshade0-*` и `pshade1-*`. Время по часам Pixel (они на 1,2 с
+  впереди Samsung).
+  - Шаг 1 прошёл, 3 из 3. Во время ринга Pixel получал Home, сверху был лаунчер. «Answer» в развёрнутой шторке дошло
+    до рингера, рингтон остановлен через 21–29 мс, оба телефона сообщили о соединении через 1–2 с. Через 45 с на Pixel
+    сверху `CallActivity`, режим `MODE_IN_COMMUNICATION`, завершений звонка нет. После отбоя через 30 с на обоих
+    `MODE_NORMAL`:
+    ```
+    18:59:52.477 D/IncomingCallActivity: onNewIntent: dispatching action=accept on resident instance
+    18:59:52.477 D/IncomingCallActivity: Accept pressed
+    18:59:52.498 D/IncomingRinger: stop callId=…
+    ```
+  - Шаг 4 прошёл в первом круге, во втором уложился в 3,1 с. «Decline» в шторке: `onReject` и `m.call.reject` через
+    25–50 мс после нажатия, `endCall reason=REJECT`. Samsung получил `onRejectReceived()` через 0,4 с (первый круг) и
+    3,1 с (второй) — во втором сервер отвечал на `PUT m.call.reject` 2 978 мс, в первом 216 мс. Через 30 с на обоих
+    `MODE_NORMAL`.
+  - Не проверены на Pixel: шаг 2 (экран блокировки с PIN) и шаг 3 (убитый процесс, выключенный экран) — PIN вводит
+    владелец.
+- Статус: ☐ Samsung: шаги 1 и 4 прошли 2026-09-10; Pixel: шаги 1 и 4 прошли 2026-09-17; шаги 2–3 ждут владельца
 ### Громкая связь: отказ и пин ручного выбора
 - Коммит: 62581806
 - Почему нужен человек: `AudioRoutePolicyTest` доказывает таблицу
@@ -568,8 +586,18 @@
       30s … auto-rejecting` через 30 с после `arm`. При свёрнутом — отбоем веба
       (`Dismissing incoming call screen (remote hangup)`).
   - Шаг 2 не перепроверялся: отчёт из приложения сразу публикует issue.
-- Статус: ☐ шаги 1 и 3 прошли на Samsung 2026-09-14 после починок; шаг 2 и Pixel не проверены
-
+- Измерено 2026-09-17 без владельца, Pixel-половина шага 3 (`ee6e99a3`, два звонка).
+  Samsung SM-A528B (Android 14) звонит на Pixel 9 (Android 17), оба по Wi-Fi, APK `ee6e99a3`. Скрипт
+  `scratchpad/run-pixel-shade.sh`, логи `scratchpad/runs/pshade0-*` и `pshade1-*`. Время по часам Pixel (они на 1,2 с
+  впереди Samsung).
+  - Шаг 3 прошёл, 2 из 2. «Громкость −» (`adb input keyevent KEYCODE_VOLUME_DOWN`) через 4–6 с после начала ринга:
+    `IncomingRinger: silence callId=… (deadline kept)`, вибрация отменена через 2–3 мс (история `vibrator_manager`:
+    `cancelled_by_user`, конец в 19:02:25.110 и 19:06:23.031). Экран входящего остался сверху, режим `MODE_RINGTONE`.
+    Звонок без ответа закончился на 30-й секунде ринга — `no answer in 30s … auto-rejecting`, `endCall reason=REJECT`.
+    Через 30 с на обоих `MODE_NORMAL`.
+  - Громкость звонка после двух нажатий — 5 из 7 (`STREAM_RING streamVolume:5`); значение до прогона не снималось.
+- Статус: ☐ шаги 1 и 3 прошли на Samsung 2026-09-14 после починок; шаг 3 прошёл на Pixel 2026-09-17; шаги 1–2 на Pixel
+  и шаг 2 на Samsung не проверены
 ### Слот Telecom по callId
 - Коммит: dac97dcb
 - Почему нужен человек: contract-тест доказывает вложенные extras и
