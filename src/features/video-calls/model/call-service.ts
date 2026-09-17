@@ -10,6 +10,7 @@ import { playRingtone, playDialtone, playEndTone, stopAllSounds } from "./call-s
 import { checkOtherTabHasCall } from "./call-tab-lock";
 import { webrtcDiagnostics } from "./webrtc-diagnostics";
 import { attachIceCandidateBuffer } from "./ice-candidate-buffer";
+import { installVoipSendRetry } from "./voip-send-retry";
 import type { DiagnosticsWarningDetail, DiagnosticsWarningType } from "./webrtc-diagnostics";
 import { registerCallDiagnosticsExtras, type CallTorDiagnostics } from "@/shared/lib/bug-report";
 import { isNative, isAndroid } from "@/shared/lib/platform";
@@ -449,6 +450,10 @@ function releaseLocalMedia(call: MatrixCall): void {
 function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
   // Defensive: remove any prior handlers first
   unwireCallEvents();
+
+  // A restart offer or candidates that fail to send during a network change
+  // are retried instead of ending the call (voip-send-retry.ts).
+  installVoipSendRetry(call as unknown as Parameters<typeof installVoipSendRetry>[0]);
 
   const callStore = useCallStore();
 

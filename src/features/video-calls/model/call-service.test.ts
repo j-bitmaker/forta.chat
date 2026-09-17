@@ -2123,6 +2123,60 @@ describe('ICE candidates held until the remote description (O15)', () => {
   });
 });
 
+describe('call events retried through a short network outage', () => {
+  /**
+   * The SDK ends the call when one send of the restart offer fails; the retry
+   * wrapper keeps it going (voip-send-retry.ts). It has to be installed on
+   * every call call-service wires, or a restart during a network change still
+   * ends the call (Samsung `wifioff-vpn2`).
+   */
+  it('retries a restart offer that failed for lack of a connection on a placed call', async () => {
+    class ConnectionError extends Error {
+      get name(): string { return 'ConnectionError'; }
+    }
+    const send = vi.fn(async (_type: string, _content: Record<string, unknown>) => {});
+    send.mockRejectedValueOnce(new ConnectionError('fetch failed'));
+    const fakeCall = {
+      callId: 'retry-call-id',
+      roomId: 'test-room-id',
+      type: 'voice',
+      on: mockOn,
+      off: mockOff,
+      placeVoiceCall: mockPlaceVoiceCall,
+      placeVideoCall: mockPlaceVideoCall,
+      answer: mockAnswer,
+      reject: mockReject,
+      hangup: mockHangup,
+      isMicrophoneMuted: vi.fn(() => false),
+      localUsermediaStream: null,
+      localScreensharingStream: null,
+      remoteUsermediaStream: null,
+      remoteScreensharingStream: null,
+      remoteUsermediaFeed: null,
+      getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+      sendVoipEvent: send,
+      callHasEnded: () => false,
+    };
+    const { createNewMatrixCall } = await import('matrix-js-sdk-bastyon/lib/webrtc/call');
+    vi.mocked(createNewMatrixCall).mockReturnValueOnce(fakeCall as never);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    vi.useFakeTimers();
+    try {
+      const { useCallService } = await import('./call-service');
+      void useCallService().startCall('!room:matrix.org', 'voice');
+      await vi.advanceTimersByTimeAsync(0);
+
+      const sent = fakeCall.sendVoipEvent('m.call.negotiate', { description: {} });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(sent).resolves.toBeUndefined();
+      expect(send).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('Tor hint and the no-relay warning (O05/O14)', () => {
   beforeEach(() => {
     torState.isEnabled = false;
