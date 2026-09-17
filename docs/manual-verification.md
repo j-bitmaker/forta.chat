@@ -1702,7 +1702,23 @@
      переподключения VPN или SIM без «белых списков»).
      - **Ожидается:** звонок не обрывается, после оживания сети предложение уходит, звук возвращается.
   4. Регресс: обычный звонок — строк `[voip-retry]` нет.
-- Статус: ☐ не проверено
+- Измерено 2026-09-17 без владельца, Samsung SM-A528B (Wi-Fi + VPN) ↔ веб TEST1, APK `b29ae21f`
+  (`OUTAGE_AT=10`, `phone-send-outage.mjs`):
+  - `outage12-1` — шаг 1 прошёл. Блокировка 12 с, `restartIce` при `connected`:
+    ```
+    +0.6 s  [NativeRTCProxy] restartIce: firing negotiationneeded for the restart offer
+    +0.7 s  [voip-retry] m.call.negotiate … failed without a connection, retrying (30 s left)
+    +2.7 s  [voip-retry] m.call.candidates … failed without a connection, retrying (30 s left)
+    +7.7 s  [voip-retry] m.call.negotiate … retrying (23 s left)
+    +16.4 s onNegotiateReceived() set remote description: answer
+    ```
+    8 отклонённых отправок, после снятия блокировки предложение ушло следующей попыткой. У веба ufrag телефона
+    сменился один раз, ICE `connected` все секунды, входящий звук рос каждую секунду, звонок дожил до отбоя.
+  - `outage40-1` — шаг 2 прошёл. Блокировка 40 с: 12 повторов, на 30,5 с `gotLocalOffer() failed to send invite`,
+    `signalling_timeout`, звонок завершён — граница повтора.
+  - `outage-regress1` — шаг 4 прошёл: обычный звонок, строк `[voip-retry]` нет.
+  - Не проверен шаг 3 — настоящая смена сети с владельцем.
+- Статус: ☐ шаги 1, 2, 4 прошли 2026-09-17; шаг 3 с настоящей сменой сети ждёт владельца
 
 ---
 
