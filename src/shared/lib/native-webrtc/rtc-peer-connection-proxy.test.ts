@@ -72,6 +72,7 @@ import {
   installNativeWebRTCProxy,
   uninstallNativeWebRTCProxy,
 } from "./rtc-peer-connection-proxy";
+import { __resetSilentAudioTrackForTests } from "./silent-audio-track";
 
 // Helper: wait a microtask tick so async init of NativeRTCPeerConnection completes.
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
@@ -698,17 +699,35 @@ describe("NativeRTCPeerConnection proxy", () => {
     const streamProto = MediaStream.prototype as { getTracks?: () => MediaStreamTrack[] };
     let polyfilledGetTracks = false;
 
+    let audioContextsOpened = 0;
+
     beforeEach(() => {
       // happy-dom has no Web Audio; the placeholder audio track comes from it.
       savedAudioContext = globals.AudioContext;
+      __resetSilentAudioTrackForTests();
+      audioContextsOpened = 0;
       let n = 0;
+      const placeholderTrack = (): object => ({
+        kind: "audio",
+        id: `placeholder-audio-${n++}`,
+        enabled: true,
+        readyState: "live",
+        clone: placeholderTrack,
+      });
       globals.AudioContext = class {
+        state = "running";
+        constructor() {
+          audioContextsOpened++;
+        }
         createOscillator() {
           return { connect: () => {}, start: () => {} };
         }
         createMediaStreamDestination() {
-          const track = { kind: "audio", id: `placeholder-audio-${n++}`, enabled: true };
+          const track = placeholderTrack();
           return { stream: { getAudioTracks: () => [track] } };
+        }
+        async close() {
+          this.state = "closed";
         }
       };
       // happy-dom's MediaStream has no getTracks, which the proxy logs with.
@@ -721,6 +740,7 @@ describe("NativeRTCPeerConnection proxy", () => {
     });
 
     afterEach(() => {
+      __resetSilentAudioTrackForTests();
       globals.AudioContext = savedAudioContext;
       if (polyfilledGetTracks) delete streamProto.getTracks;
     });
@@ -790,6 +810,38 @@ describe("NativeRTCPeerConnection proxy", () => {
       expect(events[1].streams[0].id).toBe("remote-2");
       expect(events[0].streams[0].getVideoTracks()).toHaveLength(0);
       pc.close();
+    });
+
+    // A placeholder's AudioContext outlived its call and kept one of Chromium's
+    // 10 audio output streams. After a few native calls the page-awake tone
+    // could not play, the hidden page froze a minute into the next call and
+    // missed the peer's hangup (wifion-in2, 2026-09-17).
+    it("opens one AudioContext for the audio placeholders of every call", async () => {
+      for (let call = 0; call < 3; call++) {
+        const { pc, peerId, events } = await newPcWithTrackEvents();
+        fireNativeEvent("onTrack", { peerId, kind: "audio", trackId: `a${call}`, streamId: `remote-${call}` });
+        expect(events[0].track.kind).toBe("audio");
+        expect(events[0].track.enabled).toBe(false);
+        pc.close();
+      }
+      // happy-dom has no mediaDevices; install again so the proxy replaces a stub's getUserMedia.
+      Object.defineProperty(navigator, "mediaDevices", {
+        value: { getUserMedia: vi.fn() },
+        configurable: true,
+      });
+      try {
+        uninstallNativeWebRTCProxy();
+        installNativeWebRTCProxy();
+        for (let call = 0; call < 2; call++) {
+          const local = await navigator.mediaDevices.getUserMedia({ audio: true });
+          expect(local.getAudioTracks()).toHaveLength(1);
+        }
+      } finally {
+        uninstallNativeWebRTCProxy();
+        delete (navigator as { mediaDevices?: unknown }).mediaDevices;
+      }
+
+      expect(audioContextsOpened).toBe(1);
     });
   });
 });

@@ -15,6 +15,7 @@
 
 import { NativeWebRTC } from "./native-webrtc-bridge";
 import { addLocalCandidatesToSdp } from "./sdp-local-candidates";
+import { createSilentAudioTrack } from "./silent-audio-track";
 import type { PluginListenerHandle } from "@capacitor/core";
 
 // Save original for fallback / non-call usage
@@ -75,23 +76,13 @@ function nextSignalingState(isLocal: boolean, type: RTCSdpType): RTCSignalingSta
 /**
  * A silent stand-in for a remote track. The media itself renders natively; the
  * SDK only needs a track of the right kind in the stream it builds a feed from.
- * Audio comes from a disabled oscillator, video from a 1x1 canvas; where Web
+ * Audio comes from the shared silent source, video from a 1x1 canvas; where Web
  * Audio is unavailable the audio slot falls back to a canvas track.
  */
 function createPlaceholderTrack(kind: string): MediaStreamTrack | undefined {
   if (kind !== "video") {
-    try {
-      const ctx = new AudioContext();
-      const osc = ctx.createOscillator();
-      const dest = ctx.createMediaStreamDestination();
-      osc.connect(dest);
-      osc.start();
-      const track = dest.stream.getAudioTracks()[0];
-      if (track) track.enabled = false;
-      return track;
-    } catch {
-      // No Web Audio: a canvas track holds the slot instead.
-    }
+    const track = createSilentAudioTrack();
+    if (track) return track;
   }
   const canvas = document.createElement("canvas");
   canvas.width = 1;
@@ -1098,22 +1089,9 @@ async function nativeGetUserMedia(
   // The SDK checks track count to determine if media is available.
   const stream = new MediaStream();
 
-  // Create a dummy audio track via AudioContext
-  try {
-    const ctx = new AudioContext();
-    const oscillator = ctx.createOscillator();
-    const dest = ctx.createMediaStreamDestination();
-    oscillator.connect(dest);
-    oscillator.start();
-    const audioTrack = dest.stream.getAudioTracks()[0];
-    if (audioTrack) {
-      // Mute it — real audio goes through native
-      audioTrack.enabled = false;
-      stream.addTrack(audioTrack);
-    }
-  } catch {
-    // Fallback — SDK may still work without tracks
-  }
+  // A disabled dummy audio track — real audio goes through native
+  const audioTrack = createSilentAudioTrack();
+  if (audioTrack) stream.addTrack(audioTrack);
 
   // Create a dummy video track via canvas if video requested
   if (hasVideo) {
