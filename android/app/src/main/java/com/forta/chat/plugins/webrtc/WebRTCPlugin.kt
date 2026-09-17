@@ -480,9 +480,10 @@ class WebRTCPlugin : Plugin() {
         val callId = call.getString("callId") ?: ""
         val direction = call.getString("direction") ?: "outgoing"
 
-        // Start foreground service to keep call alive in background
+        // Start foreground service to keep call alive in background. Keyed by
+        // callId so this call's own stop, however late, cannot end the next one.
         com.forta.chat.plugins.calls.CallForegroundService.start(
-            context, callerName, callType
+            context, callerName, callType, callId
         )
 
         com.forta.chat.plugins.calls.CallActivity.launch(
@@ -493,8 +494,9 @@ class WebRTCPlugin : Plugin() {
 
     @PluginMethod
     fun dismissCallUI(call: PluginCall) {
+        val callId = call.getString("callId")
         com.forta.chat.plugins.calls.CallActivity.onCallEnded?.invoke()
-        com.forta.chat.plugins.calls.CallForegroundService.stop(context)
+        com.forta.chat.plugins.calls.CallForegroundService.stop(context, callId)
         call.resolve()
     }
 

@@ -85,7 +85,10 @@ export interface NativeWebRTCPlugin {
     callId: string;
     direction: string;
   }): Promise<void>;
-  dismissCallUI(): Promise<void>;
+  // Names the call being finalized: native stops the foreground service
+  // against the generation that call's launchCallUI recorded, so a late
+  // dismiss for the previous call cannot end the next one.
+  dismissCallUI(options: { callId: string }): Promise<void>;
   updateCallStatus(options: {
     status: string;
     duration: string;

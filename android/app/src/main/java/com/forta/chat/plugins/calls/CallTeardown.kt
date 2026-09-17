@@ -37,7 +37,7 @@ object CallTeardown {
                     CallTeardownPolicy.Action.FORCE_STOP_ROUTER ->
                         AudioRouter.getSharedInstance(app).forceStop("teardown $reason")
                     CallTeardownPolicy.Action.STOP_FOREGROUND_SERVICE ->
-                        CallForegroundService.stop(app)
+                        CallForegroundService.stop(app, callId)
                 }
             }.onFailure { Log.w(TAG, "endCall reason=$reason: $action threw", it) }
         }

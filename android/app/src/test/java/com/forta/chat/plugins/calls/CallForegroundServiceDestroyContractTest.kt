@@ -20,16 +20,19 @@ import java.io.File
  */
 class CallForegroundServiceDestroyContractTest {
 
-    private val source: String by lazy {
+    private val source: String by lazy { readSource("calls/CallForegroundService.kt") }
+    private val webRtcPlugin: String by lazy { readSource("webrtc/WebRTCPlugin.kt") }
+    private val teardown: String by lazy { readSource("calls/CallTeardown.kt") }
+    private val callPlugin: String by lazy { readSource("calls/CallPlugin.kt") }
+
+    private fun readSource(relative: String): String {
         val candidates = listOf(
-            "src/main/java/com/forta/chat/plugins/calls/CallForegroundService.kt",
-            "android/app/src/main/java/com/forta/chat/plugins/calls/CallForegroundService.kt",
+            "src/main/java/com/forta/chat/plugins/$relative",
+            "android/app/src/main/java/com/forta/chat/plugins/$relative",
         )
         val resolved = candidates.map { File(it) }.firstOrNull { it.exists() }
-            ?: error(
-                "CallForegroundService.kt not found. Tried: $candidates from ${File(".").absolutePath}",
-            )
-        resolved.readText()
+            ?: error("$relative not found. Tried: $candidates from ${File(".").absolutePath}")
+        return resolved.readText()
     }
 
     @Test
@@ -229,22 +232,110 @@ class CallForegroundServiceDestroyContractTest {
     fun teardown_skipsGlobalCleanupWhenANewerInstanceHasTakenOver() {
         for (name in listOf("onDestroy", "onTaskRemoved")) {
             val block = extractFunctionBody(name)
-            val guard = block.indexOf("isSuperseded()")
+            val guard = block.indexOf("isStale()")
             assertTrue(
-                "$name() must bail out via isSuperseded() before running the " +
+                "$name() must bail out via isStale() before running the " +
                     "process-wide teardown, or a deferred destroy will tear down " +
                     "the next call:\n$block",
                 guard >= 0,
             )
             assertTrue(
-                "$name()'s isSuperseded() check must come before forceStop():\n$block",
+                "$name()'s isStale() check must come before forceStop():\n$block",
                 guard < block.indexOf(".forceStop()"),
             )
             assertTrue(
-                "$name()'s superseded branch must return early:\n$block",
+                "$name()'s stale branch must return early:\n$block",
                 block.contains("return"),
             )
         }
+    }
+
+    @Test
+    fun staleCheck_coversASuccessorAndAStartAlreadyIssuedForTheNextCall() {
+        // A successor's onCreate never runs before this instance's onDestroy,
+        // so identity alone can only ever see the previous owner. The counter
+        // is bumped in start() before the intent is sent; a teardown deferred
+        // past that call must read the next call as the owner.
+        val body = extractPrivateFunctionBody("isStale")
+        assertTrue("isStale() must keep the identity check:\n$body", body.contains("isSuperseded()"))
+        assertTrue(
+            "isStale() must compare this instance's generation with the counter:\n$body",
+            body.contains("CallServiceStopPolicy.isStale(generation, startGeneration.get())"),
+        )
+        val start = extractActionBlock("ACTION_START")
+        assertTrue(
+            "ACTION_START must record the generation this instance runs:\n$start",
+            start.contains("generation = intent.getLongExtra(EXTRA_GENERATION, -1L)"),
+        )
+    }
+
+    @Test
+    fun mediaReleaseWorker_checksTheOwnerAgainAtRunTime() {
+        // The PeerConnections are global. A task queued behind a slow
+        // stopCapture may run after the next call created its own; the check
+        // at scheduling time does not cover that.
+        val helper = extractPrivateFunctionBody("releaseMediaAsync")
+        val check = helper.indexOf("CallServiceStopPolicy.isStale(owner, startGeneration.get())")
+        val execute = helper.indexOf("mediaReleaseExecutor.execute")
+        val close = helper.indexOf("closeAllPeerConnections()")
+        assertTrue("the worker must re-check the owner:\n$helper", check >= 0)
+        assertTrue("the re-check must run inside the worker, not before scheduling:\n$helper", check > execute)
+        assertTrue("the re-check must come before closeAllPeerConnections():\n$helper", check < close)
+        assertTrue("a stale worker must return without closing:\n$helper", helper.contains("return@execute"))
+    }
+
+    // -------------------------------------------------------------------------
+    // Keyed stop. The redial race runs the other way round from what the
+    // generation extra first assumed: JS finalizes the ended call step by step
+    // while the user already dials again, so the old call's stop is *issued*
+    // after the new call's start. Issued against the current counter it matched
+    // and took the new call down. A stop names its call and is issued against
+    // the generation that call's start recorded (CallStartLedger).
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun start_recordsTheGenerationOfItsCall() {
+        val body = extractCompanionFunctionBody("start")
+        assertTrue(
+            "start() must record the generation under the call id:\n$body",
+            body.contains("startLedger.record(callId, generation)"),
+        )
+    }
+
+    @Test
+    fun stop_isIssuedAgainstTheGenerationItsCallStarted_notTheCurrentOne() {
+        val body = extractCompanionFunctionBody("stop")
+        assertTrue(
+            "stop() must look its call's generation up in the ledger:\n$body",
+            body.contains("startLedger.generationFor(callId, startGeneration.get())"),
+        )
+        assertTrue(
+            "stop() must not put the bare current generation into the intent:\n$body",
+            !body.contains("putExtra(EXTRA_GENERATION, startGeneration.get())"),
+        )
+    }
+
+    @Test
+    fun everyStopNamesItsCall() {
+        assertTrue(
+            "launchCallUI must start the service under the call id:\n$webRtcPlugin",
+            Regex("CallForegroundService\\.start\\(\\s*context, callerName, callType, callId\\s*\\)").containsMatchIn(webRtcPlugin),
+        )
+        assertTrue(
+            "dismissCallUI must stop the service for the call JS is finalizing:\n$webRtcPlugin",
+            webRtcPlugin.contains("CallForegroundService.stop(context, callId)"),
+        )
+        assertTrue(
+            "CallTeardown must stop the service for the call that ended:\n$teardown",
+            teardown.contains("CallForegroundService.stop(app, callId)"),
+        )
+        // The Telecom slot of a push-delivered call carries `$event_id`, and
+        // its onDisconnect stops the service under that id; JS started the
+        // service under the Matrix id. Adoption is where the two ids meet.
+        assertTrue(
+            "reportCallConnected must alias the slot's id to the Matrix id:\n$callPlugin",
+            callPlugin.contains("CallForegroundService.aliasCall(it.callId, callId)"),
+        )
     }
 
     @Test
@@ -342,6 +433,48 @@ class CallForegroundServiceDestroyContractTest {
         var depth = 1
         var i = match.range.last + 1
         val start = i
+        while (i < source.length && depth > 0) {
+            when (source[i]) {
+                '{' -> depth++
+                '}' -> depth--
+            }
+            i++
+        }
+        return source.substring(start, i - 1)
+    }
+
+    /** A companion `fun name(...)` — neither `override` nor `private`. */
+    private fun extractCompanionFunctionBody(name: String): String {
+        val signature = Regex("(?<![a-zA-Z])fun\\s+$name\\s*\\([^)]*\\)[^{]*\\{")
+        val match = signature.find(source)
+            ?: error("Could not find fun $name in source")
+        return bodyFrom(match.range.last + 1)
+    }
+
+    /** The `ACTION_X -> { ... }` branch of onStartCommand. */
+    private fun extractActionBlock(action: String): String {
+        // Unlike the lifecycle hooks, onStartCommand declares a return type.
+        val signature = Regex("override\\s+fun\\s+onStartCommand\\s*\\([^)]*\\)[^{]*\\{")
+        val match = signature.find(source) ?: error("Could not find override fun onStartCommand in source")
+        val onStart = bodyFrom(match.range.last + 1)
+        val at = onStart.indexOf("$action -> {")
+        assertTrue("onStartCommand has no $action branch:\n$onStart", at >= 0)
+        val open = onStart.indexOf('{', at)
+        var depth = 1
+        var i = open + 1
+        while (i < onStart.length && depth > 0) {
+            when (onStart[i]) {
+                '{' -> depth++
+                '}' -> depth--
+            }
+            i++
+        }
+        return onStart.substring(open + 1, i - 1)
+    }
+
+    private fun bodyFrom(start: Int): String {
+        var depth = 1
+        var i = start
         while (i < source.length && depth > 0) {
             when (source[i]) {
                 '{' -> depth++

@@ -1,6 +1,7 @@
 import { isNative } from "@/shared/lib/platform";
 import { nativeCallBridge, retirePendingMarkers } from "@/shared/lib/native-calls";
 import { NativeWebRTC } from "@/shared/lib/native-webrtc";
+import { withTimeout } from "@/shared/lib/with-timeout";
 import { releasePageAwake } from "./page-awake-tone";
 
 /**
@@ -11,6 +12,12 @@ import { releasePageAwake } from "./page-awake-tone";
  * Idempotent per callId: a duplicate finalize for the same callId within
  * a 30-second GC window is a no-op. Each cleanup step is wrapped so a
  * failure in one does not block the next.
+ *
+ * Every step below is process-wide on native (the audio mode, the foreground
+ * service, the PeerConnections), so a call dialled while a finalize is still
+ * between its steps would have the rest of them land on itself. `hasLiveCall`
+ * drops the moment the SDK call ends, before this runs; the dial path waits
+ * on [waitForFinalizeSettled] so that the two never overlap.
  *
  * Order of operations:
  *   0. retirePendingMarkers → the queued answer/reject for this call can no
@@ -53,7 +60,16 @@ const FINALIZE_GC_MS = 30_000;
 // rearmed with a real GC timeout so a fresh call with the same callId
 // can re-finalize after the GC window passes.
 const finalizedCalls = new Map<string, ReturnType<typeof setTimeout> | null>();
+/** Finalizes whose steps are still running, by callId. */
+const inFlight = new Map<string, Promise<void>>();
 const telemetryListeners = new Set<TelemetryListener>();
+
+/**
+ * How long a dial waits for the previous call's finalize. The steps are a few
+ * native round trips, milliseconds when the page is awake; the bound only
+ * keeps a native step that never answers from holding the dial forever.
+ */
+export const FINALIZE_SETTLE_WAIT_MS = 2000;
 
 function emit(event: CallTelemetryEvent): void {
   for (const listener of telemetryListeners) {
@@ -98,47 +114,12 @@ export async function finalizeCall(
     // step 1 and double-cleanup audio routing.
     finalizedCalls.set(callId, null);
 
+    const run = runSteps(reason, callId, roomId);
+    inFlight.set(callId, run);
     try {
-      emit({ type: "call_finalize_start", reason, callId });
-
-      // Step 0: retire this call's pending answer/reject markers. They exist
-      // to carry a decision across a process that was not alive to act on it;
-      // reaching here means JS has acted. Left behind, a marker matches the
-      // NEXT invite from the same room and either auto-answers it with no
-      // ringer or declines it unheard — both seen on the Samsung bench,
-      // 2026-09-09. Runs on every termination path, because every one of them
-      // comes through here, and runs FIRST so the bridge's ordering guard is
-      // armed before the slower native steps below.
-      //
-      // roomId matters as much as callId: a connection created from a push
-      // is keyed by the push's call_id, which this homeserver fills with the
-      // event_id, so its marker can never be matched by the Matrix callId
-      // that arrives here. The room is the only key the two paths share.
-      await safeStep("retirePendingMarkers", callId, () => retirePendingMarkers(callId, roomId));
-
-      // Step 1: stop audio routing (mode → NORMAL, clearCommunicationDevice)
-      await safeStep("stopAudioRouting", callId, () => nativeCallBridge.stopAudioRouting());
-
-      // Step 2: report call ended → CallConnection cleanup
-      await safeStep("reportCallEnded", callId, () => nativeCallBridge.reportCallEnded(callId));
-
-      // Step 3: dismiss UI + stop foreground service (abandons audio focus, releases wake lock)
-      if (isNative) {
-        await safeStep("dismissCallUI", callId, () => NativeWebRTC.dismissCallUI());
-      }
-
-      // Step 4: close peer connections + dispose media (release mic AudioRecord)
-      if (isNative) {
-        await safeStep("closeAllPeerConnections", callId, () => NativeWebRTC.closeAllPeerConnections());
-      }
-
-      // Step 5: let the page fall silent. The tone kept Chromium from freezing
-      // the page behind the native call screen, and every step above waits on
-      // a native reply that a frozen page would never receive.
-      await safeStep("releasePageAwake", callId, () => releasePageAwake(callId));
-
-      emit({ type: "call_finalized", reason, callId });
+      await run;
     } finally {
+      inFlight.delete(callId);
       // Arm the GC timer only after all steps complete. Until this point
       // the slot stayed `null` (in-progress); a 30-second-too-late
       // duplicate would have been blocked from re-running step 1.
@@ -150,6 +131,79 @@ export async function finalizeCall(
   } catch (e) {
     console.warn("[finalize-call] unexpected sync error:", e);
   }
+}
+
+/** The cleanup steps in order; never rejects, every step is isolated. */
+async function runSteps(reason: FinalizeReason, callId: string, roomId?: string): Promise<void> {
+  try {
+    emit({ type: "call_finalize_start", reason, callId });
+
+    // Step 0: retire this call's pending answer/reject markers. They exist
+    // to carry a decision across a process that was not alive to act on it;
+    // reaching here means JS has acted. Left behind, a marker matches the
+    // NEXT invite from the same room and either auto-answers it with no
+    // ringer or declines it unheard — both seen on the Samsung bench,
+    // 2026-09-09. Runs on every termination path, because every one of them
+    // comes through here, and runs FIRST so the bridge's ordering guard is
+    // armed before the slower native steps below.
+    //
+    // roomId matters as much as callId: a connection created from a push
+    // is keyed by the push's call_id, which this homeserver fills with the
+    // event_id, so its marker can never be matched by the Matrix callId
+    // that arrives here. The room is the only key the two paths share.
+    await safeStep("retirePendingMarkers", callId, () => retirePendingMarkers(callId, roomId));
+
+    // Step 1: stop audio routing (mode → NORMAL, clearCommunicationDevice)
+    await safeStep("stopAudioRouting", callId, () => nativeCallBridge.stopAudioRouting());
+
+    // Step 2: report call ended → CallConnection cleanup
+    await safeStep("reportCallEnded", callId, () => nativeCallBridge.reportCallEnded(callId));
+
+    // Step 3: dismiss UI + stop foreground service (abandons audio focus,
+    // releases wake lock). Named, so native stops the service against this
+    // call's own start generation: issued after the next call's launchCallUI,
+    // an unnamed stop matched the current generation and ended that call.
+    if (isNative) {
+      await safeStep("dismissCallUI", callId, () => NativeWebRTC.dismissCallUI({ callId }));
+    }
+
+    // Step 4: close peer connections + dispose media (release mic AudioRecord)
+    if (isNative) {
+      await safeStep("closeAllPeerConnections", callId, () => NativeWebRTC.closeAllPeerConnections());
+    }
+
+    // Step 5: let the page fall silent. The tone kept Chromium from freezing
+    // the page behind the native call screen, and every step above waits on
+    // a native reply that a frozen page would never receive.
+    await safeStep("releasePageAwake", callId, () => releasePageAwake(callId));
+
+    emit({ type: "call_finalized", reason, callId });
+  } catch (e) {
+    console.warn("[finalize-call] unexpected error in cleanup steps:", e);
+  }
+}
+
+/**
+ * Resolves once no finalize is running, or after `timeoutMs`. Returns whether
+ * they all settled. Finalizes that start during the wait are waited for too.
+ */
+export async function waitForFinalizeSettled(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (inFlight.size > 0) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    try {
+      await withTimeout(Promise.all([...inFlight.values()]), remaining, "finalize-settle");
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Test-only: whether a finalize is still between its steps. */
+export function __hasFinalizeInFlightForTests(): boolean {
+  return inFlight.size > 0;
 }
 
 /**
@@ -175,5 +229,6 @@ export function __resetFinalizeCallStateForTests(): void {
     if (timer) clearTimeout(timer);
   }
   finalizedCalls.clear();
+  inFlight.clear();
   telemetryListeners.clear();
 }

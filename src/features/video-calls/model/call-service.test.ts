@@ -458,6 +458,56 @@ describe('call-service permission flow', () => {
   // connecting. A dial in that window used to find no client and return
   // without a word — the button did nothing. Now it waits for `matrixReady`
   // for a bounded time, and says so when the wait runs out.
+  // The previous call's finalize is still walking the native steps when
+  // `hasLiveCall` already reads false; each step is process-wide, so a dial
+  // placed in that window would have them land on the new call.
+  describe('startCall while the previous call finalizes', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('waits for the in-flight finalize before dialling', async () => {
+      vi.useFakeTimers();
+      let releaseDismiss!: () => void;
+      mockNativeWebRTCMethods.dismissCallUI.mockReturnValueOnce(
+        new Promise<void>((resolve) => { releaseDismiss = resolve; }),
+      );
+      const { finalizeCall } = await import('./finalize-call');
+      const { useCallService } = await import('./call-service');
+
+      const previous = finalizeCall('hangup', 'previous-call-id');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mockNativeWebRTCMethods.dismissCallUI).toHaveBeenCalledWith({ callId: 'previous-call-id' });
+
+      const pending = useCallService().startCall('!room:matrix.org', 'voice');
+      await vi.advanceTimersByTimeAsync(200);
+      expect(mockPlaceVoiceCall).not.toHaveBeenCalled();
+
+      releaseDismiss();
+      await previous;
+      await vi.advanceTimersByTimeAsync(0);
+      await pending;
+      expect(mockPlaceVoiceCall).toHaveBeenCalledTimes(1);
+    });
+
+    it('dials anyway once FINALIZE_SETTLE_WAIT_MS has passed', async () => {
+      vi.useFakeTimers();
+      mockNativeWebRTCMethods.dismissCallUI.mockReturnValueOnce(new Promise<void>(() => {}));
+      const { finalizeCall, FINALIZE_SETTLE_WAIT_MS } = await import('./finalize-call');
+      const { useCallService } = await import('./call-service');
+
+      void finalizeCall('hangup', 'stuck-call-id');
+      await vi.advanceTimersByTimeAsync(0);
+
+      const pending = useCallService().startCall('!room:matrix.org', 'voice');
+      await vi.advanceTimersByTimeAsync(FINALIZE_SETTLE_WAIT_MS - 1);
+      expect(mockPlaceVoiceCall).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(mockPlaceVoiceCall).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('startCall before Matrix is ready', () => {
     afterEach(() => {
       vi.useRealTimers();

@@ -355,6 +355,74 @@ describe("finalizeCall — central call cleanup", () => {
   });
 });
 
+describe("waitForFinalizeSettled — the dial path waits for the previous call", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockStopAudioRouting.mockResolvedValue(undefined);
+    mockReportCallEnded.mockResolvedValue(undefined);
+    mockDismissCallUI.mockResolvedValue(undefined);
+    mockCloseAllPeerConnections.mockResolvedValue(undefined);
+    const mod = await import("./finalize-call");
+    mod.__resetFinalizeCallStateForTests();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("names the call in dismissCallUI so native stops the service for that call only", async () => {
+    const { finalizeCall } = await import("./finalize-call");
+    await finalizeCall("hangup", "callId-named");
+    expect(mockDismissCallUI).toHaveBeenCalledWith({ callId: "callId-named" });
+  });
+
+  it("resolves at once when nothing is finalizing", async () => {
+    const { waitForFinalizeSettled } = await import("./finalize-call");
+    await expect(waitForFinalizeSettled(2000)).resolves.toBe(true);
+  });
+
+  it("resolves once the in-flight finalize has run its last step", async () => {
+    vi.useFakeTimers();
+    let releaseDismiss!: () => void;
+    mockDismissCallUI.mockReturnValueOnce(new Promise<void>((resolve) => { releaseDismiss = resolve; }));
+    const { finalizeCall, waitForFinalizeSettled, __hasFinalizeInFlightForTests } = await import("./finalize-call");
+
+    const finalize = finalizeCall("hangup", "callId-inflight");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(__hasFinalizeInFlightForTests()).toBe(true);
+
+    let settled: boolean | null = null;
+    const wait = waitForFinalizeSettled(2000).then((v) => { settled = v; });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(settled).toBeNull();
+    expect(mockCloseAllPeerConnections).not.toHaveBeenCalled();
+
+    releaseDismiss();
+    await finalize;
+    await wait;
+    expect(settled).toBe(true);
+    expect(__hasFinalizeInFlightForTests()).toBe(false);
+    expect(mockCloseAllPeerConnections).toHaveBeenCalledOnce();
+  });
+
+  it("gives up after the timeout while a native step never answers", async () => {
+    vi.useFakeTimers();
+    mockDismissCallUI.mockReturnValueOnce(new Promise<void>(() => {}));
+    const { finalizeCall, waitForFinalizeSettled } = await import("./finalize-call");
+
+    void finalizeCall("hangup", "callId-stuck");
+    await vi.advanceTimersByTimeAsync(0);
+
+    let settled: boolean | null = null;
+    const wait = waitForFinalizeSettled(2000).then((v) => { settled = v; });
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(settled).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    await wait;
+    expect(settled).toBe(false);
+  });
+});
+
 describe("forceResetAudioState — recovery without callId", () => {
   beforeEach(async () => {
     vi.clearAllMocks();

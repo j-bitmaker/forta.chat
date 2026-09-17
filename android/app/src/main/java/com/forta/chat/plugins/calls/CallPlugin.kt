@@ -393,6 +393,10 @@ class CallPlugin : Plugin() {
                 if (!owns) Log.w(TAG, "reportCallConnected($callId): slot holds ${slot.callId}, leaving it")
             }
         }
+        // A slot created from a push is keyed by the push's `$event_id`; its
+        // own onDisconnect stops the foreground service under that id, and
+        // the ledger only knows the Matrix id launchCallUI recorded.
+        connection?.let { CallForegroundService.aliasCall(it.callId, callId) }
         connection?.setActive()
         // The answer has been picked up: disarm the backstop that releases a
         // connection Telecom answered while JS was not there.

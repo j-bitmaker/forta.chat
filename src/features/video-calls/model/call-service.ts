@@ -29,7 +29,7 @@ import {
   consumePendingRejectCallId,
 } from "@/shared/lib/native-calls";
 import { ensureCallPermissions, PermissionDeniedError, callPermissionError } from "./permissions";
-import { finalizeCall } from "./finalize-call";
+import { finalizeCall, waitForFinalizeSettled, FINALIZE_SETTLE_WAIT_MS } from "./finalize-call";
 import { holdPageAwake } from "./page-awake-tone";
 import { waitUntil } from "@/shared/lib/wait-until";
 import {
@@ -1090,6 +1090,13 @@ export function useCallService() {
       // and before the mic preflight so nothing is captured for a call
       // that may not happen.
       if (!(await waitForMatrixReady())) return;
+      // `hasLiveCall` drops the moment the previous call ends, while its
+      // finalize is still walking the native steps — the service stop, the
+      // audio reset, closeAllPeerConnections — all of them process-wide. Let
+      // it finish, or they land on the call being dialled.
+      if (!(await waitForFinalizeSettled(FINALIZE_SETTLE_WAIT_MS))) {
+        console.warn("[call-service] previous call still finalizing after", FINALIZE_SETTLE_WAIT_MS, "ms — dialling anyway");
+      }
       if (callStore.hasLiveCall) {
         console.warn("[call-service] a call arrived while waiting for Matrix — not dialling");
         return;

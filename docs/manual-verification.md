@@ -24,6 +24,34 @@
 
 ## Ожидают проверки
 
+### Поздний stop прошлого звонка не гасит следующий
+- Коммит: (см. коммит с `CallStartLedger`)
+- Почему нужен человек: порядок доставки intent'ов сервису и отложенный `onDestroy` —
+  решения ОС. Тесты (`CallStartLedgerTest`, `CallForegroundServiceDestroyContractTest`,
+  `finalize-call.test.ts`, `call-service.test.ts`) доказывают правило и проводку, а не
+  поведение сервиса на аппарате. Прежняя защита по поколению ловила только stop,
+  *отправленный* до следующего start; в реальной гонке finalize прошлого звонка ещё идёт
+  по нативным шагам, когда JS уже сделал `launchCallUI` для нового, и stop прошлого,
+  выданный после, совпадал с текущим поколением и гасил новый звонок. Теперь stop
+  называет свой звонок и выдаётся против поколения его собственного start; глобальный
+  teardown `onDestroy`/`onTaskRemoved` и worker `closeAllPeerConnections` пропускаются,
+  если start следующего звонка уже выдан; набор ждёт незавершённый finalize до 2 с.
+  Telecom-слот push-звонка носит `$event_id`, а не Matrix-id, под которым JS запустил
+  сервис: при `reportCallConnected` этот id алиасится на Matrix-id, чтобы stop из
+  `onDisconnect` слота тоже был против поколения своего звонка.
+- На чём: Samsung SM-A528B ↔ веб TEST1, серия перезвонов как в записи «Разговор
+  переживает завершение предыдущего звонка» (`scratchpad/run-redial.sh`).
+- Шаги:
+  1. 10 циклов: Samsung кладёт трубку, веб перезванивает через 0,3–0,8 с после
+     `endCall` — раньше прежних 1,6–2,2 с, чтобы finalize прошлого звонка ещё шёл.
+  2. У каждого второго звонка звук в обе стороны и уведомление звонка на месте.
+     В `adb logcat -s CallForegroundService`: для перезвона нет `Service stopped`
+     до его завершения; ожидаются `ACTION_STOP for start generation N ignored` и/или
+     `media release from onDestroy skipped — a newer call started`.
+  3. В логе WebView нет `[call-service] previous call still finalizing` при живой
+     странице: finalize укладывается в 2 с.
+- Статус: ☐ не проверено
+
 ### Разговор переживает завершение предыдущего звонка
 - Коммит: `00ddc636`
 - Почему нужен человек: проверяется гонка жизненного цикла сервиса — ОС решает,

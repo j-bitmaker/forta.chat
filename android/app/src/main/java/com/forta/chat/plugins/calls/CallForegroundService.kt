@@ -62,14 +62,20 @@ class CallForegroundService : Service() {
          * ends, before its finalize reaches the native steps), and an unkeyed
          * stop then tore down the new call — its notification, its wake-lock
          * and, through forceStop, its audio. Bumped synchronously in [start],
-         * so a stop captured before the next start is already stale when it
-         * is delivered. See [CallServiceStopPolicy].
+         * before the intent is sent, so everything that reads the counter
+         * after that call — a stop for the previous call, a deferred teardown
+         * of the previous instance — already sees the new call as the owner.
+         * A stop names its call and is issued against the generation that
+         * call's start recorded ([CallStartLedger]), not the current one.
+         * See [CallServiceStopPolicy].
          */
         const val EXTRA_GENERATION = "startGeneration"
         private val startGeneration = java.util.concurrent.atomic.AtomicLong(0L)
+        private val startLedger = CallStartLedger()
 
-        fun start(context: Context, callerName: String, callType: String) {
+        fun start(context: Context, callerName: String, callType: String, callId: String? = null) {
             val generation = startGeneration.incrementAndGet()
+            startLedger.record(callId, generation)
             val intent = Intent(context, CallForegroundService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_CALLER_NAME, callerName)
@@ -99,15 +105,23 @@ class CallForegroundService : Service() {
             context.startService(intent)
         }
 
-        fun stop(context: Context) {
+        /**
+         * Stop the service for [callId]. The stop is issued against the
+         * generation that call's start recorded, so a stop for the previous
+         * call issued after the next call's start is stale on delivery. A stop
+         * without an id, or for a call no start recorded, is issued against
+         * the current generation.
+         */
+        fun stop(context: Context, callId: String? = null) {
             val intent = Intent(context, CallForegroundService::class.java).apply {
                 action = ACTION_STOP
-                // The generation this stop is issued against; a start that
-                // lands in between makes it stale.
-                putExtra(EXTRA_GENERATION, startGeneration.get())
+                putExtra(EXTRA_GENERATION, startLedger.generationFor(callId, startGeneration.get()))
             }
             context.startService(intent)
         }
+
+        /** See [CallStartLedger.alias]: the Telecom slot's id stops the same start JS launched. */
+        fun aliasCall(alias: String?, callId: String?) = startLedger.alias(alias, callId)
 
         // D-10: Re-request audio focus from CallActivity.onResume.
         // Session 54: @Volatile so the isRunning getter can be read safely
@@ -180,6 +194,9 @@ class CallForegroundService : Service() {
     // rendering a placeholder Person — the next legitimate START will
     // build the notification correctly with the real caller name.
     private var hasStarted: Boolean = false
+    // The start generation this instance runs; -1 until ACTION_START. Compared
+    // with the counter in [isStale] before any process-wide teardown.
+    private var generation: Long = -1L
 
     private val binder = LocalBinder()
 
@@ -206,6 +223,7 @@ class CallForegroundService : Service() {
                 callerName = if (incomingName.isNullOrBlank()) "Unknown" else incomingName
                 callType = intent.getStringExtra(EXTRA_CALL_TYPE) ?: "voice"
                 hasStarted = true
+                generation = intent.getLongExtra(EXTRA_GENERATION, -1L)
                 // Re-assert liveness: a stop that ran on this same instance
                 // cleared `instance`, and Android reuses the instance for a
                 // start that arrives before the deferred destroy. Without this
@@ -290,6 +308,20 @@ class CallForegroundService : Service() {
     }
 
     /**
+     * True when this instance's call is no longer the one the service was last
+     * started for: a newer instance took over ([isSuperseded]), or [start] has
+     * been issued for the next call and its intent is still on its way. A
+     * successor's onCreate never runs before this instance's onDestroy, so
+     * the identity check alone can only ever see the *previous* owner; the
+     * counter, bumped before the start intent is sent, is what tells a
+     * deferred teardown that the next call already owns the audio mode and
+     * the PeerConnections.
+     */
+    private fun isStale(): Boolean {
+        return isSuperseded() || CallServiceStopPolicy.isStale(generation, startGeneration.get())
+    }
+
+    /**
      * Close the WebRTC capture path on a worker thread.
      *
      * Static executor: the work has to outlive the service instance that
@@ -298,8 +330,17 @@ class CallForegroundService : Service() {
      * no-op rather than a double teardown.
      */
     private fun releaseMediaAsync(from: String) {
+        // The owner check at the call site covers the moment of scheduling; the
+        // worker checks again at run time, because the PeerConnections are
+        // global and the next call may have created its own while this task
+        // waited behind a slow stopCapture.
+        val owner = generation
         runCatching {
             mediaReleaseExecutor.execute {
+                if (CallServiceStopPolicy.isStale(owner, startGeneration.get())) {
+                    Log.w(TAG, "media release from $from skipped — a newer call started")
+                    return@execute
+                }
                 runCatching { WebRTCPlugin.manager?.closeAllPeerConnections() }
                     .onFailure { Log.w(TAG, "closeAllPeerConnections from $from threw", it) }
             }
@@ -307,8 +348,8 @@ class CallForegroundService : Service() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        if (isSuperseded()) {
-            Log.w(TAG, "onTaskRemoved on a superseded instance - skipping global teardown")
+        if (isStale()) {
+            Log.w(TAG, "onTaskRemoved on a stale instance - skipping global teardown")
             hasStarted = false
             releaseWakeLock()
             abandonAudioFocus()
@@ -388,8 +429,8 @@ class CallForegroundService : Service() {
     }
 
     override fun onDestroy() {
-        if (isSuperseded()) {
-            Log.w(TAG, "onDestroy on a superseded instance - skipping global teardown")
+        if (isStale()) {
+            Log.w(TAG, "onDestroy on a stale instance - skipping global teardown")
             hasStarted = false
             releaseWakeLock()
             abandonAudioFocus()
