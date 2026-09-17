@@ -92,6 +92,24 @@ describe('VideoTile', () => {
     expect(wrapper.emitted('aspectchange')).toBeFalsy();
   });
 
+  // forta-bugs#936: once the metadata arrived, `width/height: auto` sized the
+  // video to its own resolution, so a 640×480 peer took a third of a 1920×1080
+  // screen. A contain video must keep filling its tile at any resolution.
+  it('keeps a contain video filling its tile after the metadata arrives (forta-bugs#936)', async () => {
+    const wrapper = mount(VideoTile, {
+      props: { stream: new MediaStream(), objectFit: 'contain' },
+    });
+    const video = wrapper.find('video');
+    Object.defineProperty(video.element, 'videoWidth', { value: 640, configurable: true });
+    Object.defineProperty(video.element, 'videoHeight', { value: 480, configurable: true });
+    await video.trigger('loadedmetadata');
+
+    expect(wrapper.emitted('aspectchange')?.[0]).toEqual([640 / 480]);
+    expect(video.classes()).toEqual(expect.arrayContaining(['h-full', 'w-full', 'object-contain']));
+    expect(video.element.style.width).toBe('');
+    expect(video.element.style.height).toBe('');
+  });
+
   it('does not re-emit on stream swap — prior aspect persists until next loadedmetadata', async () => {
     // Contract lock (WEE-53 review): swapping the stream must NOT emit a
     // reset. A parent keeps the last reported ratio until the new stream's
