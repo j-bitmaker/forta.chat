@@ -258,11 +258,11 @@ export const useTorStore = defineStore(NAMESPACE, () => {
   async function pollNativeStatus(): Promise<void> {
     if (!isNative) return;
     try {
-      const { registerPlugin } = await import("@capacitor/core");
-      const TorNative = registerPlugin<{
-        getStatus(): Promise<{ progress: number; state: string }>;
-      }>("Tor");
-      const nativeStatus = await TorNative.getStatus();
+      // The service holds the one registered plugin: registering "Tor" again on
+      // every poll made Capacitor log a warning every 2 s.
+      const { torService } = await import("@/shared/lib/tor");
+      const nativeStatus = await torService.getStatus();
+      if (!nativeStatus) return;
       status.value = mapNativeState(nativeStatus.state, nativeStatus.progress);
       info.value = nativeStatus.progress > 0 && nativeStatus.progress < 100
         ? `Bootstrapped ${nativeStatus.progress}%`
