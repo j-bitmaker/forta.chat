@@ -1,10 +1,13 @@
 package com.forta.chat.plugins.calls
 
+import android.content.Context
 import android.util.Log
+import com.forta.chat.plugins.tor.ConfigurationManager
+import com.forta.chat.plugins.tor.TorManager
+import com.forta.chat.plugins.tor.TorRouteDecider
+import com.forta.chat.plugins.tor.TorState
 import java.io.IOException
 import java.net.HttpURLConnection
-import java.net.InetSocketAddress
-import java.net.Proxy
 import java.net.URL
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -17,8 +20,11 @@ import java.util.concurrent.atomic.AtomicInteger
  * Samsung ↔ Pixel bench, 2026-09-17).
  *
  * JS answers [captureScript] with what the SDK itself would use — room, call,
- * this device as `party_id`, the homeserver the client talks to, its access
- * token and whether it goes through the Tor proxy. It is read with
+ * this device as `party_id`, the homeserver the client talks to and its access
+ * token. Whether the request goes through the Tor proxy is decided here, from
+ * the same persisted mode and daemon state the app's own routing uses: the JS
+ * side only knows about the proxy it configured at login, which is stale as soon
+ * as Tor is switched on mid-session (`tor2`, the hangup went out direct). It is read with
  * evaluateJavascript rather than passed as plugin call data because Capacitor
  * logs call data in debug builds. The token lives in memory only, for the one
  * call, and never reaches a log line.
@@ -31,8 +37,8 @@ object CallHangupSignal {
     private const val TAG = "CallHangupSignal"
     private const val VOIP_VERSION = "1"
     private const val REASON = "user_hangup"
-    private const val TOR_PROXY_HOST = "127.0.0.1"
-    private const val TOR_PROXY_PORT = 8181
+    /** The app's own Tor path: a reverse proxy that takes the target URL in its path (`service-worker.js`). */
+    private const val TOR_PROXY = "http://127.0.0.1:8181/"
     private const val TIMEOUT_MS = 15_000
 
     class Target(
@@ -41,9 +47,8 @@ object CallHangupSignal {
         val partyId: String,
         val baseUrl: String,
         val accessToken: String,
-        val viaTorProxy: Boolean,
     ) {
-        override fun toString(): String = "Target(callId=$callId, roomId=$roomId, viaTorProxy=$viaTorProxy)"
+        override fun toString(): String = "Target(callId=$callId, roomId=$roomId)"
     }
 
     class Request(val url: String, val body: String, val headers: Map<String, String>)
@@ -82,7 +87,7 @@ object CallHangupSignal {
         val accessToken = fields["accessToken"].orEmpty()
         if (listOf(callId, roomId, partyId, baseUrl, accessToken).any { it.isEmpty() }) return null
         if (!baseUrl.startsWith("https://") && !baseUrl.startsWith("http://")) return null
-        return Target(callId, roomId, partyId, baseUrl, accessToken, fields["viaTorProxy"] == "1")
+        return Target(callId, roomId, partyId, baseUrl, accessToken)
     }
 
     fun request(target: Target, txnId: String): Request = Request(
@@ -99,6 +104,14 @@ object CallHangupSignal {
     /** Recently ended calls: a capture answered after its call ended must not bring the token back. */
     private val ended = ArrayDeque<String>()
     private const val ENDED_KEPT = 16
+
+    @Volatile
+    private var appContext: Context? = null
+
+    /** The app context the send needs for the Tor route; set once, from the plugin. */
+    fun attach(context: Context) {
+        appContext = context.applicationContext
+    }
 
     fun remember(target: Target) = synchronized(this) {
         if (target.callId !in ended) remembered = target
@@ -124,24 +137,35 @@ object CallHangupSignal {
     }
 
     fun sendAsync(target: Target) {
+        val context = appContext
         inFlight.incrementAndGet()
         Thread({
             try {
-                sendWithRetry(target)
+                sendWithRetry(target, viaTorProxy = context != null && routeThroughTor(context, target.baseUrl))
             } finally {
                 inFlight.decrementAndGet()
             }
         }, "call-hangup-signal").start()
     }
 
-    private fun sendWithRetry(target: Target) {
+    /** The app's own rule for this homeserver: persisted mode plus the daemon's state. */
+    private fun routeThroughTor(context: Context, baseUrl: String): Boolean = runCatching {
+        val mode = ConfigurationManager(context).loadSettings().mode
+        val ready = TorManager.lastKnownState == TorState.RUNNING
+        TorRouteDecider().isUseWithTor(baseUrl, mode, ready)
+    }.getOrElse {
+        Log.w(TAG, "could not read the Tor route, sending direct", it)
+        false
+    }
+
+    private fun sendWithRetry(target: Target, viaTorProxy: Boolean) {
         // One transaction id for both attempts: the homeserver drops a repeat of
         // a send that did arrive, so a retry after a lost response is harmless.
         val request = request(target, txnId = "fortahangup${System.currentTimeMillis()}")
         for (attempt in 1..2) {
             try {
-                val code = send(request, target.viaTorProxy)
-                Log.i(TAG, "m.call.hangup for ${target.callId} → HTTP $code (attempt $attempt)")
+                val code = send(request, viaTorProxy)
+                Log.i(TAG, "m.call.hangup for ${target.callId} → HTTP $code (attempt $attempt, tor=$viaTorProxy)")
                 if (code in 200..299 || code in 400..499) return
             } catch (e: IOException) {
                 Log.w(TAG, "m.call.hangup for ${target.callId} failed (attempt $attempt): ${e.javaClass.simpleName}")
@@ -151,12 +175,8 @@ object CallHangupSignal {
     }
 
     private fun send(request: Request, viaTorProxy: Boolean): Int {
-        val url = URL(request.url)
-        val connection = (if (viaTorProxy) {
-            url.openConnection(Proxy(Proxy.Type.HTTP, InetSocketAddress(TOR_PROXY_HOST, TOR_PROXY_PORT)))
-        } else {
-            url.openConnection()
-        }) as HttpURLConnection
+        val url = URL(if (viaTorProxy) torUrl(request.url) else request.url)
+        val connection = url.openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "PUT"
             connection.connectTimeout = TIMEOUT_MS
@@ -168,6 +188,21 @@ object CallHangupSignal {
         } finally {
             connection.disconnect()
         }
+    }
+
+    /** `http://127.0.0.1:8181/{encodeURIComponent(url)}`, the form the app's proxy answers. */
+    fun torUrl(targetUrl: String): String = TOR_PROXY + encodeUriComponent(targetUrl)
+
+    /** `encodeURIComponent`: the proxy unescapes its path the way the service worker escapes it. */
+    private fun encodeUriComponent(value: String): String {
+        val keep = "-_.!~*'()"
+        val out = StringBuilder()
+        for (b in value.toByteArray(Charsets.UTF_8)) {
+            val c = b.toInt().toChar()
+            if (c.isLetterOrDigit() && b.toInt() in 0..127 || keep.indexOf(c) >= 0) out.append(c)
+            else out.append('%').append("%02X".format(b.toInt() and 0xFF))
+        }
+        return out.toString()
     }
 
     private fun decode(value: String): String = URLDecoder.decode(value, "UTF-8")

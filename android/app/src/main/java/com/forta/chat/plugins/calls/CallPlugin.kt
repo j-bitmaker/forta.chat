@@ -367,6 +367,7 @@ class CallPlugin : Plugin() {
     private fun captureHangupTarget(callId: String?, retriesLeft: Int = 1) {
         if (callId.isNullOrEmpty()) return
         val bridge = bridge ?: return
+        CallHangupSignal.attach(context)
         bridge.executeOnMainThread {
             runCatching {
                 bridge.webView.evaluateJavascript(CallHangupSignal.captureScript(callId)) { result ->

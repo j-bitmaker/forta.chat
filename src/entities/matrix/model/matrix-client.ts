@@ -88,11 +88,6 @@ export class MatrixClientService {
     this.torProxyUrl = url;
   }
 
-  /** Whether requests go through the local Tor reverse proxy (127.0.0.1:8181). */
-  get usesTorProxy(): boolean {
-    return !!this.torProxyUrl;
-  }
-
   // Event callbacks
   private onSync: SyncCallback | null = null;
   private onTimeline: TimelineCallback | null = null;

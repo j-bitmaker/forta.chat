@@ -25,8 +25,7 @@ class CallHangupSignalTest {
             "&roomId=%21YJTutyRoEKqcowPZRk%3Amatrix.pocketnet.app" +
             "&partyId=ABCDEFGHIJ" +
             "&baseUrl=https%3A%2F%2Fmatrix.pocketnet.app" +
-            "&accessToken=syt_secret_token" +
-            "&viaTorProxy=0"
+            "&accessToken=syt_secret_token"
 
     @After
     fun clear() {
@@ -43,13 +42,6 @@ class CallHangupSignalTest {
         assertEquals("ABCDEFGHIJ", target.partyId)
         assertEquals("https://matrix.pocketnet.app", target.baseUrl)
         assertEquals("syt_secret_token", target.accessToken)
-        assertFalse(target.viaTorProxy)
-    }
-
-    @Test
-    fun parse_readsTheTorFlag() {
-        val target = CallHangupSignal.parse("\"${encoded.replace("viaTorProxy=0", "viaTorProxy=1")}\"")
-        assertTrue(target!!.viaTorProxy)
     }
 
     @Test
@@ -107,6 +99,19 @@ class CallHangupSignalTest {
     fun request_escapesJsonStrings() {
         val odd = CallHangupSignal.parse("\"${encoded.replace("partyId=ABCDEFGHIJ", "partyId=a%22b%5Cc")}\"")!!
         assertTrue(CallHangupSignal.request(odd, "t").body.contains("\"party_id\":\"a\\\"b\\\\c\""))
+    }
+
+    @Test
+    fun torUrl_isTheReverseProxyFormTheAppUses() {
+        // The local proxy takes the target in its path (public/service-worker.js);
+        // as an ordinary HTTP proxy it refuses the request (`tor3`, two IOExceptions).
+        assertEquals(
+            "http://127.0.0.1:8181/https%3A%2F%2Fmatrix.pocketnet.app%2F_matrix%2Fclient%2Fv3%2Frooms%2F" +
+                "%2521room%2Fsend%2Fm.call.hangup%2Ft1",
+            CallHangupSignal.torUrl(
+                "https://matrix.pocketnet.app/_matrix/client/v3/rooms/%21room/send/m.call.hangup/t1",
+            ),
+        )
     }
 
     @Test

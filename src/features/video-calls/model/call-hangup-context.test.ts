@@ -7,7 +7,6 @@ import {
 
 const matrixService = {
   client: null as null | { baseUrl: string; getAccessToken(): string | null; getDeviceId(): string | null },
-  usesTorProxy: false,
 };
 const callStore = { matrixCall: null as null | { callId: string; roomId?: string } };
 
@@ -19,7 +18,6 @@ const source = {
   baseUrl: "https://matrix.pocketnet.app",
   accessToken: "syt_token",
   deviceId: "DEVICE",
-  viaTorProxy: false,
 };
 
 describe("encodeCallHangupContext", () => {
@@ -33,13 +31,7 @@ describe("encodeCallHangupContext", () => {
       partyId: "DEVICE",
       baseUrl: "https://matrix.pocketnet.app",
       accessToken: "syt_token",
-      viaTorProxy: "0",
     });
-  });
-
-  it("marks a Tor-routed client", () => {
-    const params = new URLSearchParams(encodeCallHangupContext("call-1", { ...source, viaTorProxy: true })!);
-    expect(params.get("viaTorProxy")).toBe("1");
   });
 
   it("uses only characters that stay intact inside the JSON string evaluateJavascript returns", () => {
@@ -61,7 +53,6 @@ describe("installCallHangupContextProvider", () => {
   afterEach(() => {
     delete window.__fortaCallHangupContext;
     matrixService.client = null;
-    matrixService.usesTorProxy = false;
     callStore.matrixCall = null;
   });
 
@@ -72,12 +63,14 @@ describe("installCallHangupContextProvider", () => {
       getAccessToken: () => "syt_token",
       getDeviceId: () => "DEVICE",
     };
-    matrixService.usesTorProxy = true;
     callStore.matrixCall = { callId: "call-1", roomId: "!room:matrix.pocketnet.app" };
 
     const params = new URLSearchParams(window.__fortaCallHangupContext!("call-1")!);
     expect(params.get("partyId")).toBe("DEVICE");
-    expect(params.get("viaTorProxy")).toBe("1");
+    expect(params.get("roomId")).toBe("!room:matrix.pocketnet.app");
+    // Whether the hangup goes through Tor is decided natively (tor2): the page's
+    // proxy is the one configured at login and goes stale mid-session.
+    expect(params.get("viaTorProxy")).toBeNull();
   });
 
   it("is installed by ensure() when a call starts and keeps the one already there", () => {

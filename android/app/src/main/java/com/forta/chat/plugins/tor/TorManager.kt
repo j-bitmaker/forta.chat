@@ -231,7 +231,19 @@ class TorManager(private val config: ConfigurationManager) {
 
     private fun setState(newState: TorState) {
         state.set(newState)
+        lastKnownState = newState
         onStateChanged?.invoke(newState)
         Log.d(TAG, "State → $newState")
+    }
+
+    companion object {
+        /**
+         * The daemon's state for code that holds no plugin instance — the native
+         * hangup on a task swipe ([com.forta.chat.plugins.calls.CallHangupSignal])
+         * routes itself the way the app routes its Matrix traffic.
+         */
+        @Volatile
+        var lastKnownState: TorState = TorState.STOPPED
+            private set
     }
 }

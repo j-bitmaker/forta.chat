@@ -48,6 +48,20 @@ class CallHangupSignalContractTest {
     }
 
     @Test
+    fun send_takesTheTorRouteFromTheAppsOwnRule() {
+        val signal = source("com/forta/chat/plugins/calls/CallHangupSignal.kt")
+        val route = withoutComments(functionBody(signal, "fun\\s+routeThroughTor\\s*\\("))
+        assertTrue("the route must come from the persisted mode and the daemon state, not from JS:\n$route",
+            route.contains("ConfigurationManager(context).loadSettings().mode") &&
+                route.contains("TorManager.lastKnownState") &&
+                route.contains("TorRouteDecider().isUseWithTor("))
+        assertTrue("the JS context must not carry a Tor flag any more", !signal.contains("viaTorProxy=") )
+        val send = withoutComments(functionBody(signal, "fun\\s+send\\s*\\("))
+        assertTrue("a Tor send must go to the reverse proxy, not through Proxy.Type.HTTP:\n$send",
+            send.contains("torUrl(request.url)") && !send.contains("Proxy("))
+    }
+
+    @Test
     fun teardown_forgetsTheEndedCall() {
         val body = withoutComments(functionBody(teardown, "fun\\s+endCall\\s*\\("))
         assertTrue("endCall must drop the hangup target of the call it ends:\n$body",

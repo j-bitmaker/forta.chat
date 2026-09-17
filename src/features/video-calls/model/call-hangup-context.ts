@@ -10,7 +10,9 @@ import { useCallStore } from "@/entities/call";
  * Native reads it with evaluateJavascript while the call is dialled and again
  * once it connects, instead of receiving it as plugin call data, which Capacitor
  * logs in debug builds. The access token is the one the client already keeps in
- * this page.
+ * this page. Whether the request goes through Tor is decided natively: this page
+ * only knows the proxy configured at login, which is stale once Tor is switched
+ * on mid-session.
  */
 export interface CallHangupContextSource {
   call: { callId: string; roomId?: string } | null;
@@ -18,7 +20,6 @@ export interface CallHangupContextSource {
   accessToken: string | null | undefined;
   /** The SDK's party_id for this device; a peer ignores a hangup of a connected call from another party. */
   deviceId: string | null | undefined;
-  viaTorProxy: boolean;
 }
 
 declare global {
@@ -42,7 +43,6 @@ export function encodeCallHangupContext(callId: string, source: CallHangupContex
     partyId: deviceId,
     baseUrl,
     accessToken,
-    viaTorProxy: source.viaTorProxy ? "1" : "0",
   })
     .toString()
     .replace(/\+/g, "%20");
@@ -61,15 +61,13 @@ export function ensureCallHangupContextProvider(): void {
 export function installCallHangupContextProvider(): void {
   window.__fortaCallHangupContext = (callId: string) => {
     try {
-      const service = getMatrixClientService();
-      const client = service.client;
+      const client = getMatrixClientService().client;
       const call = useCallStore().matrixCall;
       return encodeCallHangupContext(callId, {
         call: call ? { callId: call.callId, roomId: call.roomId } : null,
         baseUrl: client?.baseUrl,
         accessToken: client?.getAccessToken(),
         deviceId: client?.getDeviceId(),
-        viaTorProxy: service.usesTorProxy,
       });
     } catch {
       return null;
