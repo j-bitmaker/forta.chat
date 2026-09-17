@@ -25,7 +25,7 @@
 ## Ожидают проверки
 
 ### Поздний stop прошлого звонка не гасит следующий
-- Коммит: (см. коммит с `CallStartLedger`)
+- Коммит: `706e8f96`
 - Почему нужен человек: порядок доставки intent'ов сервису и отложенный `onDestroy` —
   решения ОС. Тесты (`CallStartLedgerTest`, `CallForegroundServiceDestroyContractTest`,
   `finalize-call.test.ts`, `call-service.test.ts`) доказывают правило и проводку, а не
