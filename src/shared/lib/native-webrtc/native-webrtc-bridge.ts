@@ -54,7 +54,10 @@ export interface NativeWebRTCPlugin {
    * Used during call finalization — closing PCs alone is not enough,
    * a leaked AudioSource keeps the microphone busy device-wide.
    */
-  closeAllPeerConnections(): Promise<void>;
+  // Named by the finalize: native skips the close for a call a newer
+  // launchCallUI has replaced, so a late finalize step cannot close the
+  // next call's connections. Unnamed, it closes everything.
+  closeAllPeerConnections(options?: { callId?: string }): Promise<{ skipped: boolean } | void>;
   getConnectionState(options: { peerId: string }): Promise<{ state: string }>;
 
   // ICE restart — perform a native ICE restart on the given PeerConnection.

@@ -30,6 +30,18 @@ class CallStartLedgerTest {
     }
 
     @Test
+    fun `a teardown step for the previous call is stale once the next start is issued`() {
+        // The JS finalize's closeAllPeerConnections, reaching native after
+        // launchCallUI for the next call.
+        ledger.record("A", 1L)
+        assertFalse(CallServiceStopPolicy.isStale(ledger.generationFor("A", 1L), 1L))
+        ledger.record("B", 2L)
+        assertTrue(CallServiceStopPolicy.isStale(ledger.generationFor("A", 2L), 2L))
+        assertFalse(CallServiceStopPolicy.isStale(ledger.generationFor("B", 2L), 2L))
+        assertFalse(CallServiceStopPolicy.isStale(ledger.generationFor(null, 2L), 2L))
+    }
+
+    @Test
     fun `a second stop for the same call is as stale as the first`() {
         // Telecom's onDisconnect and the JS finalize both stop the same call.
         ledger.record("A", 1L)

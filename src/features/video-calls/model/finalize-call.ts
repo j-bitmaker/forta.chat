@@ -167,9 +167,11 @@ async function runSteps(reason: FinalizeReason, callId: string, roomId?: string)
       await safeStep("dismissCallUI", callId, () => NativeWebRTC.dismissCallUI({ callId }));
     }
 
-    // Step 4: close peer connections + dispose media (release mic AudioRecord)
+    // Step 4: close peer connections + dispose media (release mic AudioRecord).
+    // Named: reaching native after the next call's launchCallUI, this close
+    // would take the new call's connections down with the old one's.
     if (isNative) {
-      await safeStep("closeAllPeerConnections", callId, () => NativeWebRTC.closeAllPeerConnections());
+      await safeStep("closeAllPeerConnections", callId, () => NativeWebRTC.closeAllPeerConnections({ callId }));
     }
 
     // Step 5: let the page fall silent. The tone kept Chromium from freezing

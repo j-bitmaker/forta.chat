@@ -542,8 +542,20 @@ class WebRTCPlugin : Plugin() {
      */
     @PluginMethod
     fun closeAllPeerConnections(call: PluginCall) {
+        // The PeerConnections are global. The finalize of an ended call can
+        // reach this step after the next call's launchCallUI — a step that
+        // blocked past the dial's wait, or an incoming call answered in the
+        // window — and would close the new call's connection with the old
+        // one's. Named by the finalize, the close is skipped for a call a
+        // newer start has replaced; that call's own finalize closes all.
+        val callId = call.getString("callId")
+        if (com.forta.chat.plugins.calls.CallForegroundService.isStartStale(callId)) {
+            Log.w(TAG, "closeAllPeerConnections for $callId skipped — a newer call started")
+            call.resolve(JSObject().apply { put("skipped", true) })
+            return
+        }
         manager?.closeAllPeerConnections()
-        call.resolve()
+        call.resolve(JSObject().apply { put("skipped", false) })
     }
 
     @PluginMethod

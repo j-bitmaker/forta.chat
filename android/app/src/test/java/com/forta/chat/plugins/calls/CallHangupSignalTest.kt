@@ -60,6 +60,20 @@ class CallHangupSignalTest {
     }
 
     @Test
+    fun parse_rejectsPlainHttpForAnythingButALoopbackDevHost() {
+        // The request carries the bearer token.
+        val http = encoded.replace("https%3A%2F%2Fmatrix.pocketnet.app", "http%3A%2F%2Fmatrix.pocketnet.app")
+        assertNull(CallHangupSignal.parse("\"$http\""))
+        val lookalike = encoded.replace("https%3A%2F%2Fmatrix.pocketnet.app", "http%3A%2F%2F127.0.0.1.evil.example")
+        assertNull(CallHangupSignal.parse("\"$lookalike\""))
+        val local = encoded.replace("https%3A%2F%2Fmatrix.pocketnet.app", "http%3A%2F%2F127.0.0.1%3A8008")
+        assertEquals("http://127.0.0.1:8008", CallHangupSignal.parse("\"$local\"")?.baseUrl)
+        assertTrue(CallHangupSignal.isAllowedBaseUrl("http://localhost:8008"))
+        assertTrue(CallHangupSignal.isAllowedBaseUrl("http://10.0.2.2:8008/"))
+        assertTrue(CallHangupSignal.isAllowedBaseUrl("https://matrix.pocketnet.app"))
+    }
+
+    @Test
     fun target_neverPrintsTheToken() {
         val target = CallHangupSignal.parse("\"$encoded\"")!!
         assertFalse(target.toString().contains("syt_secret_token"))

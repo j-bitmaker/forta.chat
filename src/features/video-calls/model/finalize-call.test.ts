@@ -370,10 +370,11 @@ describe("waitForFinalizeSettled — the dial path waits for the previous call",
     vi.useRealTimers();
   });
 
-  it("names the call in dismissCallUI so native stops the service for that call only", async () => {
+  it("names the call in dismissCallUI and closeAllPeerConnections so native acts on that call only", async () => {
     const { finalizeCall } = await import("./finalize-call");
     await finalizeCall("hangup", "callId-named");
     expect(mockDismissCallUI).toHaveBeenCalledWith({ callId: "callId-named" });
+    expect(mockCloseAllPeerConnections).toHaveBeenCalledWith({ callId: "callId-named" });
   });
 
   it("resolves at once when nothing is finalizing", async () => {

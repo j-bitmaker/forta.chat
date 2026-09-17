@@ -86,8 +86,20 @@ object CallHangupSignal {
         val baseUrl = fields["baseUrl"].orEmpty().trimEnd('/')
         val accessToken = fields["accessToken"].orEmpty()
         if (listOf(callId, roomId, partyId, baseUrl, accessToken).any { it.isEmpty() }) return null
-        if (!baseUrl.startsWith("https://") && !baseUrl.startsWith("http://")) return null
+        if (!isAllowedBaseUrl(baseUrl)) return null
         return Target(callId, roomId, partyId, baseUrl, accessToken)
+    }
+
+    /**
+     * The request carries the bearer token, so plain HTTP is accepted only for
+     * a loopback dev homeserver; the Tor proxy is a separate loopback URL
+     * built in [torUrl], not a base URL.
+     */
+    fun isAllowedBaseUrl(baseUrl: String): Boolean {
+        if (baseUrl.startsWith("https://")) return true
+        if (!baseUrl.startsWith("http://")) return false
+        val host = baseUrl.removePrefix("http://").substringBefore('/').substringBefore(':')
+        return host == "127.0.0.1" || host == "localhost" || host == "10.0.2.2"
     }
 
     fun request(target: Target, txnId: String): Request = Request(

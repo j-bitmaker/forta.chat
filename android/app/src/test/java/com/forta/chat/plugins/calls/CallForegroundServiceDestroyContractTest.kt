@@ -316,6 +316,28 @@ class CallForegroundServiceDestroyContractTest {
     }
 
     @Test
+    fun theJsCloseOfAllPeerConnections_isSkippedForACallANewerStartReplaced() {
+        // Step 4 of the JS finalize; the only process-wide step that reached
+        // native without naming its call.
+        val body = Regex("fun\\s+closeAllPeerConnections\\s*\\(call: PluginCall\\)[^{]*\\{")
+            .find(webRtcPlugin)?.let { m ->
+                var depth = 1
+                var i = m.range.last + 1
+                val start = i
+                while (i < webRtcPlugin.length && depth > 0) {
+                    when (webRtcPlugin[i]) { '{' -> depth++; '}' -> depth-- }
+                    i++
+                }
+                webRtcPlugin.substring(start, i - 1)
+            } ?: error("WebRTCPlugin.closeAllPeerConnections not found")
+        val check = body.indexOf("CallForegroundService.isStartStale(callId)")
+        val close = body.indexOf("manager?.closeAllPeerConnections()")
+        assertTrue("closeAllPeerConnections must ask whether its call is stale:\n$body", check >= 0)
+        assertTrue("the check must come before the close:\n$body", check < close)
+        assertTrue("a stale close must return without closing:\n$body", body.contains("return"))
+    }
+
+    @Test
     fun everyStopNamesItsCall() {
         assertTrue(
             "launchCallUI must start the service under the call id:\n$webRtcPlugin",

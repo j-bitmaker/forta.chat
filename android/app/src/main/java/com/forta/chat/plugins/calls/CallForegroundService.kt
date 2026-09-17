@@ -120,6 +120,18 @@ class CallForegroundService : Service() {
             context.startService(intent)
         }
 
+        /**
+         * Whether a teardown step for [callId] belongs to a call that a newer
+         * [start] has since replaced. The JS finalize runs its process-wide
+         * steps one by one; a step that reaches native after the next call's
+         * launchCallUI must leave that call alone. An unnamed step, or one
+         * for a call no start recorded, is current, as before.
+         */
+        fun isStartStale(callId: String?): Boolean {
+            val current = startGeneration.get()
+            return CallServiceStopPolicy.isStale(startLedger.generationFor(callId, current), current)
+        }
+
         /** See [CallStartLedger.alias]: the Telecom slot's id stops the same start JS launched. */
         fun aliasCall(alias: String?, callId: String?) = startLedger.alias(alias, callId)
 
