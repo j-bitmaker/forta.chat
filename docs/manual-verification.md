@@ -689,206 +689,6 @@
        `CallSlotContractTest`.
 - Статус: ☐ шаг 1 проверен, шаг 2 — частично (нет строки `leaving it`)
 
-### Перезвон сразу после звонка доходит и звонит
-- Коммит: `d8a52a0d`
-- Почему нужен человек: то, что `finalizeCall` зовёт `retirePendingMarkers`
-  первым шагом, что гашение матчит и callId, и roomId, и что комната
-  передаётся только когда в ней нет другого живого звонка, закрыто
-  юнит-тестами
-  (`native-call-bridge.pending-marker.test.ts`, `finalize-call.test.ts`,
-  `PendingCallMarkerTest`, `PendingMarkerStampContractTest`). Не закрыто ничем:
-  что метод плагина реально доезжает до Kotlin через Capacitor, и что сквозные
-  сценарии на аппарате действительно чинятся.
-- На чём: реальный аппарат + второй собеседник (веб-клиент годится).
-- Шаги:
-  1. **Сторона отказа.** Позвонить и не отвечать, дать рингеру сработать на
-     30-й секунде (`no answer in 30s … auto-rejecting` -> `onReject`).
-     Перезвонить из той же комнаты через 10-15 секунд. Аппарат обязан
-     зазвонить: `onCreateIncomingConnection` с новым callId и
-     `IncomingRinger: arm`, без строки `[call-service] Pre-rejected incoming
-     call` — до фикса она была именно здесь.
-  2. **Сторона ответа.** Позвонить, снять трубку, поговорить пару секунд,
-     положить. Перезвонить из той же комнаты через 10-15 секунд. Аппарат
-     обязан **зазвонить**, а не снять трубку сам: в логе не должно быть
-     `[call-service] Pre-accepted incoming call, skipping ringer`. Это тот
-     самый симптом «я не снимал трубку — она сама снялась».
-  3. В обоих случаях в логе рядом с завершением видно
-     `NativeCall … retirePendingMarkers`.
-  4. **Известный остаток, чинить не в этой правке.** Если Telecom пришлёт
-     `onAnswer` повторно уже после того, как `finalizeCall` отработал для
-     этого callId, метка перезапишется, а повторный `finalizeCall` для того же
-     callId — no-op в течение 30 секунд, и гасить будет некому. Живёт до
-     истечения TTL метки, то есть не дольше минуты.
-  5. **Второй известный остаток, чинить не в этой правке.** Правило «в комнате
-     нет другого живого звонка» опирается на то, что JS узнал о новом звонке
-     раньше, чем завершился старый. Нативный экран может опередить: если
-     пользователь примет второй звонок до того, как JS о нём услышал, и ровно
-     тогда завершится первый, метка второго будет стёрта. Последствие мягче
-     исходных симптомов — телефон зазвонит повторно, а не снимет трубку сам.
-     Воспроизвести на стенде не удалось: нужен реальный стык Telecom и FCM.
-  7. **Проверено 2026-09-10** на Samsung SM-A528B, шаги 1-3 (лог
-     `scratchpad/runs/accept-race-144354.log`) — четыре звонка подряд **из
-     одной комнаты**, попеременно ответ и отказ, каждый следующий звонил сам:
-
-     ```
-     14:44:30.898 arm  …VrMIzeK7aqGX8i9X
-     14:45:00.705 onAnswer …VrMIzeK7aqGX8i9X          ← ответили
-     14:45:45.502 arm  …MvY7EdAW4s0uR7AL              ← перезвон ЗВОНИТ (шаг 2)
-     14:46:15.493 onAnswer …MvY7EdAW4s0uR7AL
-     14:47:02.469 arm  …H8ujNKvZge7F72SD
-     14:47:32.471 Decline pressed → onReject          ← авто-отказ на 30-й с
-     14:48:17.481 arm  …tYEweeg1Vl6fvMiw              ← перезвон ЗВОНИТ (шаг 1)
-     ```
-
-     Ни одной строки `Pre-accepted` / `Pre-rejected` во всём логе. Шаг 3 тоже
-     виден напрямую — метод действительно доезжает до Kotlin через Capacitor:
-     `To native (Capacitor plugin): pluginId: NativeCall, methodName:
-     retirePendingMarkers` с `methodData: {"callId":"…","roomId":"…"}` рядом с
-     каждым завершением. Поправка к шагу 1: авто-отказ пишет не `no answer in
-     30s`, а `Decline pressed` — это отсчёт `IncomingCallActivity`, который
-     зовёт `decline()`.
-  6. **Только на сборке из CI.** Повторить шаги 1-2 так, чтобы звонок пришёл
-     через push: приложение убито, экран заблокирован. Это отдельный путь —
-     соединение тогда ключуется event_id, и до правки гашение на нём было бы
-     инертным. Локальная отладочная сборка сюда не годится: в ней нет
-     `google-services.json`, а значит нет и FCM, и все локальные прогоны идут
-     через `/sync`, где идентификаторы совпадают.
-- Шаг 6 (перезвон по пушу) не проверен: прогон 2026-09-10
-  (`scratchpad/runs/push-redial-reject-*`, сборка `f83b30e7` с FCM) упёрся в
-  другой дефект. Первый звонок пришёл пушем в процесс, оставшийся от прошлого
-  push-звонка, чей рингер смахнули из «недавних». Система убила процесс через
-  14 мс после `Push received`: уведомление уже выставлено, а до
-  `IncomingCallActivity` и `addNewIncomingCall` дело не дошло, звонок не
-  зазвонил.
-  ```
-  21:32:57.974 D/FortaPush(21491): Push received: …
-  21:32:57.977 I/FortaPush(21491): Call invite: callId=1789065175857OSZU7xbKuVQkSyKg, …
-  21:32:57.981 I/NotificationManager(21491): com.forta.chat: notify(2075940556, forta_push, Notification(channel=incoming_call_v2 …
-  21:32:57.988 I/ActivityManager: Killing 21491:com.forta.chat/u0a294 (adj 905): remove task
-  21:32:58.013 W/ActivityManager: Scheduling restart of crashed service com.forta.chat/.FortaFirebaseMessagingService in 1000ms for start-requested
-  ```
-  Сервис поднялся в новом процессе, но сообщение повторно не пришло. Второй
-  звонок прогона попал уже в новый процесс, зазвонил и отклонился по 30-секундному
-  сроку — перезвон проверять было не на чем. Задач приложения в «недавних» в
-  момент убийства не было и никто их не удалял; похоже на отложенное системой
-  убийство за задачу рингера, смахнутую, пока процесс был занят звонком.
-  Воспроизведено повторно (`push-hangup2-*` → `kill-repro1-*`, скрипты
-  `run-push-hangup.sh` и `run-push-kill-repro.sh`): `Killing 25771 … remove
-  task` через 3 мс после `notify`, ни `onCreateIncomingConnection`, ни `arm`.
-  Починка — `33868ae2`, запись «Процесс со смахнутым звонком не съедает
-  следующий push-звонок».
-  Перепроверено 2026-09-14 на сборке `044f25f5` (`ph2` → `kr2`): процесс со
-  смахнутым рингером завершился сам через 3 с после `Ring timeout`, следующий
-  push-звонок поднял новый процесс и зазвонил (`onCreateIncoming=1 arm=1`).
-- Шаг 6 с заблокированным экраном проверен 2026-09-10 (UTC) на Samsung
-  SM-A528B (Android 14), сборка `f83b30e7` с FCM, звонящий — веб TEST1.
-  Скрипт `scratchpad/run-push-redial-lock.sh`, логи
-  `scratchpad/runs/push-redial-lock-{reject,answer}-*`. Приложение не
-  смахивается из «недавних» — это задевает дефект выше: Home и `am kill`,
-  процесс мёртв, телефон блокирует владелец. Оба звонка каждой пары пришли
-  пушем: A — в мёртвый процесс, B — в процесс, поднятый пушем A. Рингер
-  поднимался поверх блокировки.
-  - **Сторона отказа.** На 30-й секунде рингер сам отклонил A; B через 21 с
-    зазвонил:
-    ```
-    01:15:17.593 I/FortaPush: Call invite: callId=1789078516251WNPN7RSrv2KYhrzU, …
-    01:15:18.111 D/IncomingRinger: arm callId=1789078516251WNPN7RSrv2KYhrzU
-    01:15:48.112 W/IncomingRinger: no answer in 30s for 1789078516251WNPN7RSrv2KYhrzU — auto-rejecting
-    01:15:48.134 D/CallConnection: onReject: callId=1789078516251WNPN7RSrv2KYhrzU, roomId=!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app
-    01:15:54.360 I/Capacitor/Console: [call-service] Pre-rejected incoming call, calling reject(): 1789078516251WNPN7RSrv2KYhrzU
-    01:16:08.908 I/FortaPush: Call invite: callId=17890785682588A5chUn7rfzoyZeL, …
-    01:16:09.122 D/IncomingRinger: arm callId=17890785682588A5chUn7rfzoyZeL
-    ```
-    `Pre-rejected` назвал только A: JS после холодного старта отправил отказ
-    за A по его собственной метке. Для B — `arm`, ни `Pre-rejected`, ни
-    `Pre-accepted`, ни `onAnswer`; веб положил B примерно через 24 с.
-  - **Сторона ответа.** «Принять» на рингере A (`adb input tap`) при
-    заблокированном экране; веб положил A в 01:18:40; B через 13 с зазвонил,
-    а не ответился сам:
-    ```
-    01:18:03.506 D/IncomingRinger: arm callId=17890786812305IsmC4Ol2lkj2x57
-    01:18:13.642 D/CallConnection: onAnswer: callId=17890786812305IsmC4Ol2lkj2x57, roomId=!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app
-    01:18:19.824 I/Capacitor/Console: [call-service] Pre-accepted incoming call, skipping ringer: 17890786812305IsmC4Ol2lkj2x57
-    01:18:21.214 D/Capacitor/Console: sendEvent of type m.call.answer in !XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app …
-    01:18:40.679 I/CallTeardown: endCall reason=DISCONNECT callId=17890786812305IsmC4Ol2lkj2x57 …
-    01:18:53.975 I/FortaPush: Call invite: callId=1789078733276ij6MxAfkf1NqzpnM, …
-    01:18:54.192 D/IncomingRinger: arm callId=1789078733276ij6MxAfkf1NqzpnM
-    ```
-    `Pre-accepted` назвал только A — это его собственный ответ, доведённый
-    JS после холодного старта: от «Принять» до `m.call.answer` 7,6 с, у веба
-    `connected/stable`. Для B — `arm`, ни `onAnswer`, ни `Pre-accepted`; веб
-    положил B примерно через 24 с.
-  - Гашение меток видно на каждом завершении (`To native … pluginId:
-    NativeCall, methodName: retirePendingMarkers`).
-- Статус: ☑ шаги 1-3 проверены на реальном Samsung SM-A528B (Android 14,
-  WebView 151) 2026-09-09, звонящий — веб-клиент из той же комнаты, ответ на
-  входящий подан через `adb input tap`.
-  **Сторона ответа**, 21:17:46-21:18:20: `onCreateIncomingConnection` ->
-  `IncomingRinger: arm` -> `onAnswer` -> при завершении
-  `NativeCall.retirePendingMarkers {"callId":"1788977864809EhmZOJxf82ayh361",
-  "roomId":"!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app"}` -> перезвон через 13 с
-  дал `onCreateIncomingConnection` с новым callId и `arm`, строки
-  `Pre-accepted incoming call, skipping ringer` нет. Это тот самый симптом
-  «я не снимал трубку — она сама снялась».
-  **Сторона отказа**, 21:19:33-21:20:16: `arm` -> `no answer in 30s …
-  auto-rejecting` -> `onReject` -> `CallTeardown: endCall reason=REJECT …
-  audioMode=1 … actions=[]` -> `retirePendingMarkers` с той же парой ключей ->
-  перезвон через 12 с зазвонил, строки `Pre-rejected incoming call` нет.
-  В обоих прогонах `roomId` в запросе присутствует — правило «в комнате нет
-  другого живого звонка» разрешило широкий матч, а это ровно та ветка, без
-  которой гашение было бы инертным на push-пути.
-  Шаг 4 (остаток) ☐ не проверен. Push-шаг (6 в списке) проверен 2026-09-10
-  с заблокированным экраном на сборке `f83b30e7` с FCM — блок выше.
-
-### Возраст метки pendingAnswer/pendingReject доезжает до JS
-- Коммит: `e67f3863`
-- Почему нужен человек: политика сопоставления покрыта
-  `pending-call-marker.test.ts`, а прошивка стамп-сеттеров —
-  `PendingMarkerStampContractTest`. Не покрыто ничем: что `ret.put("atMs", Long)`
-  на JSObject доезжает в WebView числом, а не строкой, и что сквозной сценарий
-  действительно чинится на аппарате.
-- На чём: реальный аппарат + второй собеседник (веб-клиент годится).
-- Шаги:
-  1. Позвонить на аппарат и **не отвечать** — дать рингеру самому сработать на
-     30-й секунде. В логе должно быть
-     `IncomingRinger: no answer in 30s … — auto-rejecting` и `onReject`
-     (именно этот путь пишет метку; если звонящий положил трубку первым, будет
-     `reason=DISCONNECT` и метки не будет — тогда повторить).
-  2. Подождать больше минуты и позвонить снова из той же комнаты.
-  3. Аппарат обязан **зазвонить**: в логе есть `onCreateIncomingConnection`
-     с новым callId и `IncomingRinger: arm`. Строки
-     `[call-service] Pre-rejected incoming call` быть не должно.
-  4. Отдельно: сразу после шага 1 позвонить снова в пределах минуты — тут
-     старое поведение допустимо и звонок может быть отклонён по roomId; это
-     осознанный компромисс ради холодного старта из пуша.
-- Статус: ☑ шаги 1-3 проверены на реальном Samsung SM-A528B (Android 14,
-  WebView 151) 2026-09-09, звонящий — веб-клиент из той же комнаты.
-  Шаг 1, 19:11:26-19:11:57: `onCreateIncomingConnection callId=…VHB5Prgj7wvcs3uW`,
-  `IncomingRinger: arm`, затем `no answer in 30s … auto-rejecting` -> `onReject`
-  -> `CallTeardown: endCall reason=REJECT … audioMode=1 … actions=[]`. Живое
-  приложение при этом само отправило `m.call.reject` через
-  `[NativeCallBridge] Call declined`, так что метку никто не потребил — ровно
-  то состояние, из которого раньше ломался следующий звонок.
-  Шаги 2-3, 19:15:37 (метке 3 минуты, то есть больше TTL): `handleIncomingCall`
-  прошёл насквозь без строки `Pre-rejected incoming call`, дальше
-  `onCreateIncomingConnection callId=…tw7II5UU5wJ1O0sv` + `IncomingRinger: arm`
-  + `MODE_RINGTONE` — аппарат зазвонил. `atMs` доезжает до JS числом: иначе
-  сравнение возраста не сработало бы и звонок был бы отклонён по roomId.
-  Шаг 4 проверен там же, 19:20:29-19:21:12, и подтвердил компромисс в полный
-  рост: звонок А зазвонил и авто-сбросился в 19:20:59, перезвон через 13 секунд
-  дал `[call-service] Pre-rejected incoming call, calling reject():
-  …wZRHj3xutBX8VHfI` без `onCreateIncomingConnection` и без рингера. То есть
-  «не успел взять трубку, звонящий сразу перезвонил» = второй звонок молча не
-  доходит. Приложение при этом было живым и уже отправило `m.call.reject` само
-  через слушатель `callDeclined`, так что метка была чистым остатком.
-  Починено гашением обеих меток в `finalizeCall` — единственной точке, через
-  которую проходит любой путь завершения. Гасится по callId **или** roomId:
-  соединение, созданное из пуша, ключуется `data["call_id"] ?: data["event_id"]`,
-  а этот homeserver кладёт в `call_id` именно event_id, который с Matrix
-  callId не совпадает никогда — так что по одному callId гашение на push-пути
-  было бы полностью инертным, а push и есть основная поверхность звонка.
-  Проверка — в записи «Перезвон сразу после звонка доходит и звонит».
-
 ### Освобождение осиротевшего слота не рвёт звонок, который сняли параллельно
 - Коммит: `0acd1dae`
 - Почему нужен человек: гонку закрывает то, что проверка состояния и разрыв
@@ -1159,6 +959,206 @@
 ---
 
 ## Проверено
+
+### Перезвон сразу после звонка доходит и звонит
+- Коммит: `d8a52a0d`
+- Почему нужен человек: то, что `finalizeCall` зовёт `retirePendingMarkers`
+  первым шагом, что гашение матчит и callId, и roomId, и что комната
+  передаётся только когда в ней нет другого живого звонка, закрыто
+  юнит-тестами
+  (`native-call-bridge.pending-marker.test.ts`, `finalize-call.test.ts`,
+  `PendingCallMarkerTest`, `PendingMarkerStampContractTest`). Не закрыто ничем:
+  что метод плагина реально доезжает до Kotlin через Capacitor, и что сквозные
+  сценарии на аппарате действительно чинятся.
+- На чём: реальный аппарат + второй собеседник (веб-клиент годится).
+- Шаги:
+  1. **Сторона отказа.** Позвонить и не отвечать, дать рингеру сработать на
+     30-й секунде (`no answer in 30s … auto-rejecting` -> `onReject`).
+     Перезвонить из той же комнаты через 10-15 секунд. Аппарат обязан
+     зазвонить: `onCreateIncomingConnection` с новым callId и
+     `IncomingRinger: arm`, без строки `[call-service] Pre-rejected incoming
+     call` — до фикса она была именно здесь.
+  2. **Сторона ответа.** Позвонить, снять трубку, поговорить пару секунд,
+     положить. Перезвонить из той же комнаты через 10-15 секунд. Аппарат
+     обязан **зазвонить**, а не снять трубку сам: в логе не должно быть
+     `[call-service] Pre-accepted incoming call, skipping ringer`. Это тот
+     самый симптом «я не снимал трубку — она сама снялась».
+  3. В обоих случаях в логе рядом с завершением видно
+     `NativeCall … retirePendingMarkers`.
+  4. **Известный остаток, чинить не в этой правке.** Если Telecom пришлёт
+     `onAnswer` повторно уже после того, как `finalizeCall` отработал для
+     этого callId, метка перезапишется, а повторный `finalizeCall` для того же
+     callId — no-op в течение 30 секунд, и гасить будет некому. Живёт до
+     истечения TTL метки, то есть не дольше минуты.
+  5. **Второй известный остаток, чинить не в этой правке.** Правило «в комнате
+     нет другого живого звонка» опирается на то, что JS узнал о новом звонке
+     раньше, чем завершился старый. Нативный экран может опередить: если
+     пользователь примет второй звонок до того, как JS о нём услышал, и ровно
+     тогда завершится первый, метка второго будет стёрта. Последствие мягче
+     исходных симптомов — телефон зазвонит повторно, а не снимет трубку сам.
+     Воспроизвести на стенде не удалось: нужен реальный стык Telecom и FCM.
+  7. **Проверено 2026-09-10** на Samsung SM-A528B, шаги 1-3 (лог
+     `scratchpad/runs/accept-race-144354.log`) — четыре звонка подряд **из
+     одной комнаты**, попеременно ответ и отказ, каждый следующий звонил сам:
+
+     ```
+     14:44:30.898 arm  …VrMIzeK7aqGX8i9X
+     14:45:00.705 onAnswer …VrMIzeK7aqGX8i9X          ← ответили
+     14:45:45.502 arm  …MvY7EdAW4s0uR7AL              ← перезвон ЗВОНИТ (шаг 2)
+     14:46:15.493 onAnswer …MvY7EdAW4s0uR7AL
+     14:47:02.469 arm  …H8ujNKvZge7F72SD
+     14:47:32.471 Decline pressed → onReject          ← авто-отказ на 30-й с
+     14:48:17.481 arm  …tYEweeg1Vl6fvMiw              ← перезвон ЗВОНИТ (шаг 1)
+     ```
+
+     Ни одной строки `Pre-accepted` / `Pre-rejected` во всём логе. Шаг 3 тоже
+     виден напрямую — метод действительно доезжает до Kotlin через Capacitor:
+     `To native (Capacitor plugin): pluginId: NativeCall, methodName:
+     retirePendingMarkers` с `methodData: {"callId":"…","roomId":"…"}` рядом с
+     каждым завершением. Поправка к шагу 1: авто-отказ пишет не `no answer in
+     30s`, а `Decline pressed` — это отсчёт `IncomingCallActivity`, который
+     зовёт `decline()`.
+  6. **Только на сборке из CI.** Повторить шаги 1-2 так, чтобы звонок пришёл
+     через push: приложение убито, экран заблокирован. Это отдельный путь —
+     соединение тогда ключуется event_id, и до правки гашение на нём было бы
+     инертным. Локальная отладочная сборка сюда не годится: в ней нет
+     `google-services.json`, а значит нет и FCM, и все локальные прогоны идут
+     через `/sync`, где идентификаторы совпадают.
+- Шаг 6 (перезвон по пушу) не проверен: прогон 2026-09-10
+  (`scratchpad/runs/push-redial-reject-*`, сборка `f83b30e7` с FCM) упёрся в
+  другой дефект. Первый звонок пришёл пушем в процесс, оставшийся от прошлого
+  push-звонка, чей рингер смахнули из «недавних». Система убила процесс через
+  14 мс после `Push received`: уведомление уже выставлено, а до
+  `IncomingCallActivity` и `addNewIncomingCall` дело не дошло, звонок не
+  зазвонил.
+  ```
+  21:32:57.974 D/FortaPush(21491): Push received: …
+  21:32:57.977 I/FortaPush(21491): Call invite: callId=1789065175857OSZU7xbKuVQkSyKg, …
+  21:32:57.981 I/NotificationManager(21491): com.forta.chat: notify(2075940556, forta_push, Notification(channel=incoming_call_v2 …
+  21:32:57.988 I/ActivityManager: Killing 21491:com.forta.chat/u0a294 (adj 905): remove task
+  21:32:58.013 W/ActivityManager: Scheduling restart of crashed service com.forta.chat/.FortaFirebaseMessagingService in 1000ms for start-requested
+  ```
+  Сервис поднялся в новом процессе, но сообщение повторно не пришло. Второй
+  звонок прогона попал уже в новый процесс, зазвонил и отклонился по 30-секундному
+  сроку — перезвон проверять было не на чем. Задач приложения в «недавних» в
+  момент убийства не было и никто их не удалял; похоже на отложенное системой
+  убийство за задачу рингера, смахнутую, пока процесс был занят звонком.
+  Воспроизведено повторно (`push-hangup2-*` → `kill-repro1-*`, скрипты
+  `run-push-hangup.sh` и `run-push-kill-repro.sh`): `Killing 25771 … remove
+  task` через 3 мс после `notify`, ни `onCreateIncomingConnection`, ни `arm`.
+  Починка — `33868ae2`, запись «Процесс со смахнутым звонком не съедает
+  следующий push-звонок».
+  Перепроверено 2026-09-14 на сборке `044f25f5` (`ph2` → `kr2`): процесс со
+  смахнутым рингером завершился сам через 3 с после `Ring timeout`, следующий
+  push-звонок поднял новый процесс и зазвонил (`onCreateIncoming=1 arm=1`).
+- Шаг 6 с заблокированным экраном проверен 2026-09-10 (UTC) на Samsung
+  SM-A528B (Android 14), сборка `f83b30e7` с FCM, звонящий — веб TEST1.
+  Скрипт `scratchpad/run-push-redial-lock.sh`, логи
+  `scratchpad/runs/push-redial-lock-{reject,answer}-*`. Приложение не
+  смахивается из «недавних» — это задевает дефект выше: Home и `am kill`,
+  процесс мёртв, телефон блокирует владелец. Оба звонка каждой пары пришли
+  пушем: A — в мёртвый процесс, B — в процесс, поднятый пушем A. Рингер
+  поднимался поверх блокировки.
+  - **Сторона отказа.** На 30-й секунде рингер сам отклонил A; B через 21 с
+    зазвонил:
+    ```
+    01:15:17.593 I/FortaPush: Call invite: callId=1789078516251WNPN7RSrv2KYhrzU, …
+    01:15:18.111 D/IncomingRinger: arm callId=1789078516251WNPN7RSrv2KYhrzU
+    01:15:48.112 W/IncomingRinger: no answer in 30s for 1789078516251WNPN7RSrv2KYhrzU — auto-rejecting
+    01:15:48.134 D/CallConnection: onReject: callId=1789078516251WNPN7RSrv2KYhrzU, roomId=!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app
+    01:15:54.360 I/Capacitor/Console: [call-service] Pre-rejected incoming call, calling reject(): 1789078516251WNPN7RSrv2KYhrzU
+    01:16:08.908 I/FortaPush: Call invite: callId=17890785682588A5chUn7rfzoyZeL, …
+    01:16:09.122 D/IncomingRinger: arm callId=17890785682588A5chUn7rfzoyZeL
+    ```
+    `Pre-rejected` назвал только A: JS после холодного старта отправил отказ
+    за A по его собственной метке. Для B — `arm`, ни `Pre-rejected`, ни
+    `Pre-accepted`, ни `onAnswer`; веб положил B примерно через 24 с.
+  - **Сторона ответа.** «Принять» на рингере A (`adb input tap`) при
+    заблокированном экране; веб положил A в 01:18:40; B через 13 с зазвонил,
+    а не ответился сам:
+    ```
+    01:18:03.506 D/IncomingRinger: arm callId=17890786812305IsmC4Ol2lkj2x57
+    01:18:13.642 D/CallConnection: onAnswer: callId=17890786812305IsmC4Ol2lkj2x57, roomId=!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app
+    01:18:19.824 I/Capacitor/Console: [call-service] Pre-accepted incoming call, skipping ringer: 17890786812305IsmC4Ol2lkj2x57
+    01:18:21.214 D/Capacitor/Console: sendEvent of type m.call.answer in !XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app …
+    01:18:40.679 I/CallTeardown: endCall reason=DISCONNECT callId=17890786812305IsmC4Ol2lkj2x57 …
+    01:18:53.975 I/FortaPush: Call invite: callId=1789078733276ij6MxAfkf1NqzpnM, …
+    01:18:54.192 D/IncomingRinger: arm callId=1789078733276ij6MxAfkf1NqzpnM
+    ```
+    `Pre-accepted` назвал только A — это его собственный ответ, доведённый
+    JS после холодного старта: от «Принять» до `m.call.answer` 7,6 с, у веба
+    `connected/stable`. Для B — `arm`, ни `onAnswer`, ни `Pre-accepted`; веб
+    положил B примерно через 24 с.
+  - Гашение меток видно на каждом завершении (`To native … pluginId:
+    NativeCall, methodName: retirePendingMarkers`).
+- Статус: ☑ шаги 1-3 проверены на реальном Samsung SM-A528B (Android 14,
+  WebView 151) 2026-09-09, звонящий — веб-клиент из той же комнаты, ответ на
+  входящий подан через `adb input tap`.
+  **Сторона ответа**, 21:17:46-21:18:20: `onCreateIncomingConnection` ->
+  `IncomingRinger: arm` -> `onAnswer` -> при завершении
+  `NativeCall.retirePendingMarkers {"callId":"1788977864809EhmZOJxf82ayh361",
+  "roomId":"!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app"}` -> перезвон через 13 с
+  дал `onCreateIncomingConnection` с новым callId и `arm`, строки
+  `Pre-accepted incoming call, skipping ringer` нет. Это тот самый симптом
+  «я не снимал трубку — она сама снялась».
+  **Сторона отказа**, 21:19:33-21:20:16: `arm` -> `no answer in 30s …
+  auto-rejecting` -> `onReject` -> `CallTeardown: endCall reason=REJECT …
+  audioMode=1 … actions=[]` -> `retirePendingMarkers` с той же парой ключей ->
+  перезвон через 12 с зазвонил, строки `Pre-rejected incoming call` нет.
+  В обоих прогонах `roomId` в запросе присутствует — правило «в комнате нет
+  другого живого звонка» разрешило широкий матч, а это ровно та ветка, без
+  которой гашение было бы инертным на push-пути.
+  Шаг 4 (остаток) ☐ не проверен. Push-шаг (6 в списке) проверен 2026-09-10
+  с заблокированным экраном на сборке `f83b30e7` с FCM — блок выше.
+
+### Возраст метки pendingAnswer/pendingReject доезжает до JS
+- Коммит: `e67f3863`
+- Почему нужен человек: политика сопоставления покрыта
+  `pending-call-marker.test.ts`, а прошивка стамп-сеттеров —
+  `PendingMarkerStampContractTest`. Не покрыто ничем: что `ret.put("atMs", Long)`
+  на JSObject доезжает в WebView числом, а не строкой, и что сквозной сценарий
+  действительно чинится на аппарате.
+- На чём: реальный аппарат + второй собеседник (веб-клиент годится).
+- Шаги:
+  1. Позвонить на аппарат и **не отвечать** — дать рингеру самому сработать на
+     30-й секунде. В логе должно быть
+     `IncomingRinger: no answer in 30s … — auto-rejecting` и `onReject`
+     (именно этот путь пишет метку; если звонящий положил трубку первым, будет
+     `reason=DISCONNECT` и метки не будет — тогда повторить).
+  2. Подождать больше минуты и позвонить снова из той же комнаты.
+  3. Аппарат обязан **зазвонить**: в логе есть `onCreateIncomingConnection`
+     с новым callId и `IncomingRinger: arm`. Строки
+     `[call-service] Pre-rejected incoming call` быть не должно.
+  4. Отдельно: сразу после шага 1 позвонить снова в пределах минуты — тут
+     старое поведение допустимо и звонок может быть отклонён по roomId; это
+     осознанный компромисс ради холодного старта из пуша.
+- Статус: ☑ шаги 1-3 проверены на реальном Samsung SM-A528B (Android 14,
+  WebView 151) 2026-09-09, звонящий — веб-клиент из той же комнаты.
+  Шаг 1, 19:11:26-19:11:57: `onCreateIncomingConnection callId=…VHB5Prgj7wvcs3uW`,
+  `IncomingRinger: arm`, затем `no answer in 30s … auto-rejecting` -> `onReject`
+  -> `CallTeardown: endCall reason=REJECT … audioMode=1 … actions=[]`. Живое
+  приложение при этом само отправило `m.call.reject` через
+  `[NativeCallBridge] Call declined`, так что метку никто не потребил — ровно
+  то состояние, из которого раньше ломался следующий звонок.
+  Шаги 2-3, 19:15:37 (метке 3 минуты, то есть больше TTL): `handleIncomingCall`
+  прошёл насквозь без строки `Pre-rejected incoming call`, дальше
+  `onCreateIncomingConnection callId=…tw7II5UU5wJ1O0sv` + `IncomingRinger: arm`
+  + `MODE_RINGTONE` — аппарат зазвонил. `atMs` доезжает до JS числом: иначе
+  сравнение возраста не сработало бы и звонок был бы отклонён по roomId.
+  Шаг 4 проверен там же, 19:20:29-19:21:12, и подтвердил компромисс в полный
+  рост: звонок А зазвонил и авто-сбросился в 19:20:59, перезвон через 13 секунд
+  дал `[call-service] Pre-rejected incoming call, calling reject():
+  …wZRHj3xutBX8VHfI` без `onCreateIncomingConnection` и без рингера. То есть
+  «не успел взять трубку, звонящий сразу перезвонил» = второй звонок молча не
+  доходит. Приложение при этом было живым и уже отправило `m.call.reject` само
+  через слушатель `callDeclined`, так что метка была чистым остатком.
+  Починено гашением обеих меток в `finalizeCall` — единственной точке, через
+  которую проходит любой путь завершения. Гасится по callId **или** roomId:
+  соединение, созданное из пуша, ключуется `data["call_id"] ?: data["event_id"]`,
+  а этот homeserver кладёт в `call_id` именно event_id, который с Matrix
+  callId не совпадает никогда — так что по одному callId гашение на push-пути
+  было бы полностью инертным, а push и есть основная поверхность звонка.
+  Проверка — в записи «Перезвон сразу после звонка доходит и звонит».
 
 ### Одна камера на исходящий видеозвонок
 - Коммит: 4c23a27b
