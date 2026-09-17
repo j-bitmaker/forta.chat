@@ -206,163 +206,6 @@
      режима и маршрутизации записаны.
 - Статус: ☐ не проверено
 
-### Аудиорежим сбрасывается без JS-финализации: убитый процесс, FCM-hangup, серия звонков
-- Коммит: `07dd6ee8`
-- Почему нужен человек: юнит-тесты доказывают, что каждый нативный хук завершения
-  зовёт `CallTeardown.endCall`, а политика выдаёт нужные действия; androidTest —
-  что `forceStop` возвращает `MODE_NORMAL` на эмуляторе. Не доказано: что
-  OEM-прошивка (Samsung) не переустанавливает режим после нашего сброса, что после
-  смерти процесса во время ринга не остаётся `MODE_RINGTONE`, и путь FCM-hangup
-  при убитом процессе — push на эмуляторе нет. На эмуляторе подтверждено: штатное
-  завершение → `actions=[]`; `kill -9` во время набора → новый процесс на
-  cold-start увидел `audioMode=3` и открытый маркер и сделал
-  `forceStop(teardown COLD_START)` через 1,1 с после смерти процесса; `kill -9`
-  во время ринга → MODE_RINGTONE сброшен системой через 3 с, ничего не висит.
-- На чём: Samsung и Pixel, CI-сборка (push). Шаги и логи — F25 в
-  `docs/call-fix-checklist.md`.
-- Шаги:
-  1. Серия из 10 звонков Samsung↔Pixel: положил я / положил собеседник / не
-     ответил 45 с / отклонил / смахнул из недавних во время разговора. После
-     каждого через 30 с `adb shell dumpsys audio | grep -A3 "Audio mode"` →
-     `MODE_NORMAL`.
-  2. FCM-hangup при убитом процессе: на Pixel во время ринга смахнуть приложение
-     из недавних, на Samsung положить трубку. В `adb logcat -s CallTeardown` на
-     Pixel — `endCall reason=REMOTE_HANGUP`; через 30 с режим `MODE_NORMAL`.
-  3. Cold-start: убить процесс Pixel во время разговора, открыть приложение —
-     в логе `endCall reason=COLD_START … sessionMarkerOpen=true`; режим
-     `MODE_NORMAL`.
-  4. Redial сразу после завершения: у второго звонка есть звук в обе стороны.
-- Измерено 2026-09-10 на Samsung SM-A528B (Android 14) ↔ веб TEST1, Wi-Fi,
-  сборка `87e8dd1b`. Вместо Pixel — веб, поэтому шаг 2 (FCM) и половина Pixel
-  не проверены. Логи `scratchpad/runs/amode-*` и `amode2-*`, скрипты
-  `scratchpad/run-audio-reset.sh` и `run-audio-reset2.sh`.
-- Шаг 1: 12 звонков, по два на каждый способ завершения. Через 30 с после
-  каждого — `MODE_NORMAL`, все 12 раз:
-
-  | как закончился | `endCall` на Samsung | `audioMode` |
-  |----------------|----------------------|-------------|
-  | положил я | `DISCONNECT` | 3 |
-  | положил собеседник (веб через 8 с) | `DISCONNECT` | 3 |
-  | Samsung звонит, веб не отвечает | `DISCONNECT` после `onRejectReceived()` | 3 |
-  | веб звонит, Samsung не отвечает | `REJECT`, затем `DISCONNECT` | 1 |
-  | отклонил | `REJECT` | 1 |
-  | смахнул из недавних в разговоре | `DISCONNECT` | 3 |
-
-  Без ответа звонок кончается на 30-й секунде, а не на 45-й: исходящий
-  отклоняет рингер веба, входящий — `IncomingRinger` («no answer in 30s …
-  auto-rejecting» → `REJECT`). Во втором входящем JS-таймер сработал на
-  ~130 мс раньше (`[call-service] rejectCall` → `m.call.reject`), и натив
-  закрыл экран как «Remote hangup» → `DISCONNECT`. Смахивание:
-  ```
-  19:28:13.787 CallConnectionService: Task removed while a connection was live — disconnecting 1789057672080M4rGBvM3I4aDSrQI
-  19:28:13.788 CallTeardown: endCall reason=DISCONNECT callId=1789057672080M4rGBvM3I4aDSrQI State(audioMode=3, …)
-  19:28:46.146 CallTeardown: endCall reason=COLD_START callId=null State(audioMode=0, … sessionMarkerOpen=false …) actions=[]
-  ```
-  Ещё 3 попытки второго круга не в счёт: после смахивания приложение
-  открылось на списке чатов, скрипт не нашёл кнопку звонка, и звонков не было.
-- Шаг 3, `kill -9` в принятом входящем разговоре:
-  ```
-  19:41:55.652 Telecom: ServiceDeathRecipient: binderDied: ConnectionService …CallConnectionService died.
-  19:41:55.652 AS.AudioService: SetModeDeathHandler client died
-  19:41:55.655 Telecom: TC@119: SET_DISCONNECTED … Reason: (CS_DEATH)
-  19:41:55.667 ActivityManager: Scheduling restart of crashed service com.forta.chat/.plugins.calls.CallConnectionService in 1000ms for connection
-  19:41:56.707 CallTeardown(19991): endCall reason=COLD_START callId=null State(audioMode=0, otherCallLive=false, foregroundServiceRunning=false, routerActive=false, sessionMarkerOpen=true, ringingCallId=null) actions=[]
-  ```
-  Через 30 с — `MODE_NORMAL`. Строка из шага есть, но режим на Samsung
-  сбросила система: Telecom разорвал звонок по смерти сервиса, `AudioService`
-  снял режим умершего клиента. Новый процесс поднялся как перезапуск упавшего
-  `CallConnectionService`, ещё до ручного открытия, и увидел `audioMode=0` —
-  сбрасывать было нечего. Ветку `forceStop`, которую эмулятор отработал при
-  `audioMode=3`, этот аппарат не проверил.
-- Шаг 4 закрывает серия перезвонов из записи «Разговор переживает завершение
-  предыдущего звонка» (сборка `01fedeed`): 19 из 20 звонков соединились через
-  1,6–2,2 с после `endCall` прошлого, в каждом звук шёл в обе стороны;
-  двадцатый потерян в задержке сервера.
-- Шаг 2 (FCM-hangup) — измерено 2026-09-10 на Samsung SM-A528B ↔ веб TEST1,
-  сборка `f83b30e7` с `google-services.json` (лог `scratchpad/runs/push-hangup-*`,
-  скрипт `run-push-hangup.sh`). Приложение смахнуто до звонка, звонок пришёл
-  пушем, рингер смахнут во время звонка, веб положил трубку через 25 с после
-  набора. **Сам путь шага не отработал: пуш о hangup до телефона не дошёл.**
-  Веб отправил `m.call.hangup` в 21:26:05.450 по часам телефона, а
-  `FortaPush: Push received` — строка, которую сервис пишет на любой пуш, — за
-  прогон одна: invite в 21:25:43.210. Во всех семи push-прогонах этого дня
-  (`push-*`) пуш приходил ровно один — invite, и в обоих прогонах с ответом
-  (`push-accept-home*`), где веб клал трубку сам, пуша о hangup тоже не было.
-  Вероятная причина — правила пушей homeserver не уведомляют о `m.call.hangup`
-  (стандартные правила Matrix звонят только на `m.call.invite`); не проверено.
-  Что было вместо: рингер смолк при смахивании (`IncomingRinger stop` в
-  21:25:51.759), а соединение Telecom оставалось в RINGING до 45-секундной
-  страховки — `Ring timeout` → `onReject` в 21:26:28.339,
-  `endCall reason=REJECT` при `audioMode=1`. Через 30 с — `MODE_NORMAL`.
-- Шаг 2, проверка гипотезы о правилах пушей — 2026-09-14 (время по часам телефона)
-  на Samsung SM-A528B ↔ веб `test23438111`, сборка `044f25f5` с FCM, с разрешения
-  владельца. На аккаунте телефона `Testtest11223344` временно добавлено правило
-  `underride/com.forta.call.hangup`: `event_match type=m.call.hangup → notify`
-  (скрипт `scratchpad/web/push-rule.mjs`). Прогон `run-push-hangup.sh pr2`, логи
-  `scratchpad/runs/pr2-*`. **С правилом пуш о hangup дошёл, и нативная ветка
-  отработала:**
-  ```
-  20:38:39.345 I/FortaPush: Call invite: callId=1789407517969taSfG5y4YVmGH9tF, …
-  20:39:02.795 D/FortaPush: Call ended remotely (type=m.call.hangup), tearing down incoming UI
-  20:39:02.802 I/CallTeardown: endCall reason=DISCONNECT callId=1789407517969taSfG5y4YVmGH9tF State(audioMode=1, …)
-  20:39:05.860 I/IdleProcessExit: Call over and nothing left to present — ending the process (disconnect 1789407517969taSfG5y4YVmGH9tF)
-  ```
-  - Рингер закрылся через 7 мс после пуша. В прогоне `pr1` за 4 минуты до этого
-    правило ещё не было добавлено (первая попытка не нашла токен): пуша о hangup
-    не было, соединение закрыла 45-секундная страховка (`Ring timeout`).
-  - Соединение принадлежало слоту, поэтому teardown пошёл через его
-    `onDisconnect` (`reason=DISCONNECT`), а не через
-    `CallTeardown.endCall(REMOTE_HANGUP)`. Через 30 с — `MODE_NORMAL`.
-  - Побочный эффект: `GET /_matrix/client/v3/notifications` показывает этот
-    hangup как уведомление с `read=false`, то есть он попадает в серверный
-    счётчик непрочитанного.
-  - Правило удалено сразу после прогона (`DELETE` → 200, повторный `GET` → 404).
-- Шаг 2, счётчик непрочитанного при правиле — 2026-09-15, 01:03–01:08 по часам
-  телефона, та же модель и сборка, веб TEST1 (`test3823818`), приложение открыто на
-  списке чатов. Скрипт `scratchpad/run-hangup-counter.sh`, логи
-  `scratchpad/runs/hcount-norule-*` и `hcount-rule-*`. Бейдж чата с TEST1 — это
-  серверный `getUnreadNotificationCount("total")`. Он читался из `aria-label`
-  строки списка и из хранилища чатов, значения совпали во всех замерах.
-
-  | Звонок от TEST1 | Без правила | С правилом |
-  |---|---|---|
-  | Пропущенный, TEST1 кладёт трубку через ~10 с | 0 → 1 | 2 → 4 |
-  | Принятый, TEST1 кладёт трубку | 1 → 2 | 4 → 6 |
-
-  - С правилом hangup-пуш дошёл в обоих звонках (`Call ended remotely`). У
-    принятого звонка соединение закрылось через 2 мс после пуша, `MODE_NORMAL`
-    вернулся. У пропущенного JS закрыл звонок на 50 мс раньше пуша, и пуш повторно
-    вызвал `endCall reason=REMOTE_HANGUP` для уже закрытого звонка; видимых
-    последствий нет.
-  - `/notifications` за эти 20 минут: 4 invite и 2 hangup, все `notify`,
-    `read=false`.
-  - Вывод: правило добавляет +1 к бейджу за каждый звонок, завершённый
-    собеседником. Пропущенный звонок показывает «2» при одной записи в чате.
-    Правило действует на весь аккаунт, поэтому то же увидят другие клиенты.
-    Правило снова удалено (`DELETE` → 200, `GET` → 404). Ставить ли его из
-    приложения — решение владельца.
-  - Правило для `m.call.select_answer` ставить нельзя. Вызывающий шлёт это событие
-    на каждый принятый звонок, а нативная ветка `FortaFirebaseMessagingService`
-    на него закрывает соединение того же callId, так что принятый звонок
-    оборвётся. Вывод сделан по коду SDK и приложения, на аппарате не проверялся.
-- Шаг 2 на сборке `822c9220` — 2026-09-15, 18:25 по часам телефона, без владельца. Правило
-  hangup-пушей поставило само приложение (`8dff0a4b`). Samsung SM-A528B ↔ веб TEST1, скрипт
-  `scratchpad/run-push-hangup.sh`, логи `scratchpad/runs/ph3-*`.
-  - Процесс убит до звонка, invite пришёл пушем, рингер смахнут во время звонка. Процесс,
-    поднятый пушем, смахивание пережил.
-  - Веб положил трубку через 25 с после набора. Пуш о hangup дошёл, соединение закрылось через
-    2 мс:
-    ```
-    18:25:55.707 D/FortaPush: Call ended remotely (type=m.call.hangup), tearing down incoming UI
-    18:25:55.709 D/CallConnection: onDisconnect: 1789485930890aBK8GF8RJvIJ0JXk
-    18:25:55.733 I/CallTeardown: endCall reason=DISCONNECT callId=1789485930890aBK8GF8RJvIJ0JXk State(audioMode=1, otherCallLive=false, …)
-    ```
-  - Как и в `pr2`, teardown прошёл через `onDisconnect` соединения, поэтому в логе
-    `reason=DISCONNECT`, а не `REMOTE_HANGUP` из текста шага. Через 30 с — `MODE_NORMAL`,
-    процесс завершился сам.
-- Статус: ☐ на Samsung ↔ веб шаги 1–4 прошли (шаг 2 — `pr2` и `ph3`, строка teardown —
-  `DISCONNECT`); Pixel не проверен, ветку `forceStop` при `audioMode=3` аппарат не задел
-
 ### Ответ из шторки и с экрана блокировки переживает 30-ю секунду
 - Коммит: `d606afdc`
 - Почему нужен человек: контракт-тесты доказывают, что рингтон/вибрация/дедлайн
@@ -1251,6 +1094,200 @@
 ---
 
 ## Проверено
+
+### Аудиорежим сбрасывается без JS-финализации: убитый процесс, FCM-hangup, серия звонков
+- Коммит: `07dd6ee8`
+- Почему нужен человек: юнит-тесты доказывают, что каждый нативный хук завершения
+  зовёт `CallTeardown.endCall`, а политика выдаёт нужные действия; androidTest —
+  что `forceStop` возвращает `MODE_NORMAL` на эмуляторе. Не доказано: что
+  OEM-прошивка (Samsung) не переустанавливает режим после нашего сброса, что после
+  смерти процесса во время ринга не остаётся `MODE_RINGTONE`, и путь FCM-hangup
+  при убитом процессе — push на эмуляторе нет. На эмуляторе подтверждено: штатное
+  завершение → `actions=[]`; `kill -9` во время набора → новый процесс на
+  cold-start увидел `audioMode=3` и открытый маркер и сделал
+  `forceStop(teardown COLD_START)` через 1,1 с после смерти процесса; `kill -9`
+  во время ринга → MODE_RINGTONE сброшен системой через 3 с, ничего не висит.
+- На чём: Samsung и Pixel, CI-сборка (push). Шаги и логи — F25 в
+  `docs/call-fix-checklist.md`.
+- Шаги:
+  1. Серия из 10 звонков Samsung↔Pixel: положил я / положил собеседник / не
+     ответил 45 с / отклонил / смахнул из недавних во время разговора. После
+     каждого через 30 с `adb shell dumpsys audio | grep -A3 "Audio mode"` →
+     `MODE_NORMAL`.
+  2. FCM-hangup при убитом процессе: на Pixel во время ринга смахнуть приложение
+     из недавних, на Samsung положить трубку. В `adb logcat -s CallTeardown` на
+     Pixel — `endCall reason=REMOTE_HANGUP`; через 30 с режим `MODE_NORMAL`.
+  3. Cold-start: убить процесс Pixel во время разговора, открыть приложение —
+     в логе `endCall reason=COLD_START … sessionMarkerOpen=true`; режим
+     `MODE_NORMAL`.
+  4. Redial сразу после завершения: у второго звонка есть звук в обе стороны.
+- Измерено 2026-09-10 на Samsung SM-A528B (Android 14) ↔ веб TEST1, Wi-Fi,
+  сборка `87e8dd1b`. Вместо Pixel — веб, поэтому шаг 2 (FCM) и половина Pixel
+  не проверены. Логи `scratchpad/runs/amode-*` и `amode2-*`, скрипты
+  `scratchpad/run-audio-reset.sh` и `run-audio-reset2.sh`.
+- Шаг 1: 12 звонков, по два на каждый способ завершения. Через 30 с после
+  каждого — `MODE_NORMAL`, все 12 раз:
+
+  | как закончился | `endCall` на Samsung | `audioMode` |
+  |----------------|----------------------|-------------|
+  | положил я | `DISCONNECT` | 3 |
+  | положил собеседник (веб через 8 с) | `DISCONNECT` | 3 |
+  | Samsung звонит, веб не отвечает | `DISCONNECT` после `onRejectReceived()` | 3 |
+  | веб звонит, Samsung не отвечает | `REJECT`, затем `DISCONNECT` | 1 |
+  | отклонил | `REJECT` | 1 |
+  | смахнул из недавних в разговоре | `DISCONNECT` | 3 |
+
+  Без ответа звонок кончается на 30-й секунде, а не на 45-й: исходящий
+  отклоняет рингер веба, входящий — `IncomingRinger` («no answer in 30s …
+  auto-rejecting» → `REJECT`). Во втором входящем JS-таймер сработал на
+  ~130 мс раньше (`[call-service] rejectCall` → `m.call.reject`), и натив
+  закрыл экран как «Remote hangup» → `DISCONNECT`. Смахивание:
+  ```
+  19:28:13.787 CallConnectionService: Task removed while a connection was live — disconnecting 1789057672080M4rGBvM3I4aDSrQI
+  19:28:13.788 CallTeardown: endCall reason=DISCONNECT callId=1789057672080M4rGBvM3I4aDSrQI State(audioMode=3, …)
+  19:28:46.146 CallTeardown: endCall reason=COLD_START callId=null State(audioMode=0, … sessionMarkerOpen=false …) actions=[]
+  ```
+  Ещё 3 попытки второго круга не в счёт: после смахивания приложение
+  открылось на списке чатов, скрипт не нашёл кнопку звонка, и звонков не было.
+- Шаг 3, `kill -9` в принятом входящем разговоре:
+  ```
+  19:41:55.652 Telecom: ServiceDeathRecipient: binderDied: ConnectionService …CallConnectionService died.
+  19:41:55.652 AS.AudioService: SetModeDeathHandler client died
+  19:41:55.655 Telecom: TC@119: SET_DISCONNECTED … Reason: (CS_DEATH)
+  19:41:55.667 ActivityManager: Scheduling restart of crashed service com.forta.chat/.plugins.calls.CallConnectionService in 1000ms for connection
+  19:41:56.707 CallTeardown(19991): endCall reason=COLD_START callId=null State(audioMode=0, otherCallLive=false, foregroundServiceRunning=false, routerActive=false, sessionMarkerOpen=true, ringingCallId=null) actions=[]
+  ```
+  Через 30 с — `MODE_NORMAL`. Строка из шага есть, но режим на Samsung
+  сбросила система: Telecom разорвал звонок по смерти сервиса, `AudioService`
+  снял режим умершего клиента. Новый процесс поднялся как перезапуск упавшего
+  `CallConnectionService`, ещё до ручного открытия, и увидел `audioMode=0` —
+  сбрасывать было нечего. Ветку `forceStop`, которую эмулятор отработал при
+  `audioMode=3`, этот аппарат не проверил.
+- Шаг 4 закрывает серия перезвонов из записи «Разговор переживает завершение
+  предыдущего звонка» (сборка `01fedeed`): 19 из 20 звонков соединились через
+  1,6–2,2 с после `endCall` прошлого, в каждом звук шёл в обе стороны;
+  двадцатый потерян в задержке сервера.
+- Шаг 2 (FCM-hangup) — измерено 2026-09-10 на Samsung SM-A528B ↔ веб TEST1,
+  сборка `f83b30e7` с `google-services.json` (лог `scratchpad/runs/push-hangup-*`,
+  скрипт `run-push-hangup.sh`). Приложение смахнуто до звонка, звонок пришёл
+  пушем, рингер смахнут во время звонка, веб положил трубку через 25 с после
+  набора. **Сам путь шага не отработал: пуш о hangup до телефона не дошёл.**
+  Веб отправил `m.call.hangup` в 21:26:05.450 по часам телефона, а
+  `FortaPush: Push received` — строка, которую сервис пишет на любой пуш, — за
+  прогон одна: invite в 21:25:43.210. Во всех семи push-прогонах этого дня
+  (`push-*`) пуш приходил ровно один — invite, и в обоих прогонах с ответом
+  (`push-accept-home*`), где веб клал трубку сам, пуша о hangup тоже не было.
+  Вероятная причина — правила пушей homeserver не уведомляют о `m.call.hangup`
+  (стандартные правила Matrix звонят только на `m.call.invite`); не проверено.
+  Что было вместо: рингер смолк при смахивании (`IncomingRinger stop` в
+  21:25:51.759), а соединение Telecom оставалось в RINGING до 45-секундной
+  страховки — `Ring timeout` → `onReject` в 21:26:28.339,
+  `endCall reason=REJECT` при `audioMode=1`. Через 30 с — `MODE_NORMAL`.
+- Шаг 2, проверка гипотезы о правилах пушей — 2026-09-14 (время по часам телефона)
+  на Samsung SM-A528B ↔ веб `test23438111`, сборка `044f25f5` с FCM, с разрешения
+  владельца. На аккаунте телефона `Testtest11223344` временно добавлено правило
+  `underride/com.forta.call.hangup`: `event_match type=m.call.hangup → notify`
+  (скрипт `scratchpad/web/push-rule.mjs`). Прогон `run-push-hangup.sh pr2`, логи
+  `scratchpad/runs/pr2-*`. **С правилом пуш о hangup дошёл, и нативная ветка
+  отработала:**
+  ```
+  20:38:39.345 I/FortaPush: Call invite: callId=1789407517969taSfG5y4YVmGH9tF, …
+  20:39:02.795 D/FortaPush: Call ended remotely (type=m.call.hangup), tearing down incoming UI
+  20:39:02.802 I/CallTeardown: endCall reason=DISCONNECT callId=1789407517969taSfG5y4YVmGH9tF State(audioMode=1, …)
+  20:39:05.860 I/IdleProcessExit: Call over and nothing left to present — ending the process (disconnect 1789407517969taSfG5y4YVmGH9tF)
+  ```
+  - Рингер закрылся через 7 мс после пуша. В прогоне `pr1` за 4 минуты до этого
+    правило ещё не было добавлено (первая попытка не нашла токен): пуша о hangup
+    не было, соединение закрыла 45-секундная страховка (`Ring timeout`).
+  - Соединение принадлежало слоту, поэтому teardown пошёл через его
+    `onDisconnect` (`reason=DISCONNECT`), а не через
+    `CallTeardown.endCall(REMOTE_HANGUP)`. Через 30 с — `MODE_NORMAL`.
+  - Побочный эффект: `GET /_matrix/client/v3/notifications` показывает этот
+    hangup как уведомление с `read=false`, то есть он попадает в серверный
+    счётчик непрочитанного.
+  - Правило удалено сразу после прогона (`DELETE` → 200, повторный `GET` → 404).
+- Шаг 2, счётчик непрочитанного при правиле — 2026-09-15, 01:03–01:08 по часам
+  телефона, та же модель и сборка, веб TEST1 (`test3823818`), приложение открыто на
+  списке чатов. Скрипт `scratchpad/run-hangup-counter.sh`, логи
+  `scratchpad/runs/hcount-norule-*` и `hcount-rule-*`. Бейдж чата с TEST1 — это
+  серверный `getUnreadNotificationCount("total")`. Он читался из `aria-label`
+  строки списка и из хранилища чатов, значения совпали во всех замерах.
+
+  | Звонок от TEST1 | Без правила | С правилом |
+  |---|---|---|
+  | Пропущенный, TEST1 кладёт трубку через ~10 с | 0 → 1 | 2 → 4 |
+  | Принятый, TEST1 кладёт трубку | 1 → 2 | 4 → 6 |
+
+  - С правилом hangup-пуш дошёл в обоих звонках (`Call ended remotely`). У
+    принятого звонка соединение закрылось через 2 мс после пуша, `MODE_NORMAL`
+    вернулся. У пропущенного JS закрыл звонок на 50 мс раньше пуша, и пуш повторно
+    вызвал `endCall reason=REMOTE_HANGUP` для уже закрытого звонка; видимых
+    последствий нет.
+  - `/notifications` за эти 20 минут: 4 invite и 2 hangup, все `notify`,
+    `read=false`.
+  - Вывод: правило добавляет +1 к бейджу за каждый звонок, завершённый
+    собеседником. Пропущенный звонок показывает «2» при одной записи в чате.
+    Правило действует на весь аккаунт, поэтому то же увидят другие клиенты.
+    Правило снова удалено (`DELETE` → 200, `GET` → 404). Ставить ли его из
+    приложения — решение владельца.
+  - Правило для `m.call.select_answer` ставить нельзя. Вызывающий шлёт это событие
+    на каждый принятый звонок, а нативная ветка `FortaFirebaseMessagingService`
+    на него закрывает соединение того же callId, так что принятый звонок
+    оборвётся. Вывод сделан по коду SDK и приложения, на аппарате не проверялся.
+- Шаг 2 на сборке `822c9220` — 2026-09-15, 18:25 по часам телефона, без владельца. Правило
+  hangup-пушей поставило само приложение (`8dff0a4b`). Samsung SM-A528B ↔ веб TEST1, скрипт
+  `scratchpad/run-push-hangup.sh`, логи `scratchpad/runs/ph3-*`.
+  - Процесс убит до звонка, invite пришёл пушем, рингер смахнут во время звонка. Процесс,
+    поднятый пушем, смахивание пережил.
+  - Веб положил трубку через 25 с после набора. Пуш о hangup дошёл, соединение закрылось через
+    2 мс:
+    ```
+    18:25:55.707 D/FortaPush: Call ended remotely (type=m.call.hangup), tearing down incoming UI
+    18:25:55.709 D/CallConnection: onDisconnect: 1789485930890aBK8GF8RJvIJ0JXk
+    18:25:55.733 I/CallTeardown: endCall reason=DISCONNECT callId=1789485930890aBK8GF8RJvIJ0JXk State(audioMode=1, otherCallLive=false, …)
+    ```
+  - Как и в `pr2`, teardown прошёл через `onDisconnect` соединения, поэтому в логе
+    `reason=DISCONNECT`, а не `REMOTE_HANGUP` из текста шага. Через 30 с — `MODE_NORMAL`,
+    процесс завершился сам.
+- Измерено 2026-09-17 без владельца: Samsung SM-A528B (Android 14) ↔ Pixel 9 (Android 17), оба по Wi-Fi, APK
+  `ee6e99a3` на обоих, у Pixel аккаунт `test1122334455667788`. Пуши на обоих приходят. Скрипт
+  `scratchpad/run-pair-amode.sh`, логи `scratchpad/runs/pamode2-*` (шаги 1 и 3, два круга) и `pamode3-*` (шаг 2, два
+  круга). Время по часам телефонов.
+  - Шаг 1 прошёл: 12 звонков, по два на каждый способ завершения. Через 30 с после каждого — `MODE_NORMAL` на обоих
+    телефонах, все 12 раз:
+
+    | как закончился | `endCall` на Samsung | `endCall` на Pixel |
+    |---|---|---|
+    | Pixel звонит, Samsung отвечает, Pixel кладёт трубку | `DISCONNECT`, режим 3 | `DISCONNECT`, режим 3 |
+    | Samsung звонит, Pixel отвечает, Samsung кладёт трубку | `DISCONNECT`, 3 | `DISCONNECT`, 3 |
+    | Pixel звонит, Samsung не отвечает | `REJECT` на 30-й с, 1 | `DISCONNECT` после `onRejectReceived()`, 3 |
+    | Samsung звонит, Pixel не отвечает | `DISCONNECT`, 3 | `REJECT` на 30-й с, 1 |
+    | Pixel отклоняет | `DISCONNECT`, 3 | `REJECT`, 1 |
+    | Pixel смахнут из недавних в разговоре | `DISCONNECT` через 29 с | `DISCONNECT` сразу (`Task removed while a connection was live`) |
+
+  - Шаг 3 прошёл, и на Pixel отработала ветка, которую Samsung не задел. После `kill -9` процесса Pixel в разговоре
+    Telecom разорвал звонок (`CS_DEATH`), но режим система не сняла. Новый процесс поднялся через 0,7–0,8 с, увидел
+    `audioMode=3` и сбросил его сам, в обоих кругах:
+    ```
+    18:13:32.083 Telecom: ServiceDeathRecipient: binderDied: ConnectionService …CallConnectionService died
+    18:13:32.874 CallTeardown: endCall reason=COLD_START callId=… State(audioMode=3, … sessionMarkerOpen=true, ringingCallId=null) actions=[FORCE_STOP_ROUTER]
+    18:13:32.881 AudioLifecycle: forceStop(teardown COLD_START) complete
+    ```
+    Через 2 с после этого — `MODE_NORMAL`, через 30 с — тоже.
+  - Шаг 2 прошёл, в двух вариантах по два раза: Forta смахнута из недавних, пока Pixel звонит, и процесс Pixel убит,
+    пока Pixel звонит. Через 6–9 с Samsung отменял звонок кнопкой на экране вызова. Во всех четырёх пуш о hangup дошёл,
+    соединение на Pixel закрылось через 1,0–1,6 с после отмены. Через 30 с на обоих `MODE_NORMAL`:
+    ```
+    18:26:28.664 FortaPush: Call ended remotely (type=m.call.hangup), tearing down incoming UI
+    18:26:28.669 CallTeardown: endCall reason=DISCONNECT callId=… State(audioMode=1, …) actions=[]
+    ```
+    После `kill -9` звонок не теряется: новый процесс через 5–6 с снова ставит рингер (`handleIncomingCall` →
+    `reportIncomingCall` → `IncomingRinger arm`). Как и в `pr2`/`ph3`, строка teardown — `DISCONNECT`.
+  - Замечено, не дефект этой записи: собеседник узнаёт о смахивании или смерти процесса только по обрыву соединения.
+    Pixel после смахивания и после `kill -9` не отправляет `m.call.hangup` — JS уже нет. Samsung оставался в беззвучном
+    звонке 29 с после смахивания и 35 с после `kill -9` (оба круга), потом звонок закрывал сторож соединения.
+- Статус: ☑ шаги 1–4 проверены: Samsung ↔ веб 2026-09-10 и 2026-09-15, Samsung ↔ Pixel 2026-09-17 (шаги 1–3, ветка
+  `forceStop` при `audioMode=3` — на Pixel)
 
 ### Видео собеседника в веб-версии занимает весь экран
 - Коммит: `a549d635`
