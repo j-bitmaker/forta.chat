@@ -58,7 +58,7 @@ const SIGNALING_STATE_MAP: Record<string, RTCSignalingState> = {
  * the async gap before the native onSignalingStateChange event lands.
  * The native event (see _handleSignalingStateChange) still runs afterwards
  * as the authoritative correction for anything this local computation
- * can't foresee, such as an implicit rollback from a glare collision.
+ * can't foresee.
  */
 function nextSignalingState(isLocal: boolean, type: RTCSdpType): RTCSignalingState {
   if (type === "rollback") return "stable";
@@ -153,6 +153,14 @@ class NativeRTCPeerConnection extends EventTarget {
   // Local candidates gathered so far. The native SDP carries none, and the SDK drops its queued
   // candidates when it sends an offer or answer, expecting them in localDescription as in a browser.
   private _localCandidates: RTCIceCandidateInit[] = [];
+  // The local description of the last completed exchange, put back when our offer is rolled back.
+  private _stableLocalDescription: RTCSessionDescription | null = null;
+  // A setLocalDescription on its way to native, so a peer's offer sees the state it leaves behind.
+  private _applyingLocal: Promise<void> | null = null;
+  // A peer's offer being applied: a second one waits for it before deciding whether to roll back.
+  private _applyingRemoteOffer: Promise<void> | null = null;
+  // Set from rolling our offer back until the peer's offer is applied: a restart offer must not go out in between.
+  private _holdRestartOffer = false;
   private _remoteDescription: RTCSessionDescription | null = null;
 
   // Callback-style event handlers (SDK uses these)
@@ -467,20 +475,58 @@ class NativeRTCPeerConnection extends EventTarget {
     desc: RTCSessionDescriptionInit
   ): Promise<void> {
     await this._waitReady();
-    console.log("[NativeRTCProxy] setLocalDescription:", desc.type, "peerId:", this._peerId);
-    await NativeWebRTC.setLocalDescription({
-      peerId: this._peerId,
-      sdp: desc.sdp ?? "",
-      type: desc.type ?? "offer",
-    });
-    this._localDescription = new RTCSessionDescription(desc);
-    this._applySignalingState(nextSignalingState(true, (desc.type ?? "offer") as RTCSdpType));
+    const applying = (async () => {
+      console.log("[NativeRTCProxy] setLocalDescription:", desc.type, "peerId:", this._peerId);
+      await NativeWebRTC.setLocalDescription({
+        peerId: this._peerId,
+        sdp: desc.sdp ?? "",
+        type: desc.type ?? "offer",
+      });
+      this._localDescription = new RTCSessionDescription(desc);
+      if (desc.type === "answer") this._stableLocalDescription = this._localDescription;
+      this._applySignalingState(nextSignalingState(true, (desc.type ?? "offer") as RTCSdpType));
+    })();
+    this._applyingLocal = applying;
+    try {
+      await applying;
+    } finally {
+      if (this._applyingLocal === applying) this._applyingLocal = null;
+    }
   }
 
   async setRemoteDescription(
     desc: RTCSessionDescriptionInit
   ): Promise<void> {
     await this._waitReady();
+    if (desc.type !== "offer") {
+      await this._applyRemoteDescription(desc);
+      return;
+    }
+    if (this._applyingLocal) await this._applyingLocal.catch(() => {});
+    while (this._applyingRemoteOffer) await this._applyingRemoteOffer.catch(() => {});
+    const applying = (async () => {
+      const rollBack = this._signalingState === "have-local-offer";
+      if (rollBack) this._holdRestartOffer = true;
+      try {
+        if (rollBack) await this._rollbackLocalOffer();
+        await this._applyRemoteDescription(desc);
+      } finally {
+        if (rollBack) {
+          this._holdRestartOffer = false;
+          // Answering the offer brings stable again; if applying it failed we are stable already.
+          if (this._iceRestartOfferPending) queueMicrotask(() => this._requestIceRestartOffer());
+        }
+      }
+    })();
+    this._applyingRemoteOffer = applying;
+    try {
+      await applying;
+    } finally {
+      if (this._applyingRemoteOffer === applying) this._applyingRemoteOffer = null;
+    }
+  }
+
+  private async _applyRemoteDescription(desc: RTCSessionDescriptionInit): Promise<void> {
     console.log("[NativeRTCProxy] setRemoteDescription:", desc.type, "peerId:", this._peerId);
     await NativeWebRTC.setRemoteDescription({
       peerId: this._peerId,
@@ -488,7 +534,20 @@ class NativeRTCPeerConnection extends EventTarget {
       type: desc.type ?? "answer",
     });
     this._remoteDescription = new RTCSessionDescription(desc);
+    if (desc.type === "answer") this._stableLocalDescription = this._localDescription;
     this._applySignalingState(nextSignalingState(false, (desc.type ?? "answer") as RTCSdpType));
+  }
+
+  /**
+   * A browser rolls its own offer back when the peer's offer arrives (the polite side of a glare). libwebrtc's
+   * native API does not: the offer failed with "Called in wrong state: have-local-offer", the impolite peer had
+   * already ignored ours, and both ends stayed in have-local-offer, so neither ICE restart ever completed.
+   */
+  private async _rollbackLocalOffer(): Promise<void> {
+    console.log("[NativeRTCProxy] setRemoteDescription: rolling back our offer for the peer's offer");
+    await NativeWebRTC.setLocalDescription({ peerId: this._peerId, sdp: "", type: "rollback" });
+    this._localDescription = this._stableLocalDescription;
+    this._applySignalingState("stable");
   }
 
   async addIceCandidate(
@@ -655,7 +714,7 @@ class NativeRTCPeerConnection extends EventTarget {
    * every call; the offer goes out when the network is back.
    */
   private _requestIceRestartOffer(): void {
-    if (!this._iceRestartOfferPending || this._closed || this._signalingState !== "stable") return;
+    if (!this._iceRestartOfferPending || this._closed || this._signalingState !== "stable" || this._holdRestartOffer) return;
     if (!this._iceEverConnected) {
       this._iceRestartOfferPending = false;
       console.log("[NativeRTCProxy] restartIce: no restart offer, ICE has not connected yet");
@@ -773,7 +832,9 @@ class NativeRTCPeerConnection extends EventTarget {
     this._fireEvent(new Event("signalingstatechange"));
     // Outside the SDK's own signalingstatechange handling, which may still be
     // finishing the exchange that just became stable.
-    if (state === "stable" && this._iceRestartOfferPending) queueMicrotask(() => this._requestIceRestartOffer());
+    if (state === "stable" && this._iceRestartOfferPending && !this._holdRestartOffer) {
+      queueMicrotask(() => this._requestIceRestartOffer());
+    }
   }
 
   /**
@@ -782,9 +843,7 @@ class NativeRTCPeerConnection extends EventTarget {
    * perfect-negotiation code (matrix-js-sdk-bastyon call.ts) assumes it is
    * reading from a spec-compliant RTCPeerConnection. This is the final
    * word on the state; it corrects whatever the optimistic local
-   * transition in setLocalDescription/setRemoteDescription computed
-   * (e.g. an implicit rollback from a glare collision that only
-   * libwebrtc's internal state machine could know about).
+   * transition in setLocalDescription/setRemoteDescription computed.
    */
   private _handleSignalingStateChange(state: string): void {
     const mapped = SIGNALING_STATE_MAP[state];

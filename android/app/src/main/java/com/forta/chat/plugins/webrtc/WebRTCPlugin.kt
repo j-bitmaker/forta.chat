@@ -296,13 +296,7 @@ class WebRTCPlugin : Plugin() {
             call.reject("Missing sdp")
             return
         }
-        val typeStr = call.getString("type") ?: "offer"
-        val type = when (typeStr) {
-            "offer" -> SessionDescription.Type.OFFER
-            "answer" -> SessionDescription.Type.ANSWER
-            "pranswer" -> SessionDescription.Type.PRANSWER
-            else -> SessionDescription.Type.OFFER
-        }
+        val type = SdpTypes.parse(call.getString("type"), SessionDescription.Type.OFFER)
         val sdp = SessionDescription(type, sdpStr)
 
         manager?.setLocalDescription(peerId, sdp) { success ->
@@ -320,13 +314,7 @@ class WebRTCPlugin : Plugin() {
             call.reject("Missing sdp")
             return
         }
-        val typeStr = call.getString("type") ?: "answer"
-        val type = when (typeStr) {
-            "offer" -> SessionDescription.Type.OFFER
-            "answer" -> SessionDescription.Type.ANSWER
-            "pranswer" -> SessionDescription.Type.PRANSWER
-            else -> SessionDescription.Type.ANSWER
-        }
+        val type = SdpTypes.parse(call.getString("type"), SessionDescription.Type.ANSWER)
         val sdp = SessionDescription(type, sdpStr)
 
         manager?.setRemoteDescription(peerId, sdp) { success ->
