@@ -66,6 +66,12 @@ export class MatrixClientService {
   // recreate). Serializes the two writers of `this.client` so a watchdog
   // failover can't race a concurrent boot-retry init() for ownership.
   private building = false;
+  // A timed-out connectMatrixWithRetry attempt keeps running, and its slow login
+  // used to start a second syncing client next to the retry's. Each init() and
+  // each client build takes a number; only the newest one may install a client
+  // or touch ready/error.
+  private initGeneration = 0;
+  private clientBuildGeneration = 0;
   // Exponential backoff state for retrying the SAME host on a sync ERROR,
   // replacing the old tight retryImmediately() loop (WEE-105 H2).
   private errorRetryAttempt = 0;
@@ -191,6 +197,7 @@ export class MatrixClientService {
   /** Main login/register + start client flow */
   async getClient(): Promise<MatrixClient | null> {
     if (!this.credentials) throw new Error("No credentials set");
+    const build = ++this.clientBuildGeneration;
 
     const opts: Record<string, unknown> = {
       baseUrl: this.baseUrl,
@@ -244,6 +251,11 @@ export class MatrixClientService {
       } catch (regErr) {
         throw regErr;
       }
+    }
+
+    if (build !== this.clientBuildGeneration) {
+      console.warn("[matrix] a newer client build started while this login was waiting, dropping it");
+      return null;
     }
 
     // Persist the device_id so the next login reuses the same device.
@@ -301,6 +313,16 @@ export class MatrixClientService {
       console.error("Matrix IndexedDB startup error:", e);
     }
 
+    if (build !== this.clientBuildGeneration) {
+      console.warn("[matrix] a newer client build started during store startup, dropping this one");
+      return null;
+    }
+    // Replacing a client that is still running (a late success of an attempt the
+    // auth store already gave up on) must not leave it syncing next to this one.
+    if (this.client && this.client !== userClient) {
+      console.warn("[matrix] stopping the previous client before starting a new one");
+      this.stopClientOnly();
+    }
     this.client = userClient;
     this.initEvents();
 
@@ -397,6 +419,14 @@ export class MatrixClientService {
       lazyLoadMembers: false,
       ...(syncFilter ? { filter: syncFilter } : {}),
     });
+
+    if (build !== this.clientBuildGeneration) {
+      console.warn("[matrix] a newer client build started while this client was starting, stopping it");
+      try { userClient.removeAllListeners(); } catch { /* ignore */ }
+      try { userClient.stopClient(); } catch { /* ignore */ }
+      if (this.client === userClient) this.client = null;
+      return null;
+    }
 
     // Cold-start-from-push race fix:
     //
@@ -867,6 +897,7 @@ export class MatrixClientService {
 
   /** Full init: create client + init db */
   async init(): Promise<void> {
+    const attempt = ++this.initGeneration;
     // Reset transient failure state from any previous attempt. Without this,
     // `isReady()` would stay `false` on a successful retry because it ANDs
     // `ready` with `!error`, and a stale error from attempt N would mask a
@@ -886,16 +917,26 @@ export class MatrixClientService {
         }
       }
       this.ensureWatchdog();
-      this.client = await this.getClient();
+      const buildBefore = this.clientBuildGeneration;
+      const client = await this.getClient();
+      // A newer init() (the retry of this timed-out attempt) owns the service state.
+      if (attempt !== this.initGeneration) return;
+      // A failover or recovery build overtook this one and owns `client`.
+      if (!client && this.clientBuildGeneration !== buildBefore + 1) return;
+      this.client = client;
       if (this.client) {
         this.store = this.client.store;
         this.ready = true;
       }
     } catch (e) {
+      if (attempt !== this.initGeneration) {
+        console.warn("[matrix] superseded init attempt failed:", e);
+        return;
+      }
       console.error("Matrix init error:", e);
       this.error = String(e);
     } finally {
-      this.building = false;
+      if (attempt === this.initGeneration) this.building = false;
     }
 
     // Init file storage
