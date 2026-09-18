@@ -35,6 +35,24 @@ class ReportIncomingCancelledContractTest {
         assertTrue("…before registering the call with Telecom:\n$body", checked < registered)
     }
 
+    /**
+     * A reject on this device — the user's decline or the ring timeout — ends the
+     * call just as a remote hangup does. Found on the Samsung 2026-09-18
+     * (`dualb6`, Forta frozen in the background, the call answered in Bastyon):
+     * the ring timed out, then the page read the invite push and the phone rang a
+     * second time. The reject must land in [CancelledCallStore] before the JS path
+     * can report the call again.
+     */
+    @Test
+    fun onReject_marksTheCallCancelled() {
+        val connection = source("com/forta/chat/plugins/calls/CallConnectionService.kt")
+        val body = withoutComments(functionBody(connection, "override\\s+fun\\s+onReject\\s*\\("))
+        val released = body.indexOf("released.compareAndSet(false, true)")
+        val marked = body.indexOf("CancelledCallStore(context).markCancelled(callId)")
+        assertTrue("onReject must mark the call cancelled:\n$body", marked >= 0)
+        assertTrue("…once, after the released latch:\n$body", released in 0 until marked)
+    }
+
     private fun withoutComments(body: String): String =
         body.lines().joinToString("\n") { line ->
             val at = line.indexOf("//")

@@ -974,6 +974,14 @@ class CallConnection(
         setDisconnected(DisconnectCause(DisconnectCause.REJECTED))
         destroy()
         CallConnectionService.dismissIncomingCallNotification(context)
+        // A reject here ends the call as surely as a remote hangup: an invite push
+        // the frozen page reads afterwards must not ring it again (`dualb6`, the
+        // ring timed out and the phone rang a second time). reportIncomingCall and
+        // the push path both consult the store.
+        if (callId.isNotEmpty()) {
+            runCatching { CancelledCallStore(context).markCancelled(callId) }
+                .onFailure { Log.w("CallConnection", "could not mark $callId cancelled", it) }
+        }
         // Wipe any stale accept markers so a late-arriving MatrixCall
         // for this room can't trigger the JS fast-path to auto-answer.
         clearPendingFor(callId, roomId)
