@@ -338,6 +338,24 @@ class CallForegroundServiceDestroyContractTest {
     }
 
     @Test
+    fun aStaleDismiss_leavesTheNewCallsScreenUp() {
+        // redial5, 2026-09-18: a finalize delayed past the next call's
+        // launchCallUI had its stop ignored and its PeerConnection close skipped,
+        // but still closed that call's CallActivity.
+        val start = webRtcPlugin.indexOf("fun dismissCallUI(")
+        val body = webRtcPlugin.substring(start, webRtcPlugin.indexOf("@PluginMethod", start))
+        val guarded = Regex(
+            "if\\s*\\([^)]*CallForegroundService\\.isStartStale\\(callId\\)\\)\\s*\\{[^}]*\\}\\s*else\\s*\\{\\s*" +
+                "[\\w.]*CallActivity\\.onCallEnded\\?\\.invoke\\(\\)",
+        )
+        assertTrue("the screen close must sit behind the staleness check:\n$body", guarded.containsMatchIn(body))
+        assertTrue(
+            "the keyed stop must still run for a stale dismiss, so the ledger sees it:\n$body",
+            body.indexOf("CallForegroundService.stop(context, callId)") > body.indexOf("isStartStale(callId)"),
+        )
+    }
+
+    @Test
     fun everyStopNamesItsCall() {
         assertTrue(
             "launchCallUI must start the service under the call id:\n$webRtcPlugin",

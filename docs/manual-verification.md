@@ -24,42 +24,6 @@
 
 ## Ожидают проверки
 
-### Поздний stop прошлого звонка не гасит следующий
-- Коммит: `706e8f96`
-- Почему нужен человек: порядок доставки intent'ов сервису и отложенный `onDestroy` —
-  решения ОС. Тесты (`CallStartLedgerTest`, `CallForegroundServiceDestroyContractTest`,
-  `finalize-call.test.ts`, `call-service.test.ts`) доказывают правило и проводку, а не
-  поведение сервиса на аппарате. Прежняя защита по поколению ловила только stop,
-  *отправленный* до следующего start; в реальной гонке finalize прошлого звонка ещё идёт
-  по нативным шагам, когда JS уже сделал `launchCallUI` для нового, и stop прошлого,
-  выданный после, совпадал с текущим поколением и гасил новый звонок. Теперь stop
-  называет свой звонок и выдаётся против поколения его собственного start; глобальный
-  teardown `onDestroy`/`onTaskRemoved` и worker `closeAllPeerConnections` пропускаются,
-  если start следующего звонка уже выдан; набор ждёт незавершённый finalize до 2 с.
-  Telecom-слот push-звонка носит `$event_id`, а не Matrix-id, под которым JS запустил
-  сервис: при `reportCallConnected` этот id алиасится на Matrix-id, чтобы stop из
-  `onDisconnect` слота тоже был против поколения своего звонка. Коммитом `e24045ae`
-  (`closeAllPeerConnections({ callId })`) ключуется и шаг 4 finalize: натив пропускает
-  закрытие PeerConnection для звонка, который уже сменил более новый `launchCallUI`,
-  так что finalize, доживший до нового звонка (после 2-секундного ожидания набора или
-  на пути ответа на входящий), не закрывает его соединение.
-- На чём: Samsung SM-A528B ↔ веб TEST1, серия перезвонов как в записи «Разговор
-  переживает завершение предыдущего звонка» (`scratchpad/run-redial.sh`).
-- Шаги:
-  1. 10 циклов: Samsung кладёт трубку, веб перезванивает через 0,3–0,8 с после
-     `endCall` — раньше прежних 1,6–2,2 с, чтобы finalize прошлого звонка ещё шёл.
-  2. У каждого второго звонка звук в обе стороны и уведомление звонка на месте.
-     В `adb logcat -s CallForegroundService`: для перезвона нет `Service stopped`
-     до его завершения; ожидаются `ACTION_STOP for start generation N ignored` и/или
-     `media release from onDestroy skipped — a newer call started`.
-  3. В логе WebView нет `[call-service] previous call still finalizing` при живой
-     странице: finalize укладывается в 2 с.
-  4. Ответ на входящий сразу после завершения предыдущего: веб кладёт трубку и в
-     течение 1 с звонит снова, Samsung отвечает как можно быстрее. У второго звонка
-     звук и видео в обе стороны; в `adb logcat -s WebRTCPlugin` либо нет
-     `closeAllPeerConnections … skipped`, либо есть, и звонок при этом жив.
-- Статус: ☐ не проверено
-
 ### Разговор переживает завершение предыдущего звонка
 - Коммит: `00ddc636`
 - Почему нужен человек: проверяется гонка жизненного цикла сервиса — ОС решает,
@@ -745,6 +709,68 @@
 ---
 
 ## Проверено
+
+### Поздний stop прошлого звонка не гасит следующий
+- Коммит: `706e8f96`
+- Почему нужен человек: порядок доставки intent'ов сервису и отложенный `onDestroy` —
+  решения ОС. Тесты (`CallStartLedgerTest`, `CallForegroundServiceDestroyContractTest`,
+  `finalize-call.test.ts`, `call-service.test.ts`) доказывают правило и проводку, а не
+  поведение сервиса на аппарате. Прежняя защита по поколению ловила только stop,
+  *отправленный* до следующего start; в реальной гонке finalize прошлого звонка ещё идёт
+  по нативным шагам, когда JS уже сделал `launchCallUI` для нового, и stop прошлого,
+  выданный после, совпадал с текущим поколением и гасил новый звонок. Теперь stop
+  называет свой звонок и выдаётся против поколения его собственного start; глобальный
+  teardown `onDestroy`/`onTaskRemoved` и worker `closeAllPeerConnections` пропускаются,
+  если start следующего звонка уже выдан; набор ждёт незавершённый finalize до 2 с.
+  Telecom-слот push-звонка носит `$event_id`, а не Matrix-id, под которым JS запустил
+  сервис: при `reportCallConnected` этот id алиасится на Matrix-id, чтобы stop из
+  `onDisconnect` слота тоже был против поколения своего звонка. Коммитом `e24045ae`
+  (`closeAllPeerConnections({ callId })`) ключуется и шаг 4 finalize: натив пропускает
+  закрытие PeerConnection для звонка, который уже сменил более новый `launchCallUI`,
+  так что finalize, доживший до нового звонка (после 2-секундного ожидания набора или
+  на пути ответа на входящий), не закрывает его соединение.
+- На чём: Samsung SM-A528B ↔ веб TEST1, серия перезвонов как в записи «Разговор
+  переживает завершение предыдущего звонка» (`scratchpad/run-redial.sh`).
+- Шаги:
+  1. 10 циклов: Samsung кладёт трубку, веб перезванивает через 0,3–0,8 с после
+     `endCall` — раньше прежних 1,6–2,2 с, чтобы finalize прошлого звонка ещё шёл.
+  2. У каждого второго звонка звук в обе стороны и уведомление звонка на месте.
+     В `adb logcat -s CallForegroundService`: для перезвона нет `Service stopped`
+     до его завершения; ожидаются `ACTION_STOP for start generation N ignored` и/или
+     `media release from onDestroy skipped — a newer call started`.
+  3. В логе WebView нет `[call-service] previous call still finalizing` при живой
+     странице: finalize укладывается в 2 с.
+  4. Ответ на входящий сразу после завершения предыдущего: веб кладёт трубку и в
+     течение 1 с звонит снова, Samsung отвечает как можно быстрее. У второго звонка
+     звук и видео в обе стороны; в `adb logcat -s WebRTCPlugin` либо нет
+     `closeAllPeerConnections … skipped`, либо есть, и звонок при этом жив.
+- Измерено 2026-09-18 на Samsung SM-A528B ↔ веб TEST1 (экран держит `stay_on_while_plugged_in`, он уже был включён;
+  скрипты `scratchpad/run-redial.sh` + `web/redial.mjs`):
+  - `redial2`, шаг 1, 10 циклов, трубку кладёт Samsung, веб перезванивает сразу, как видит конец звонка: 10 из 10
+    соединились, звук в обе стороны. Быстрее не получается: приглашение доходит через 1,8–2,0 с после `endCall`, а
+    finalize прошлого звонка к этому времени закончен (`Service stopped` +0,8 с). Строк защиты нет — гонки нет.
+  - `redial4`, шаг 4, 10 циклов, трубку кладёт веб и перезванивает через 0,3 с: приглашение у JS через +1,2 с после
+    `endCall`, ответ +3,0 с, `launchCallUI` +3,9 с; finalize прошлого — +0,7…1,1 с. 10 из 10, звук в обе стороны,
+    `previous call still finalizing` нет (шаг 3). На живой странице гонка на этом телефоне недостижима.
+  - `redial5`, гонка внедрена: по CDP `dismissCallUI` задержан на 6 с (обёртка `Capacitor.nativePromise`, снята после
+    прогона), так что шаги 3–4 finalize прошлого звонка приходят после `launchCallUI` следующего:
+    ```
+    19:44:08.589 To native: NativeWebRTC launchCallUI                     ← звонок B
+    19:44:10.791 To native: NativeWebRTC dismissCallUI {"callId":"…jIMFmdFL6uTER3ph"}   ← finalize звонка A
+    19:44:10.804 W/CallForegroundService: ACTION_STOP for start generation 37 ignored — a newer call started (generation 38)
+    19:44:10.817 W/WebRTCPlugin: closeAllPeerConnections for …jIMFmdFL6uTER3ph skipped — a newer call started
+    ```
+    Сервис и соединение звонка B уцелели — починка `706e8f96`/`e24045ae` работает на аппарате. **Найден остаток:** тот
+    же поздний `dismissCallUI` закрыл экран звонка B (`CallActivity … f}` в 19:44:10.797, сверху `MainActivity` при
+    живом разговоре) — закрытие экрана не было привязано к звонку. Починено `PENDING_HASH`: `dismissCallUI` для звонка,
+    который сменил более новый `launchCallUI`, экран не трогает
+    (`CallForegroundServiceDestroyContractTest.aStaleDismiss_leavesTheNewCallsScreenUp`).
+  - `redial6`, та же внедрённая гонка на сборке с починкой, 5 циклов: в каждом перезвоне
+    `dismissCallUI for <A>: screen left up — a newer call started`, `ACTION_STOP … ignored`,
+    `closeAllPeerConnections … skipped`; через 5 с после соединения сверху `CallActivity`, звук в обе стороны
+    (`aIn` до 22 КБ, `aOut` ~24 КБ за 9 с), после серии `MainActivity`, `MODE_NORMAL`.
+- Статус: ☑ проверено 2026-09-18 (`redial2`, `redial4` — без гонки; `redial5`, `redial6` — с внедрённой гонкой)
+
 
 ### Forta перестаёт звонить, когда на звонок ответили на другом устройстве (#809 п. 2)
 - Коммит: `eca48624`

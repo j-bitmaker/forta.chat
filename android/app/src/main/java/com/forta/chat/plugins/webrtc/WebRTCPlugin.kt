@@ -495,7 +495,15 @@ class WebRTCPlugin : Plugin() {
     @PluginMethod
     fun dismissCallUI(call: PluginCall) {
         val callId = call.getString("callId")
-        com.forta.chat.plugins.calls.CallActivity.onCallEnded?.invoke()
+        // The call screen is process-wide like the service: a finalize that
+        // reaches native after the next call's launchCallUI must not close that
+        // call's screen (`redial5`, 2026-09-18: the conversation went on with
+        // MainActivity on top and no call controls).
+        if (com.forta.chat.plugins.calls.CallForegroundService.isStartStale(callId)) {
+            Log.w(TAG, "dismissCallUI for $callId: screen left up — a newer call started")
+        } else {
+            com.forta.chat.plugins.calls.CallActivity.onCallEnded?.invoke()
+        }
         com.forta.chat.plugins.calls.CallForegroundService.stop(context, callId)
         call.resolve()
     }
