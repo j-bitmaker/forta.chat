@@ -9,8 +9,8 @@
  * clients, the iOS badge set by the push gateway and the account switcher still
  * count them.
  *
- * Never add `m.call.select_answer` here: the native push handler treats it like a
- * hangup and would drop every call the phone answers.
+ * `m.call.select_answer` has a rule of its own (`call-select-answer-push-rule.ts`):
+ * it is dated apart from this one, and the native handler must tell it from a hangup.
  */
 export const CALL_HANGUP_PUSH_RULE_ID = 'com.forta.call.hangup';
 export const CALL_HANGUP_PUSH_RULE_KIND = 'underride';
@@ -33,14 +33,18 @@ interface PushRuleLike {
   enabled?: boolean;
 }
 
-/** The rule among [rules] as `GET /pushrules/` returns them, enabled or not. */
-export function findCallHangupPushRule(rules: unknown): PushRuleLike | undefined {
+/** The underride rule [ruleId] among [rules] as `GET /pushrules/` returns them, enabled or not. */
+export function findUnderridePushRule(rules: unknown, ruleId: string): PushRuleLike | undefined {
   const underride = (rules as { global?: { underride?: unknown } } | null | undefined)?.global?.underride;
   if (!Array.isArray(underride)) return undefined;
-  return (underride as Array<PushRuleLike | null>).find((r) => r?.rule_id === CALL_HANGUP_PUSH_RULE_ID) ?? undefined;
+  return (underride as Array<PushRuleLike | null>).find((r) => r?.rule_id === ruleId) ?? undefined;
 }
 
-type SinceStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+export function findCallHangupPushRule(rules: unknown): PushRuleLike | undefined {
+  return findUnderridePushRule(rules, CALL_HANGUP_PUSH_RULE_ID);
+}
+
+export type SinceStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
 const SINCE_KEY_PREFIX = 'forta.callHangupRuleSince:';
 
@@ -54,11 +58,23 @@ const SINCE_KEY_PREFIX = 'forta.callHangupRuleSince:';
  * rules (`client.pushRules`); undefined means not loaded yet and changes nothing.
  */
 export function callHangupRuleSince(userId: string, rules: unknown, now: number, storage: SinceStorage): number | null {
+  return underrideRuleSince(CALL_HANGUP_PUSH_RULE_ID, SINCE_KEY_PREFIX, userId, rules, now, storage);
+}
+
+/** [callHangupRuleSince] for any underride rule, kept under [keyPrefix] per account. */
+export function underrideRuleSince(
+  ruleId: string,
+  keyPrefix: string,
+  userId: string,
+  rules: unknown,
+  now: number,
+  storage: SinceStorage,
+): number | null {
   if (!userId) return null;
-  const key = SINCE_KEY_PREFIX + userId;
+  const key = keyPrefix + userId;
   try {
     if (rules == null) return parseSince(storage.getItem(key));
-    const rule = findCallHangupPushRule(rules);
+    const rule = findUnderridePushRule(rules, ruleId);
     if (!rule || rule.enabled === false) {
       storage.removeItem(key);
       return null;

@@ -18,6 +18,7 @@ import { indexCallEvents, isMissedCallHangup, type CallEventIndex } from "../lib
 import { unreadPeerHangupCount, unreadCountWithoutHangups, hasCallEvent } from "../lib/call-hangup-unread";
 import { createHangupGapCounter } from "./hangup-gap-counter";
 import { callHangupRuleSince } from "@/shared/lib/push/call-hangup-push-rule";
+import { callSelectAnswerRuleSince } from "@/shared/lib/push/call-select-answer-push-rule";
 import { buildExternalShareForward } from "../lib/external-share-forward";
 import type { ExternalShareData } from "@/shared/lib/share-target";
 import {
@@ -126,13 +127,18 @@ function roomUnreadCount(room: any, myUserId: string): number {
   const total = (room.getUnreadNotificationCount?.("total") as number) ?? 0;
   try {
     // Read even at zero: the first sight of the rule dates the hangups it counts.
-    const since = callHangupRuleSince(myUserId, getMatrixClientService().client?.pushRules, Date.now(), localStorage);
-    if (since === null || total <= 0) return total;
+    const pushRules = getMatrixClientService().client?.pushRules;
+    const hangupSince = callHangupRuleSince(myUserId, pushRules, Date.now(), localStorage);
+    const selectAnswerSince = callSelectAnswerRuleSince(myUserId, pushRules, Date.now(), localStorage);
+    if ((hangupSince === null && selectAnswerSince === null) || total <= 0) return total;
+    // A rule that is off counts nothing: no event is as late as Infinity.
+    const since = hangupSince ?? Infinity;
     const liveTimeline = room.getLiveTimeline?.();
     const events = liveTimeline?.getEvents?.() ?? [];
     let hangups = unreadPeerHangupCount(events, {
       myUserId,
       since,
+      selectAnswerSince,
       hasRead: (eventId) => room.hasUserReadEvent?.(myUserId, eventId) ?? true,
     });
     // The server counts everything after the real receipt, own events in between or not
@@ -150,13 +156,14 @@ function roomUnreadCount(room: any, myUserId: string): number {
     if (fromToken) {
       // A receipt sent before the rule was seen bounds nothing `since` does not; skip its fetch.
       const receiptTs = receipt?.data?.ts;
-      const readBeforeRule = typeof receiptTs === "number" && receiptTs < since;
+      const readBeforeRule = typeof receiptTs === "number" && receiptTs < Math.min(since, selectAnswerSince ?? Infinity);
       hangups += hangupGapCounter.get({
         roomId: room.roomId as string,
         fromToken,
         receiptEventId: readBeforeRule ? null : receiptEventId,
         myUserId,
         since,
+        selectAnswerSince,
       }) ?? 0;
     }
     return unreadCountWithoutHangups(total, hangups);

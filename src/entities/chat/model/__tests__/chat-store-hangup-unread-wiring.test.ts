@@ -58,6 +58,14 @@ describe("chat-store: unread counts leave out peer call hangups", () => {
     expect(body).toContain("hasCallEvent(events)");
   });
 
+  it("roomUnreadCount takes the peer's select_answers out too, dated by their own rule", () => {
+    // forta-bugs#809, variant A: every answered call adds one more to the server's count.
+    const body = bodyAfter(/function roomUnreadCount\s*\([^)]*\)\s*:\s*number\s*\{/);
+    expect(body).toContain("callSelectAnswerRuleSince(");
+    // Both the live-timeline count and the gap count get it.
+    expect(body.match(/^\s*selectAnswerSince,$/gm)?.length).toBe(2);
+  });
+
   it("the gap counter fetches through the Matrix service and recounts the badge when done", () => {
     expect(source).toContain("createHangupGapCounter(");
     expect(source).toContain("fetchRoomHangups(");

@@ -22,6 +22,7 @@ import com.forta.chat.plugins.calls.InviteThrottleGuard
 import com.forta.chat.plugins.calls.InviteThrottleTracker
 import com.forta.chat.plugins.calls.RemoteHangupPolicy
 import com.forta.chat.plugins.calls.SecondRingPolicy
+import com.forta.chat.plugins.calls.SelectAnswerPolicy
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
@@ -148,6 +149,22 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
         // Cache sender display name if provided (for future offline lookups)
         if (senderName != null && sender != null) {
             cacheSenderName(this, sender, senderName)
+        }
+
+        // The caller's select_answer is pushed to the device that answered as
+        // well. Nothing below may run for it: the teardown would disconnect the
+        // conversation, and a ringer screen still up would retire the
+        // pending-answer marker a cold-started JS has yet to read. See
+        // SelectAnswerPolicy.
+        if (msgType == "m.call.select_answer") {
+            val connection = CallConnectionService.currentConnection
+            val selectedCallId = data["call_id"] ?: data["event_id"]
+            if (SelectAnswerPolicy.answeredHere(connection?.callId, connection?.state, selectedCallId)) {
+                Log.i(TAG, "select_answer for $selectedCallId: answered on this device, leaving it")
+                forwardToJs(data)
+                return
+            }
+            Log.i(TAG, "select_answer for $selectedCallId: answered on another device")
         }
 
         // Handle call cancel paths — full cleanup of incoming-call UI state.

@@ -23,7 +23,7 @@ describe('call hangup push rule', () => {
     });
   });
 
-  it('never matches m.call.select_answer, which the native push handler treats as a hangup', () => {
+  it('never matches m.call.select_answer, which has a rule dated on its own', () => {
     expect(JSON.stringify(buildCallHangupPushRule())).not.toContain('select_answer');
   });
 

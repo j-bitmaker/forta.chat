@@ -19,7 +19,7 @@ describe("MatrixClientService.fetchRoomHangups", () => {
     (service as any).client = { createMessagesRequest, getUserId: () => "@me:test.invalid" };
   });
 
-  it("asks for hangups only, backwards from the token", async () => {
+  it("asks only for the call signals the badge takes back, backwards from the token", async () => {
     const res = await service.fetchRoomHangups("!r:test.invalid", "t1", 50);
 
     expect(res).toEqual({ chunk: [{ type: "m.call.hangup", event_id: "$h" }], end: "t2" });
@@ -29,7 +29,7 @@ describe("MatrixClientService.fetchRoomHangups", () => {
     expect(from).toBe("t1");
     expect(limit).toBe(50);
     expect(dir).toBe("b");
-    expect(filter.getRoomTimelineFilterComponent().toJSON().types).toEqual(["m.call.hangup"]);
+    expect(filter.getRoomTimelineFilterComponent().toJSON().types).toEqual(["m.call.hangup", "m.call.select_answer"]);
   });
 
   it("returns null without a client", async () => {

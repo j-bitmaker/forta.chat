@@ -47,6 +47,41 @@ describe("unreadPeerHangupCount", () => {
   });
 });
 
+// With the `m.call.select_answer` rule the server counts the caller's select_answer of
+// every answered call as well (forta-bugs#809, variant A, 2026-09-18).
+describe("unreadPeerHangupCount with the select_answer rule", () => {
+  const answered = [
+    ev("$invite", "m.call.invite", PEER, 100),
+    ev("$select", "m.call.select_answer", PEER, 150),
+    ev("$hangup", "m.call.hangup", PEER, 200),
+  ];
+
+  it("takes back the peer's select_answer once that rule was seen", () => {
+    const opts = { myUserId: ME, since: 0, selectAnswerSince: 0, hasRead: readIds([]) };
+    expect(unreadPeerHangupCount(answered, opts)).toBe(2);
+  });
+
+  it("leaves select_answer in the count while the account has no rule for it", () => {
+    expect(unreadPeerHangupCount(answered, { myUserId: ME, since: 0, hasRead: readIds([]) })).toBe(1);
+    expect(unreadPeerHangupCount(answered, { myUserId: ME, since: 0, selectAnswerSince: null, hasRead: readIds([]) })).toBe(1);
+  });
+
+  it("dates select_answer by its own rule, not by the hangup rule", () => {
+    const opts = { myUserId: ME, since: 0, selectAnswerSince: 160, hasRead: readIds([]) };
+    expect(unreadPeerHangupCount(answered, opts)).toBe(1);
+  });
+
+  it("counts select_answer alone when the hangup rule is off", () => {
+    const opts = { myUserId: ME, since: Infinity, selectAnswerSince: 0, hasRead: readIds([]) };
+    expect(unreadPeerHangupCount(answered, opts)).toBe(1);
+  });
+
+  it("leaves out my own select_answer, sent when I was the caller", () => {
+    const mine = [ev("$s", "m.call.select_answer", ME, 150)];
+    expect(unreadPeerHangupCount(mine, { myUserId: ME, since: 0, selectAnswerSince: 0, hasRead: readIds([]) })).toBe(0);
+  });
+});
+
 describe("countPeerHangupsAfter", () => {
   // Raw events from /messages for the stretch the live timeline lost to a gap. The sync filter
   // returns at most 4 room events per response, so after three missed calls with JS dead the
@@ -100,5 +135,22 @@ describe("unreadCountWithoutHangups", () => {
 
   it("never goes below zero", () => {
     expect(unreadCountWithoutHangups(1, 3)).toBe(0);
+  });
+});
+
+describe("countPeerHangupsAfter with the select_answer rule", () => {
+  const raw = [
+    { type: "m.call.select_answer", event_id: "$s2", sender: PEER, origin_server_ts: 2000 },
+    { type: "m.call.select_answer", event_id: "$s1", sender: PEER, origin_server_ts: 500 },
+    { type: "m.call.hangup", event_id: "$h", sender: PEER, origin_server_ts: 2100 },
+  ];
+
+  it("counts the select_answers sent after the receipt and since their own rule was seen", () => {
+    expect(countPeerHangupsAfter(raw, { myUserId: ME, since: 0, selectAnswerSince: 1000, after: 0 })).toBe(2);
+    expect(countPeerHangupsAfter(raw, { myUserId: ME, since: 0, selectAnswerSince: 0, after: 0 })).toBe(3);
+  });
+
+  it("counts none of them without that rule", () => {
+    expect(countPeerHangupsAfter(raw, { myUserId: ME, since: 0, after: 0 })).toBe(1);
   });
 });

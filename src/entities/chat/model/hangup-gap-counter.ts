@@ -18,6 +18,8 @@ export interface HangupGapQuery {
   receiptEventId: string | null;
   myUserId: string;
   since: number;
+  /** Since when `m.call.select_answer` is counted too; null or absent when it is not. */
+  selectAnswerSince?: number | null;
 }
 
 export interface HangupGapPage {
@@ -62,6 +64,7 @@ export function createHangupGapCounter(
     }
     let count = 0;
     let token = q.fromToken;
+    const earliest = Math.min(q.since, q.selectAnswerSince ?? Infinity);
     for (let page = 0; page < maxPages; page++) {
       let res: HangupGapPage | null;
       try {
@@ -71,10 +74,15 @@ export function createHangupGapCounter(
         break;
       }
       if (!res || res.chunk.length === 0) break;
-      count += countPeerHangupsAfter(res.chunk, { myUserId: q.myUserId, since: q.since, after });
+      count += countPeerHangupsAfter(res.chunk, {
+        myUserId: q.myUserId,
+        since: q.since,
+        selectAnswerSince: q.selectAnswerSince,
+        after,
+      });
       // Pages run newest first: one event at or before either bound ends the gap.
       const passedBound = res.chunk.some(
-        (e) => typeof e.origin_server_ts === "number" && (e.origin_server_ts <= after || e.origin_server_ts < q.since),
+        (e) => typeof e.origin_server_ts === "number" && (e.origin_server_ts <= after || e.origin_server_ts < earliest),
       );
       if (passedBound || !res.end || res.end === token) break;
       token = res.end;
@@ -107,7 +115,7 @@ export function createHangupGapCounter(
 
   return {
     get(q) {
-      const key = [q.myUserId, q.roomId, q.receiptEventId ?? "", q.fromToken, q.since].join(" ");
+      const key = [q.myUserId, q.roomId, q.receiptEventId ?? "", q.fromToken, q.since, q.selectAnswerSince ?? ""].join(" ");
       const known = counted.get(key);
       if (known !== undefined) return known;
       if (inFlight.has(key)) return null;

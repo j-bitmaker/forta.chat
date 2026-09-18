@@ -155,4 +155,40 @@ describe("createHangupGapCounter", () => {
     await flush();
     expect(d.fetchHangups).toHaveBeenCalledTimes(3);
   });
+
+  // forta-bugs#809, variant A: the select_answer rule is seen later than the hangup rule.
+  it("counts the gap's select_answers since their own rule and pages back to the earlier of the two", async () => {
+    const selectAnswer = (id: string, ts: number) =>
+      ({ type: "m.call.select_answer", event_id: id, sender: PEER, origin_server_ts: ts });
+    const d = deps({
+      fetchEventTs: vi.fn().mockResolvedValue(100),
+      fetchHangups: vi
+        .fn()
+        .mockResolvedValueOnce({ chunk: [hangup("$h3", 3000), selectAnswer("$s3", 2900), selectAnswer("$s2", 1500)], end: "t2" })
+        .mockResolvedValueOnce({ chunk: [hangup("$h1", 1200), hangup("$h0", 400)], end: "t3" }),
+    });
+    const counter = createHangupGapCounter(d);
+    const q = query({ since: 1000, selectAnswerSince: 2000 });
+    counter.get(q);
+    await flush();
+    // $h3, $s3 and $h1; $s2 predates its rule, $h0 predates the hangup rule and ends the paging.
+    expect(counter.get(q)).toBe(3);
+    expect(d.fetchHangups).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a count made without the select_answer rule apart from one made with it", async () => {
+    const d = deps({
+      fetchHangups: vi.fn().mockResolvedValue({
+        chunk: [{ type: "m.call.select_answer", event_id: "$s", sender: PEER, origin_server_ts: 3000 }, hangup("$h0", 900)],
+        end: null,
+      }),
+    });
+    const counter = createHangupGapCounter(d);
+    counter.get(query());
+    await flush();
+    expect(counter.get(query())).toBe(0);
+    counter.get(query({ selectAnswerSince: 0 }));
+    await flush();
+    expect(counter.get(query({ selectAnswerSince: 0 }))).toBe(1);
+  });
 });

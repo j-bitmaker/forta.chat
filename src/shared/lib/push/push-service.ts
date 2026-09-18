@@ -10,6 +10,13 @@ import {
   callHangupRuleSince,
   findCallHangupPushRule,
 } from './call-hangup-push-rule';
+import {
+  CALL_SELECT_ANSWER_PUSH_RULE_ID,
+  CALL_SELECT_ANSWER_PUSH_RULE_KIND,
+  buildCallSelectAnswerPushRule,
+  callSelectAnswerRuleSince,
+  findCallSelectAnswerPushRule,
+} from './call-select-answer-push-rule';
 import { tRaw } from '@/shared/lib/i18n';
 import { interopLog } from '@/shared/lib/interop';
 
@@ -278,6 +285,32 @@ class PushService {
       callHangupRuleSince(matrixClient.getUserId?.() ?? '', rules, Date.now(), localStorage);
     } catch (e) {
       console.warn('[PushService] Could not ensure the call hangup push rule:', e);
+    }
+  }
+
+  /**
+   * The same for `m.call.select_answer`, so a phone ringing behind a frozen page stops once
+   * another device of the account answers (`call-select-answer-push-rule.ts`). Android
+   * only: its push handler is the one that acts on it, and tells an answer made on this
+   * phone from one made elsewhere.
+   */
+  private async ensureCallSelectAnswerPushRule(matrixClient: any): Promise<void> {
+    if (isIOS) return;
+    try {
+      let rules: unknown = await matrixClient.getPushRules();
+      if (!findCallSelectAnswerPushRule(rules)) {
+        await matrixClient.addPushRule(
+          'global',
+          CALL_SELECT_ANSWER_PUSH_RULE_KIND,
+          CALL_SELECT_ANSWER_PUSH_RULE_ID,
+          buildCallSelectAnswerPushRule(),
+        );
+        rules = await matrixClient.getPushRules();
+        console.info('[PushService] Call select_answer push rule added');
+      }
+      callSelectAnswerRuleSince(matrixClient.getUserId?.() ?? '', rules, Date.now(), localStorage);
+    } catch (e) {
+      console.warn('[PushService] Could not ensure the call select_answer push rule:', e);
     }
   }
 
@@ -684,6 +717,7 @@ class PushService {
       this.fcmToken = token;
       await this.registerPusher(matrixClient, token);
       await this.ensureCallHangupPushRule(matrixClient);
+      await this.ensureCallSelectAnswerPushRule(matrixClient);
       // WEE-44: if a previous boot left a dead-letter for the same token,
       // a successful registration just now means we can safely clear it.
       try {
