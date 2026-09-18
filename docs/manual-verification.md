@@ -67,7 +67,22 @@
 - Измерено 2026-09-18 без владельца (`sahere1`, APK с починкой; правило приложение поставило само —
   `[PushService] Call select_answer push rule added`): ответ в 16:38:58.229, пуш в 16:39:03.235 —
   `answered on this device, leaving it`; разговор шёл до отбоя веба в 16:39:21, у веба `aOut` 4995 → 55393 байт.
-- Статус: ☑ шаг 1 проверен 2026-09-18 (`sahere1`); ☐ шаги 2–3 — нужен владелец у разблокированного Samsung
+- Измерено 2026-09-18 с владельцем (`ownerb1`, процесс Forta убит, звонок пришёл пушем, владелец ответил в Forta):
+  `Accept pressed` в 18:17:41.138, пуш в 18:17:48.491 — `answered on this device, leaving it`; разговор шёл до отбоя
+  веба. Шаг 1 подтверждён и с холодного старта.
+- Измерено 2026-09-18 с владельцем (`ownerb3`, процесс Forta убит, Bastyon запущен, владелец ответил в Bastyon): рингер
+  Forta с 18:23:00.707, веб соединился в 18:23:10;
+  ```
+  18:23:10.047 I/FortaPush: select_answer for 1789744979182SUl51Q6azQdOLyCR: answered on another device
+  18:23:10.047 D/FortaPush: Call ended remotely (type=m.call.select_answer), tearing down incoming UI
+  18:23:10.075 D/IncomingRinger: stop callId=1789744979182SUl51Q6azQdOLyCR
+  18:23:10.092 I/CallTeardown: endCall reason=DISCONNECT
+  ```
+  Рингер снят через 28 мс после пуша; во время разговора сверху Bastyon, `MODE_IN_COMMUNICATION`; после отбоя и через
+  35 с Forta не звонила, `MODE_NORMAL`. В прогоне `ownerb2` никто не ответил, и Forta отклонила звонок по таймауту 30 с,
+  как раньше. Вариант «страница Forta заморожена в фоне» отдельно не гоняли: пуш-путь от состояния страницы не зависит.
+- Статус: ☑ шаги 1–2 проверены 2026-09-18 (`sahere1`, `ownerb1`, `ownerb3`); ☐ шаг 3 (счётчик в списке чатов) — взгляд
+  владельца
 
 ### Поздний stop прошлого звонка не гасит следующий
 - Коммит: `706e8f96`
