@@ -225,6 +225,16 @@ class CallPlugin : Plugin() {
 
         Log.d(TAG, "reportIncomingCall: $callerName ($callId)")
 
+        // The push path skips an invite for a call whose hangup/reject/answer it
+        // has already seen; this path must too. An invite push queued for a
+        // paused page reaches JS after the hangup push tore the ringer down, and
+        // registering it again rang a dead call for 30 s (`dual0`, 2026-09-18).
+        if (callId.isNotEmpty() && CancelledCallStore(context).isCancelled(callId)) {
+            Log.d(TAG, "reportIncomingCall($callId): the call already ended — not ringing")
+            call.resolve()
+            return
+        }
+
         try {
             val telecomManager = context.getSystemService(TelecomManager::class.java)
             val handle = CallConnectionService.getPhoneAccountHandle(context)

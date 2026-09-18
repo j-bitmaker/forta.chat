@@ -746,6 +746,39 @@
 
 ## Проверено
 
+### Отменённый звонок не звонит снова, когда страница поздно получает пуш о входящем
+- Коммит: _(заполнить после коммита)_
+- Почему нужен человек: `ReportIncomingCancelledContractTest` доказывает, что `reportIncomingCall` сверяется с
+  `CancelledCallStore` раньше, чем регистрирует звонок в Telecom. Гонку «пуш об отбое раньше, чем замороженная страница
+  дочитала пуш о входящем» видно только на аппарате.
+- Найдено 2026-09-18 на Samsung SM-A528B (`dual0`, стенд «Forta и Bastyon на одном телефоне», но от Bastyon не
+  зависит). Forta долго была в фоне, веб TEST1 позвонил и через 25 с отменил:
+  ```
+  03:42:22.941 D/FortaPush: Call ended remotely (type=m.call.hangup), tearing down incoming UI
+  03:42:23.406 I/Capacitor/Console: [interop:push] call push → ring
+  03:42:23.416 I/Capacitor/Console: [NativeCallBridge] Call ended natively: 1789692117463HFvmhBQ6RgqGVaxK
+  03:42:23.479 D/CallPlugin: reportIncomingCall: test3823818 (1789692117463HFvmhBQ6RgqGVaxK)
+  03:42:23.701 D/CallConnectionService: onCreateIncomingConnection: callId=1789692117463HFvmhBQ6RgqGVaxK, …
+  03:42:53.878 W/IncomingRinger: no answer in 30s for 1789692117463HFvmhBQ6RgqGVaxK — auto-rejecting
+  ```
+  Страница, приостановленная в фоне, прочла пуш о входящем уже после пуша об отбое, и JS зарегистрировал мёртвый звонок
+  снова — телефон звонил ещё 30 с. Пуш-путь такой повтор отсекает (`CancelledCallStore`), путь через JS — нет. Похоже
+  на жалобы «после завершения продолжает звонить Forta» (#809).
+- Что изменилось: `CallPlugin.reportIncomingCall` не регистрирует звонок, который пуш-путь уже отметил завершённым.
+- На чём: Samsung SM-A528B ↔ веб TEST1, скрипт `scratchpad/run-dual-observe.sh` (веб звонит, не дожидается ответа и
+  отменяет через 25 с).
+- Шаги:
+  1. Свернуть Forta и подождать 2 мин, чтобы страница заморозилась. Веб звонит и через 25 с отменяет.
+     - **Ожидается:** после `Call ended remotely` при позднем `call push → ring` строка
+       `reportIncomingCall(<id>): the call already ended — not ringing`; повторного `onCreateIncomingConnection` и
+       `IncomingRinger arm` нет; через 5 с сверху `MainActivity`, `MODE_NORMAL`.
+     - **Раньше:** второй рингер ещё на 30 с (`dual0`).
+- Измерено 2026-09-18 без владельца (`dual2`, APK с этим коммитом): Forta 2 мин в фоне, веб отменил звонок в 03:50:45.
+  Пуш об отбое закрыл рингер в 03:50:45.359; страница прочла пуш о входящем в 03:50:45.463 и вызвала
+  `reportIncomingCall` в .487 — `the call already ended — not ringing`. Через 5 с сверху `MainActivity`, `MODE_NORMAL`,
+  второго рингера нет.
+- Статус: ☑ шаг 1 проверен 2026-09-18
+
 ### Статус Tor опрашивается без повторной регистрации плагина
 - Коммит: `fb151495`
 - Почему нужен человек: `stores.test.ts` доказывает, что опрос не регистрирует плагин заново на подменённом Capacitor.
