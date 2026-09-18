@@ -24,33 +24,6 @@
 
 ## Ожидают проверки
 
-### Forta, открытая из «Недавних», не звонит по завершённому звонку
-- Коммит: `612fbb4e`
-- Почему нужен человек: `RingerRelaunchPolicyTest` доказывает распознавание флага и место проверки в `onCreate`.
-  Что Android действительно перезапускает рингер из карточки «Недавних» и что с починкой открывается приложение —
-  видно только на аппарате.
-- Найдено 2026-09-18 с владельцем (`ownerb3`): Forta была убита, рингер поднял пуш, на звонок ответили в Bastyon
-  (18:23:10, рингер снят). В 18:25:01 владелец открыл Forta из «Недавних» — «а там звонок идёт»:
-  ```
-  18:25:01.085 I/HoneySpace.TaskView: onClick, tasks = [[id=21005 …
-  18:25:01.106 I/ActivityTaskManager: START u0 {flg=0x34100000 cmp=com.forta.chat/.plugins.calls.IncomingCallActivity (has extras)}
-  18:25:01.259 D/IncomingRinger: arm callId=1789744979182SUl51Q6azQdOLyCR
-  18:25:31.259 W/IncomingRinger: no answer in 30s for 1789744979182SUl51Q6azQdOLyCR — auto-rejecting
-  ```
-  Когда рингер поднят пушем при мёртвом приложении, `IncomingCallActivity` — корень задачи, и задача хранит её intent
-  с `callId` после `finish()`. Нажатие на карточку запускает рингер заново. От правила `select_answer` не зависит:
-  то же после отбоя звонящего и после отклонения.
-- Что изменилось: `IncomingCallActivity.onCreate` при `FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY` (в логе `0x00100000` в
-  `flg=0x34100000`; запуски для звонка — `0x14000000` и `0x34000000`) открывает `MainActivity` и закрывается, не трогая
-  рингер.
-- На чём: Samsung SM-A528B ↔ веб TEST1, скрипт `scratchpad/run-recents-relaunch.sh` (нужен разблокированный телефон).
-- Шаги:
-  1. Forta смахнуть из «Недавних» (процесса нет). Веб звонит и через 12 с отменяет. Открыть Forta из «Недавних».
-     - **Ожидается:** `onCreate: relaunched from Recents for <id> — opening the app`, сверху `MainActivity`, второго
-       `IncomingRinger: arm` нет, `MODE_NORMAL`.
-     - **Раньше:** рингер на 30 с (`ownerb3`).
-- Статус: ☐ не проверено — телефон заблокировался до прогона (`recents2`)
-
 ### Forta перестаёт звонить, когда на звонок ответили на другом устройстве (#809 п. 2)
 - Коммит: `eca48624`
 - Почему нужен человек: `SelectAnswerPolicyTest` и `SelectAnswerContractTest` доказывают решение «ответили здесь или
@@ -832,6 +805,39 @@
 ---
 
 ## Проверено
+
+### Forta, открытая из «Недавних», не звонит по завершённому звонку
+- Коммит: `612fbb4e`
+- Почему нужен человек: `RingerRelaunchPolicyTest` доказывает распознавание флага и место проверки в `onCreate`.
+  Что Android действительно перезапускает рингер из карточки «Недавних» и что с починкой открывается приложение —
+  видно только на аппарате.
+- Найдено 2026-09-18 с владельцем (`ownerb3`): Forta была убита, рингер поднял пуш, на звонок ответили в Bastyon
+  (18:23:10, рингер снят). В 18:25:01 владелец открыл Forta из «Недавних» — «а там звонок идёт»:
+  ```
+  18:25:01.085 I/HoneySpace.TaskView: onClick, tasks = [[id=21005 …
+  18:25:01.106 I/ActivityTaskManager: START u0 {flg=0x34100000 cmp=com.forta.chat/.plugins.calls.IncomingCallActivity (has extras)}
+  18:25:01.259 D/IncomingRinger: arm callId=1789744979182SUl51Q6azQdOLyCR
+  18:25:31.259 W/IncomingRinger: no answer in 30s for 1789744979182SUl51Q6azQdOLyCR — auto-rejecting
+  ```
+  Когда рингер поднят пушем при мёртвом приложении, `IncomingCallActivity` — корень задачи, и задача хранит её intent
+  с `callId` после `finish()`. Нажатие на карточку запускает рингер заново. От правила `select_answer` не зависит:
+  то же после отбоя звонящего и после отклонения.
+- Что изменилось: `IncomingCallActivity.onCreate` при `FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY` (в логе `0x00100000` в
+  `flg=0x34100000`; запуски для звонка — `0x14000000` и `0x34000000`) открывает `MainActivity` и закрывается, не трогая
+  рингер.
+- На чём: Samsung SM-A528B ↔ веб TEST1, скрипт `scratchpad/run-recents-relaunch.sh` (нужен разблокированный телефон).
+- Шаги:
+  1. Forta смахнуть из «Недавних» (процесса нет). Веб звонит и через 12 с отменяет. Открыть Forta из «Недавних».
+     - **Ожидается:** `onCreate: relaunched from Recents for <id> — opening the app`, сверху `MainActivity`, второго
+       `IncomingRinger: arm` нет, `MODE_NORMAL`.
+     - **Раньше:** рингер на 30 с (`ownerb3`).
+- Измерено 2026-09-18 (`recents4`, APK `612fbb4e`, телефон разблокировал владелец): пуш поднял рингер в 18:42:02,
+  скрипт ушёл в Bastyon, веб отменил звонок (рингер снят в 18:42:12), задача Forta осталась в «Недавних». Нажатие на
+  карточку в 18:42:37.558 → `START … flg=0x34100000 … IncomingCallActivity` → в .637
+  `onCreate: relaunched from Recents for 1789746121240rnYxIpYrFbfCKTcp — opening the app` → `MainActivity`; второго
+  `IncomingRinger: arm` нет, `MODE_NORMAL`. Если рингер закрылся, будучи сверху (`recents3`), Android сам убирает
+  задачу из «Недавних» — ошибка проявлялась только когда с рингера ушли в другое приложение.
+- Статус: ☑ проверено 2026-09-18 (`recents4`)
 
 ### Отменённый звонок не звонит снова, когда страница поздно получает пуш о входящем
 - Коммит: `e059cc1e`
