@@ -24,66 +24,6 @@
 
 ## Ожидают проверки
 
-### Forta перестаёт звонить, когда на звонок ответили на другом устройстве (#809 п. 2)
-- Коммит: `eca48624`
-- Почему нужен человек: `SelectAnswerPolicyTest` и `SelectAnswerContractTest` доказывают решение «ответили здесь или
-  нет» и его место в обработчике пушей. Приходит ли пуш о `m.call.select_answer`, что в нём лежит и гаснет ли рингер за
-  замороженной страницей — видно только на аппарате. Ответ в Bastyon на заблокированном телефоне невозможен, нужен
-  владелец у разблокированного Samsung.
-- Найдено 2026-09-18 (`dualb6`, `dualb7`): страница Forta заморожена в фоне, на звонок ответили в Bastyon тем же
-  аккаунтом; `m.call.select_answer` доходит только через синхронизацию JS, и Forta звонит до таймаута 30 с.
-- Решение владельца 2026-09-18 — вариант А: правило пушей аккаунта `com.forta.call.select_answer`
-  (`call-select-answer-push-rule.ts`), ставит приложение на Android после регистрации пушера.
-- Проба шлюза (`saprobe3`, временное правило на тестовом аккаунте, снято): пуш приходит через ~1 с после ответа, в
-  данных только `call_id`, `event_id`, `msg_type`, `room_id`, `room_name`, `sender`, `sender_display_name`, `type`,
-  `unread` — **`selected_party_id` и `party_id` шлюз не передаёт**. Прежний обработчик принимал этот пуш за отбой:
-  ```
-  16:30:39.287 D/CallConnection: onAnswer: callId=1789738236679Y2vT2PRId6KoNcgF
-  16:30:41.532 D/FortaPush: Call ended remotely (type=m.call.select_answer), tearing down incoming UI
-  16:30:41.536 D/CallConnection: onDisconnect: 1789738236679Y2vT2PRId6KoNcgF
-  ```
-- Что изменилось: устройство, которое ответило, определяется без бэкенда — по слоту Telecom. Любой ответ на этом
-  телефоне проходит через `CallConnection.onAnswer` и сразу делает соединение ACTIVE; пуш о `select_answer` для звонка,
-  чьё соединение ACTIVE, только пересылается в JS (`SelectAnswerPolicy.answeredHere`). Соединение ещё RINGING —
-  ответили не здесь, рингер и слот снимаются прежним путём отбоя. Одновременный ответ на двух устройствах остаётся за
-  JS: страница, которая только что ответила, работает и слышит выбор звонящего из синхронизации. Список чатов вычитает
-  `select_answer` собеседника из непрочитанного, с датой собственного правила (`call-hangup-unread.ts`).
-- Известное ограничение: сборка Android без `SelectAnswerPolicy` на том же аккаунте принимает этот пуш за отбой и
-  рвёт звонки, на которые отвечает. Касается аккаунтов с двумя Android-устройствами, из которых обновлено одно.
-- На чём: Samsung SM-A528B ↔ веб TEST1; для шага 2 — Bastyon на том же Samsung тем же аккаунтом. Скрипты
-  `scratchpad/run-sa-answer-here.sh` и `scratchpad/run-dual-bastyon-answer.sh` (перед нажатием в Bastyon проверять
-  `dumpsys window policy`: `showing=true occluded=true` — телефон заблокирован, хотя `isKeyguardShowing=false`).
-- Шаги:
-  1. Правило стоит. Веб звонит, на Samsung ответить в Forta, говорить 15 с, веб кладёт трубку.
-     - **Ожидается:** строка `select_answer for <id>: answered on this device, leaving it`; `onDisconnect` только после
-       отбоя веба; звук идёт весь разговор.
-     - **Раньше:** `onDisconnect` через 2 с после ответа (`saprobe3`).
-  2. Forta свернуть на 2 мин. Веб звонит, Forta звонит; ответить в Bastyon.
-     - **Ожидается:** через 1–2 с после ответа `select_answer for <id>: answered on another device`,
-       `Call ended remotely (type=m.call.select_answer)`, `IncomingRinger: stop`; аудиорежим не `MODE_RINGTONE`; Forta
-       не звонит ни во время разговора, ни после него.
-     - **Раньше:** `no answer in 30s … auto-rejecting` через 30 с (`dualb6`, `dualb7`).
-  3. После шага 1 открыть список чатов: счётчик комнаты вырос только на сообщения, не на принятый звонок.
-- Измерено 2026-09-18 без владельца (`sahere1`, APK с починкой; правило приложение поставило само —
-  `[PushService] Call select_answer push rule added`): ответ в 16:38:58.229, пуш в 16:39:03.235 —
-  `answered on this device, leaving it`; разговор шёл до отбоя веба в 16:39:21, у веба `aOut` 4995 → 55393 байт.
-- Измерено 2026-09-18 с владельцем (`ownerb1`, процесс Forta убит, звонок пришёл пушем, владелец ответил в Forta):
-  `Accept pressed` в 18:17:41.138, пуш в 18:17:48.491 — `answered on this device, leaving it`; разговор шёл до отбоя
-  веба. Шаг 1 подтверждён и с холодного старта.
-- Измерено 2026-09-18 с владельцем (`ownerb3`, процесс Forta убит, Bastyon запущен, владелец ответил в Bastyon): рингер
-  Forta с 18:23:00.707, веб соединился в 18:23:10;
-  ```
-  18:23:10.047 I/FortaPush: select_answer for 1789744979182SUl51Q6azQdOLyCR: answered on another device
-  18:23:10.047 D/FortaPush: Call ended remotely (type=m.call.select_answer), tearing down incoming UI
-  18:23:10.075 D/IncomingRinger: stop callId=1789744979182SUl51Q6azQdOLyCR
-  18:23:10.092 I/CallTeardown: endCall reason=DISCONNECT
-  ```
-  Рингер снят через 28 мс после пуша; во время разговора сверху Bastyon, `MODE_IN_COMMUNICATION`; после отбоя и через
-  35 с Forta не звонила, `MODE_NORMAL`. В прогоне `ownerb2` никто не ответил, и Forta отклонила звонок по таймауту 30 с,
-  как раньше. Вариант «страница Forta заморожена в фоне» отдельно не гоняли: пуш-путь от состояния страницы не зависит.
-- Статус: ☑ шаги 1–2 проверены 2026-09-18 (`sahere1`, `ownerb1`, `ownerb3`); ☐ шаг 3 (счётчик в списке чатов) — взгляд
-  владельца
-
 ### Поздний stop прошлого звонка не гасит следующий
 - Коммит: `706e8f96`
 - Почему нужен человек: порядок доставки intent'ов сервису и отложенный `onDestroy` —
@@ -805,6 +745,71 @@
 ---
 
 ## Проверено
+
+### Forta перестаёт звонить, когда на звонок ответили на другом устройстве (#809 п. 2)
+- Коммит: `eca48624`
+- Почему нужен человек: `SelectAnswerPolicyTest` и `SelectAnswerContractTest` доказывают решение «ответили здесь или
+  нет» и его место в обработчике пушей. Приходит ли пуш о `m.call.select_answer`, что в нём лежит и гаснет ли рингер за
+  замороженной страницей — видно только на аппарате. Ответ в Bastyon на заблокированном телефоне невозможен, нужен
+  владелец у разблокированного Samsung.
+- Найдено 2026-09-18 (`dualb6`, `dualb7`): страница Forta заморожена в фоне, на звонок ответили в Bastyon тем же
+  аккаунтом; `m.call.select_answer` доходит только через синхронизацию JS, и Forta звонит до таймаута 30 с.
+- Решение владельца 2026-09-18 — вариант А: правило пушей аккаунта `com.forta.call.select_answer`
+  (`call-select-answer-push-rule.ts`), ставит приложение на Android после регистрации пушера.
+- Проба шлюза (`saprobe3`, временное правило на тестовом аккаунте, снято): пуш приходит через ~1 с после ответа, в
+  данных только `call_id`, `event_id`, `msg_type`, `room_id`, `room_name`, `sender`, `sender_display_name`, `type`,
+  `unread` — **`selected_party_id` и `party_id` шлюз не передаёт**. Прежний обработчик принимал этот пуш за отбой:
+  ```
+  16:30:39.287 D/CallConnection: onAnswer: callId=1789738236679Y2vT2PRId6KoNcgF
+  16:30:41.532 D/FortaPush: Call ended remotely (type=m.call.select_answer), tearing down incoming UI
+  16:30:41.536 D/CallConnection: onDisconnect: 1789738236679Y2vT2PRId6KoNcgF
+  ```
+- Что изменилось: устройство, которое ответило, определяется без бэкенда — по слоту Telecom. Любой ответ на этом
+  телефоне проходит через `CallConnection.onAnswer` и сразу делает соединение ACTIVE; пуш о `select_answer` для звонка,
+  чьё соединение ACTIVE, только пересылается в JS (`SelectAnswerPolicy.answeredHere`). Соединение ещё RINGING —
+  ответили не здесь, рингер и слот снимаются прежним путём отбоя. Одновременный ответ на двух устройствах остаётся за
+  JS: страница, которая только что ответила, работает и слышит выбор звонящего из синхронизации. Список чатов вычитает
+  `select_answer` собеседника из непрочитанного, с датой собственного правила (`call-hangup-unread.ts`).
+- Известное ограничение: сборка Android без `SelectAnswerPolicy` на том же аккаунте принимает этот пуш за отбой и
+  рвёт звонки, на которые отвечает. Касается аккаунтов с двумя Android-устройствами, из которых обновлено одно.
+- На чём: Samsung SM-A528B ↔ веб TEST1; для шага 2 — Bastyon на том же Samsung тем же аккаунтом. Скрипты
+  `scratchpad/run-sa-answer-here.sh` и `scratchpad/run-dual-bastyon-answer.sh` (перед нажатием в Bastyon проверять
+  `dumpsys window policy`: `showing=true occluded=true` — телефон заблокирован, хотя `isKeyguardShowing=false`).
+- Шаги:
+  1. Правило стоит. Веб звонит, на Samsung ответить в Forta, говорить 15 с, веб кладёт трубку.
+     - **Ожидается:** строка `select_answer for <id>: answered on this device, leaving it`; `onDisconnect` только после
+       отбоя веба; звук идёт весь разговор.
+     - **Раньше:** `onDisconnect` через 2 с после ответа (`saprobe3`).
+  2. Forta свернуть на 2 мин. Веб звонит, Forta звонит; ответить в Bastyon.
+     - **Ожидается:** через 1–2 с после ответа `select_answer for <id>: answered on another device`,
+       `Call ended remotely (type=m.call.select_answer)`, `IncomingRinger: stop`; аудиорежим не `MODE_RINGTONE`; Forta
+       не звонит ни во время разговора, ни после него.
+     - **Раньше:** `no answer in 30s … auto-rejecting` через 30 с (`dualb6`, `dualb7`).
+  3. После шага 1 открыть список чатов: счётчик комнаты вырос только на сообщения, не на принятый звонок.
+- Измерено 2026-09-18 без владельца (`sahere1`, APK с починкой; правило приложение поставило само —
+  `[PushService] Call select_answer push rule added`): ответ в 16:38:58.229, пуш в 16:39:03.235 —
+  `answered on this device, leaving it`; разговор шёл до отбоя веба в 16:39:21, у веба `aOut` 4995 → 55393 байт.
+- Измерено 2026-09-18 с владельцем (`ownerb1`, процесс Forta убит, звонок пришёл пушем, владелец ответил в Forta):
+  `Accept pressed` в 18:17:41.138, пуш в 18:17:48.491 — `answered on this device, leaving it`; разговор шёл до отбоя
+  веба. Шаг 1 подтверждён и с холодного старта.
+- Измерено 2026-09-18 с владельцем (`ownerb3`, процесс Forta убит, Bastyon запущен, владелец ответил в Bastyon): рингер
+  Forta с 18:23:00.707, веб соединился в 18:23:10;
+  ```
+  18:23:10.047 I/FortaPush: select_answer for 1789744979182SUl51Q6azQdOLyCR: answered on another device
+  18:23:10.047 D/FortaPush: Call ended remotely (type=m.call.select_answer), tearing down incoming UI
+  18:23:10.075 D/IncomingRinger: stop callId=1789744979182SUl51Q6azQdOLyCR
+  18:23:10.092 I/CallTeardown: endCall reason=DISCONNECT
+  ```
+  Рингер снят через 28 мс после пуша; во время разговора сверху Bastyon, `MODE_IN_COMMUNICATION`; после отбоя и через
+  35 с Forta не звонила, `MODE_NORMAL`. В прогоне `ownerb2` никто не ответил, и Forta отклонила звонок по таймауту 30 с,
+  как раньше. Вариант «страница Forta заморожена в фоне» отдельно не гоняли: пуш-путь от состояния страницы не зависит.
+- Измерено 2026-09-18 с владельцем (`ownerb4`, шаг 3): владелец обнулил счётчик чата и свернул Forta; веб позвонил,
+  владелец ответил в Bastyon (пуш в 19:07:04.701 — `answered on another device`, рингер снят через 21 мс). Замороженная
+  страница звонка не видела; после вывода Forta на список чатов (чат не открывали) счётчик комнаты по CDP — **1**. Сервер
+  посчитал три события собеседника: `m.call.invite` (правило по умолчанию), `m.call.select_answer` (новое правило, пуш
+  пришёл) и `m.call.hangup`. Без вычитания `select_answer` было бы 2. Единица — приглашение: так принятый на другом
+  устройстве звонок считался и до этой правки (`hcount-rule`), новое правило значок не увеличило.
+- Статус: ☑ шаги 1–3 проверены 2026-09-18 (`sahere1`, `ownerb1`, `ownerb3`, `ownerb4`)
 
 ### Forta, открытая из «Недавних», не звонит по завершённому звонку
 - Коммит: `612fbb4e`
