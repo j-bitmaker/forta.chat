@@ -102,6 +102,20 @@ class IncomingCallActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Started from the app's card in Recents: the task kept the intent of a
+        // call that is over. Open the app instead of ringing for it.
+        if (RingerRelaunchPolicy.isFromRecents(intent.flags)) {
+            Log.i(TAG, "onCreate: relaunched from Recents for ${intent.getStringExtra("callId")} — opening the app")
+            runCatching {
+                startActivity(Intent(this, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                })
+            }.onFailure { Log.w(TAG, "Failed to open MainActivity on a Recents relaunch", it) }
+            finish()
+            return
+        }
         currentInstance = this
         // O13: the volume rocker on this screen must change the ringer, not
         // media — the ringtone plays on STREAM_RING, and a user turning a

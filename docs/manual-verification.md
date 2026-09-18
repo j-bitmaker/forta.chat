@@ -24,6 +24,33 @@
 
 ## Ожидают проверки
 
+### Forta, открытая из «Недавних», не звонит по завершённому звонку
+- Коммит: `PENDING_HASH`
+- Почему нужен человек: `RingerRelaunchPolicyTest` доказывает распознавание флага и место проверки в `onCreate`.
+  Что Android действительно перезапускает рингер из карточки «Недавних» и что с починкой открывается приложение —
+  видно только на аппарате.
+- Найдено 2026-09-18 с владельцем (`ownerb3`): Forta была убита, рингер поднял пуш, на звонок ответили в Bastyon
+  (18:23:10, рингер снят). В 18:25:01 владелец открыл Forta из «Недавних» — «а там звонок идёт»:
+  ```
+  18:25:01.085 I/HoneySpace.TaskView: onClick, tasks = [[id=21005 …
+  18:25:01.106 I/ActivityTaskManager: START u0 {flg=0x34100000 cmp=com.forta.chat/.plugins.calls.IncomingCallActivity (has extras)}
+  18:25:01.259 D/IncomingRinger: arm callId=1789744979182SUl51Q6azQdOLyCR
+  18:25:31.259 W/IncomingRinger: no answer in 30s for 1789744979182SUl51Q6azQdOLyCR — auto-rejecting
+  ```
+  Когда рингер поднят пушем при мёртвом приложении, `IncomingCallActivity` — корень задачи, и задача хранит её intent
+  с `callId` после `finish()`. Нажатие на карточку запускает рингер заново. От правила `select_answer` не зависит:
+  то же после отбоя звонящего и после отклонения.
+- Что изменилось: `IncomingCallActivity.onCreate` при `FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY` (в логе `0x00100000` в
+  `flg=0x34100000`; запуски для звонка — `0x14000000` и `0x34000000`) открывает `MainActivity` и закрывается, не трогая
+  рингер.
+- На чём: Samsung SM-A528B ↔ веб TEST1, скрипт `scratchpad/run-recents-relaunch.sh` (нужен разблокированный телефон).
+- Шаги:
+  1. Forta смахнуть из «Недавних» (процесса нет). Веб звонит и через 12 с отменяет. Открыть Forta из «Недавних».
+     - **Ожидается:** `onCreate: relaunched from Recents for <id> — opening the app`, сверху `MainActivity`, второго
+       `IncomingRinger: arm` нет, `MODE_NORMAL`.
+     - **Раньше:** рингер на 30 с (`ownerb3`).
+- Статус: ☐ не проверено — телефон заблокировался до прогона (`recents2`)
+
 ### Forta перестаёт звонить, когда на звонок ответили на другом устройстве (#809 п. 2)
 - Коммит: `eca48624`
 - Почему нужен человек: `SelectAnswerPolicyTest` и `SelectAnswerContractTest` доказывают решение «ответили здесь или
