@@ -8,9 +8,8 @@ import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import java.io.*
+import com.forta.chat.plugins.calls.CallHangupSignal
 import java.net.HttpURLConnection
-import java.net.InetSocketAddress
-import java.net.Proxy
 import java.net.URL
 
 @CapacitorPlugin(name = "TorFile")
@@ -18,9 +17,17 @@ class TorFilePlugin : Plugin() {
 
     companion object {
         private const val TAG = "TorFilePlugin"
-        private const val PROXY_PORT = 8181
         private const val BUFFER_SIZE = 8192
     }
+
+    /**
+     * The app's local proxy is a reverse proxy: it takes the target in its path
+     * (`http://127.0.0.1:8181/{encodeURIComponent(url)}`, as the service worker
+     * and [CallHangupSignal] address it). Used as an ordinary HTTP proxy it gets
+     * `CONNECT host:443` for an https target and refuses it.
+     */
+    private fun openThroughTor(targetUrl: String): HttpURLConnection =
+        URL(CallHangupSignal.torUrl(targetUrl)).openConnection() as HttpURLConnection
 
     @PluginMethod
     fun upload(call: PluginCall) {
@@ -45,9 +52,7 @@ class TorFilePlugin : Plugin() {
 
                 val fileSize = inputStream.available().toLong()
 
-                val proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", PROXY_PORT))
-                val url = URL(uploadUrl)
-                val conn = url.openConnection(proxy) as HttpURLConnection
+                val conn = openThroughTor(uploadUrl)
 
                 conn.requestMethod = "POST"
                 conn.doOutput = true
@@ -109,8 +114,7 @@ class TorFilePlugin : Plugin() {
 
         Thread {
             try {
-                val proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", PROXY_PORT))
-                val conn = URL(url).openConnection(proxy) as HttpURLConnection
+                val conn = openThroughTor(url)
 
                 if (authHeader.isNotEmpty()) {
                     conn.setRequestProperty("Authorization", authHeader)

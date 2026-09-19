@@ -977,7 +977,8 @@ export class MatrixClientService {
   /** Matrix media upload endpoint for native TorFile streaming uploads. */
   getMediaUploadEndpoint(fileName?: string): { url: string; authorization: string } {
     if (!this.client) throw new Error("Client not initialized");
-    const accessToken = this.client.credentials?.accessToken;
+    // The SDK keeps the token on the client; `client.credentials` holds only the userId.
+    const accessToken = this.client.getAccessToken?.();
     if (!accessToken) throw new Error("No access token");
 
     const url = new URL(`${this.baseUrl}/_matrix/media/v3/upload`);
