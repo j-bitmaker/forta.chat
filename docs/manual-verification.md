@@ -156,125 +156,6 @@
      режима и маршрутизации записаны.
 - Статус: ☐ не проверено
 
-### Ответ из шторки и с экрана блокировки переживает 30-ю секунду
-- Коммит: `d606afdc`
-- Почему нужен человек: контракт-тесты доказывают, что рингтон/вибрация/дедлайн
-  принадлежат `IncomingRinger`, что каждый путь ответа его останавливает и что
-  интенты шторки несут нужные флаги и `roomId`. Не доказано без аппарата: что
-  системная шторка действительно доставляет тап через `onNewIntent` на всех
-  OEM-лаунчерах, что keyguard с PIN отпускает WebView после `onNewIntent`, и
-  путь FCM при убитом процессе (push на эмуляторе нет). На эмуляторе
-  подтверждён только цикл рингера: `arm` → 30 с → `auto-rejecting` → `stop` →
-  Telecom REJECT → teardown; тап по Answer в шторке на софтверном рендере до
-  PendingIntent не доходит (SystemUI в ANR).
-- На чём: Samsung и Pixel; для убитого процесса и keyguard — CI-сборка (push).
-  Шаги и логи — F26 в `docs/call-fix-checklist.md`.
-- Шаги:
-  1. Pixel звонит, на Pixel нажать Home во время ринга, принять из шторки,
-     слушать 45 с: рингтон замолкает в момент ответа, звонок жив.
-  2. То же с заблокированным экраном (PIN): звонок соединяется без ручной
-     разблокировки или после подтверждения PIN, но не висит в «Соединение…».
-  3. Убитый процесс (CI-сборка): смахнуть Forta из недавних, позвонить,
-     принять из шторки при выключенном экране — соединяется.
-  4. Отклонить из шторки при живом процессе — у звонящего «отклонён» ≤ 3 с.
-- Измерено 2026-09-10 (UTC) на Samsung SM-A528B (Android 14), сборка
-  `f83b30e7` с FCM, процесс жив, звонящий — веб TEST1. Скрипт
-  `scratchpad/run-shade.sh`: во время ринга Home, шторка раскрывается
-  (`cmd statusbar expand-notifications`), кнопка уведомления в SystemUI
-  нажимается через `adb input tap`. Логи `scratchpad/runs/shade-*`, время
-  телефона местное.
-  - Шаг 1 проходит на Samsung. «Ответить» в шторке дошло до рингера через
-    `onNewIntent`, рингтон остановлен через 39 мс, звонок прожил 45 с:
-    ```
-    00:25:11.875 D/IncomingCallActivity: onNewIntent: dispatching action=accept on resident instance
-    00:25:11.875 D/IncomingCallActivity: Accept pressed
-    00:25:11.914 D/IncomingRinger: stop callId=1789075497936ZA6datkny0aIGO8K
-    00:25:11.914 D/CallConnection: onAnswer: callId=1789075497936ZA6datkny0aIGO8K, roomId=!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app
-    00:25:12.240 I/Capacitor/Console: [NativeCallBridge] matrixCall ready, answering (matchById=true, matchByRoom=false): 1789075497936ZA6datkny0aIGO8K
-    ```
-    - У веба `connected/stable` через 6 с после нажатия; за следующие 45 с
-      входящие байты 497 → 106 040, энергия звука 2,66 — звук с телефона идёт.
-    - Через 6 и через 45 с сверху `CallActivity`, режим
-      `MODE_IN_COMMUNICATION`. Веб положил трубку в 00:26:04 (`onDisconnect` →
-      `CallTeardown: endCall reason=DISCONNECT`), после этого `MODE_NORMAL`.
-    - Pixel-половина не закрыта.
-  - Шаг 4 проходит на Samsung: веб узнал об отказе через 615 мс после
-    «Отклонить» в шторке (`onRejectReceived` в консоли веба,
-    2026-09-10T21:26:55.771Z). Время нажатия снято часами того же Mac до
-    `adb input tap`, так что 615 мс — верхняя граница.
-    ```
-    00:26:55.071 D/IncomingCallActivity: onNewIntent: dispatching action=decline on resident instance
-    00:26:55.071 D/IncomingCallActivity: Decline pressed
-    00:26:55.102 D/IncomingRinger: stop callId=1789075603043SyKbQrIfRk0MEnA3
-    00:26:55.103 D/CallConnection: onReject: callId=1789075603043SyKbQrIfRk0MEnA3, roomId=!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app
-    00:26:55.104 I/CallTeardown: endCall reason=REJECT callId=1789075603043SyKbQrIfRk0MEnA3 State(audioMode=1, otherCallLive=false, …)
-    ```
-    После отказа `MODE_NORMAL`.
-  - Шаг 2 проходит на Samsung: экран заблокирован (PIN) и погашен, звонок
-    соединился и 45 с шёл с таймером, без «Соединение…». Скрипт
-    `scratchpad/run-lock.sh`, логи `scratchpad/runs/lock-answer1-*`; блокирует
-    телефон и отвечает владелец.
-    ```
-    01:10:52.229 D/CallConnectionService: onCreateIncomingConnection: callId=1789078251029fRuckoxwKqjG1sOJ, caller=test3823818, …
-    01:10:52.354 I/ActivityTaskManager: Activity requesting to dismiss Keyguard: ActivityRecord{… com.forta.chat/.plugins.calls.IncomingCallActivity …}
-    01:10:53.285 D/IncomingRinger: arm callId=1789078251029fRuckoxwKqjG1sOJ
-    01:11:02.455 D/IncomingCallActivity: Accept pressed
-    01:11:02.473 D/IncomingRinger: stop callId=1789078251029fRuckoxwKqjG1sOJ
-    01:11:02.474 D/CallConnection: onAnswer: callId=1789078251029fRuckoxwKqjG1sOJ, roomId=!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app
-    01:11:02.807 I/Capacitor/Console: [NativeCallBridge] matrixCall ready, answering (matchById=true, matchByRoom=false): …
-    ```
-    - Рингер поднялся поверх блокировки: `IncomingCallActivity` сверху при
-      `isKeyguardShowing=true`. Ответ — кнопкой «Принять» на рингере.
-    - У веба `connected/stable` в 22:11:06.883Z (UTC), через 4,4 с после
-      «Принять». К этому моменту блокировка уже снята
-      (`isKeyguardShowing=false`), сверху `CallActivity`. Чем владелец снял
-      её при ответе (PIN или биометрия), он не помнит.
-    - Каждые 5 с на экране звонка идёт таймер (00:10 → 01:35) и кнопки
-      «Выкл. микрофон», «Вкл. видео», «Динамик телефона»; входящие байты у
-      веба 11 541 → 216 335.
-    - Веб положил трубку в 01:12:43 (`onDisconnect` → `CallTeardown: endCall
-      reason=DISCONNECT`), после этого `MODE_NORMAL`.
-- Измерено 2026-09-17 без владельца, Pixel-половина шагов 1 и 4 (`ee6e99a3`, три звонка на шаг 1 и два на шаг 4).
-  Samsung SM-A528B (Android 14) звонит на Pixel 9 (Android 17), оба по Wi-Fi, APK `ee6e99a3`. Скрипт
-  `scratchpad/run-pixel-shade.sh`, логи `scratchpad/runs/pshade0-*` и `pshade1-*`. Время по часам Pixel (они на 1,2 с
-  впереди Samsung).
-  - Шаг 1 прошёл, 3 из 3. Во время ринга Pixel получал Home, сверху был лаунчер. «Answer» в развёрнутой шторке дошло
-    до рингера, рингтон остановлен через 21–29 мс, оба телефона сообщили о соединении через 1–2 с. Через 45 с на Pixel
-    сверху `CallActivity`, режим `MODE_IN_COMMUNICATION`, завершений звонка нет. После отбоя через 30 с на обоих
-    `MODE_NORMAL`:
-    ```
-    18:59:52.477 D/IncomingCallActivity: onNewIntent: dispatching action=accept on resident instance
-    18:59:52.477 D/IncomingCallActivity: Accept pressed
-    18:59:52.498 D/IncomingRinger: stop callId=…
-    ```
-  - Шаг 4 прошёл в первом круге, во втором уложился в 3,1 с. «Decline» в шторке: `onReject` и `m.call.reject` через
-    25–50 мс после нажатия, `endCall reason=REJECT`. Samsung получил `onRejectReceived()` через 0,4 с (первый круг) и
-    3,1 с (второй) — во втором сервер отвечал на `PUT m.call.reject` 2 978 мс, в первом 216 мс. Через 30 с на обоих
-    `MODE_NORMAL`.
-  - Не проверены на Pixel: шаг 2 (экран блокировки с PIN) и шаг 3 (убитый процесс, выключенный экран) — PIN вводит
-    владелец.
-- Измерено 2026-09-17 с владельцем, Pixel-половина шагов 2 и 3. Samsung SM-A528B звонит на Pixel 9 (Android 17, PIN),
-  оба по Wi-Fi, APK `ee6e99a3`. Скрипт `scratchpad/run-pixel-lock.sh`, логи `scratchpad/runs/plock1-*` (шаг 2) и
-  `plock2-*` (шаг 3). Время по часам Pixel.
-  - Шаг 2 прошёл. Приложение живо, Pixel заблокирован, экран погашен. Звонок поднял экран входящего поверх экрана
-    блокировки, владелец ответил через 6 с. Оба телефона сообщили о соединении через 3 с после ответа, сверху
-    `CallActivity`, экран блокировки снят. Через 20 с разговор жив (`MODE_IN_COMMUNICATION` на обоих). После отбоя
-    Samsung через 30 с на обоих `MODE_NORMAL`.
-  - Шаг 3 прошёл. Владелец смахнул Forta из недавних, процесс завершился, Pixel заблокирован и погашен. Звонок пришёл
-    пушем через 2,6 с после отправки invite, владелец ответил на экране входящего через 5 с, ещё при показанном экране
-    блокировки. WebView ещё не было, ответ отложили и повторили, когда JS поднялся. Холодный старт увидел живой звонок и
-    не тронул его. Соединение — через 7 с после ответа:
-    ```
-    19:34:21.705 D/FortaPush: WebView not alive, skipping JS forward
-    19:34:26.081 D/IncomingCallActivity: Accept pressed
-    19:34:26.123 W/CallConnection: onAnswer: JS listener not wired, queued for replay
-    19:34:26.546 I/CallTeardown: endCall reason=COLD_START callId=… State(audioMode=3, otherCallLive=true, …) actions=[]
-    19:34:31.838 I/Capacitor/Console: [call-service] Pre-accepted incoming call, skipping ringer: …
-    19:34:33.133 D/NativeWebRTCManager: [pc_…] ICE connection state: CONNECTED
-    ```
-    Через 20 с разговор жив. Отбой Samsung пришёл пушем, соединение закрылось через 6 мс, через 30 с на обоих
-    `MODE_NORMAL`.
-- Статус: ☐ Pixel: шаги 1–4 прошли 2026-09-17; Samsung: шаги 1 и 4 прошли 2026-09-10, шаги 2–3 не проверены
 ### Громкая связь: отказ и пин ручного выбора
 - Коммит: 62581806
 - Почему нужен человек: `AudioRoutePolicyTest` доказывает таблицу
@@ -652,6 +533,137 @@
 
 ## Проверено
 
+### Ответ из шторки и с экрана блокировки переживает 30-ю секунду
+- Коммит: `d606afdc`
+- Почему нужен человек: контракт-тесты доказывают, что рингтон/вибрация/дедлайн
+  принадлежат `IncomingRinger`, что каждый путь ответа его останавливает и что
+  интенты шторки несут нужные флаги и `roomId`. Не доказано без аппарата: что
+  системная шторка действительно доставляет тап через `onNewIntent` на всех
+  OEM-лаунчерах, что keyguard с PIN отпускает WebView после `onNewIntent`, и
+  путь FCM при убитом процессе (push на эмуляторе нет). На эмуляторе
+  подтверждён только цикл рингера: `arm` → 30 с → `auto-rejecting` → `stop` →
+  Telecom REJECT → teardown; тап по Answer в шторке на софтверном рендере до
+  PendingIntent не доходит (SystemUI в ANR).
+- На чём: Samsung и Pixel; для убитого процесса и keyguard — CI-сборка (push).
+  Шаги и логи — F26 в `docs/call-fix-checklist.md`.
+- Шаги:
+  1. Pixel звонит, на Pixel нажать Home во время ринга, принять из шторки,
+     слушать 45 с: рингтон замолкает в момент ответа, звонок жив.
+  2. То же с заблокированным экраном (PIN): звонок соединяется без ручной
+     разблокировки или после подтверждения PIN, но не висит в «Соединение…».
+  3. Убитый процесс (CI-сборка): смахнуть Forta из недавних, позвонить,
+     принять из шторки при выключенном экране — соединяется.
+  4. Отклонить из шторки при живом процессе — у звонящего «отклонён» ≤ 3 с.
+- Измерено 2026-09-10 (UTC) на Samsung SM-A528B (Android 14), сборка
+  `f83b30e7` с FCM, процесс жив, звонящий — веб TEST1. Скрипт
+  `scratchpad/run-shade.sh`: во время ринга Home, шторка раскрывается
+  (`cmd statusbar expand-notifications`), кнопка уведомления в SystemUI
+  нажимается через `adb input tap`. Логи `scratchpad/runs/shade-*`, время
+  телефона местное.
+  - Шаг 1 проходит на Samsung. «Ответить» в шторке дошло до рингера через
+    `onNewIntent`, рингтон остановлен через 39 мс, звонок прожил 45 с:
+    ```
+    00:25:11.875 D/IncomingCallActivity: onNewIntent: dispatching action=accept on resident instance
+    00:25:11.875 D/IncomingCallActivity: Accept pressed
+    00:25:11.914 D/IncomingRinger: stop callId=1789075497936ZA6datkny0aIGO8K
+    00:25:11.914 D/CallConnection: onAnswer: callId=1789075497936ZA6datkny0aIGO8K, roomId=!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app
+    00:25:12.240 I/Capacitor/Console: [NativeCallBridge] matrixCall ready, answering (matchById=true, matchByRoom=false): 1789075497936ZA6datkny0aIGO8K
+    ```
+    - У веба `connected/stable` через 6 с после нажатия; за следующие 45 с
+      входящие байты 497 → 106 040, энергия звука 2,66 — звук с телефона идёт.
+    - Через 6 и через 45 с сверху `CallActivity`, режим
+      `MODE_IN_COMMUNICATION`. Веб положил трубку в 00:26:04 (`onDisconnect` →
+      `CallTeardown: endCall reason=DISCONNECT`), после этого `MODE_NORMAL`.
+    - Pixel-половина не закрыта.
+  - Шаг 4 проходит на Samsung: веб узнал об отказе через 615 мс после
+    «Отклонить» в шторке (`onRejectReceived` в консоли веба,
+    2026-09-10T21:26:55.771Z). Время нажатия снято часами того же Mac до
+    `adb input tap`, так что 615 мс — верхняя граница.
+    ```
+    00:26:55.071 D/IncomingCallActivity: onNewIntent: dispatching action=decline on resident instance
+    00:26:55.071 D/IncomingCallActivity: Decline pressed
+    00:26:55.102 D/IncomingRinger: stop callId=1789075603043SyKbQrIfRk0MEnA3
+    00:26:55.103 D/CallConnection: onReject: callId=1789075603043SyKbQrIfRk0MEnA3, roomId=!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app
+    00:26:55.104 I/CallTeardown: endCall reason=REJECT callId=1789075603043SyKbQrIfRk0MEnA3 State(audioMode=1, otherCallLive=false, …)
+    ```
+    После отказа `MODE_NORMAL`.
+  - Шаг 2 проходит на Samsung: экран заблокирован (PIN) и погашен, звонок
+    соединился и 45 с шёл с таймером, без «Соединение…». Скрипт
+    `scratchpad/run-lock.sh`, логи `scratchpad/runs/lock-answer1-*`; блокирует
+    телефон и отвечает владелец.
+    ```
+    01:10:52.229 D/CallConnectionService: onCreateIncomingConnection: callId=1789078251029fRuckoxwKqjG1sOJ, caller=test3823818, …
+    01:10:52.354 I/ActivityTaskManager: Activity requesting to dismiss Keyguard: ActivityRecord{… com.forta.chat/.plugins.calls.IncomingCallActivity …}
+    01:10:53.285 D/IncomingRinger: arm callId=1789078251029fRuckoxwKqjG1sOJ
+    01:11:02.455 D/IncomingCallActivity: Accept pressed
+    01:11:02.473 D/IncomingRinger: stop callId=1789078251029fRuckoxwKqjG1sOJ
+    01:11:02.474 D/CallConnection: onAnswer: callId=1789078251029fRuckoxwKqjG1sOJ, roomId=!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app
+    01:11:02.807 I/Capacitor/Console: [NativeCallBridge] matrixCall ready, answering (matchById=true, matchByRoom=false): …
+    ```
+    - Рингер поднялся поверх блокировки: `IncomingCallActivity` сверху при
+      `isKeyguardShowing=true`. Ответ — кнопкой «Принять» на рингере.
+    - У веба `connected/stable` в 22:11:06.883Z (UTC), через 4,4 с после
+      «Принять». К этому моменту блокировка уже снята
+      (`isKeyguardShowing=false`), сверху `CallActivity`. Чем владелец снял
+      её при ответе (PIN или биометрия), он не помнит.
+    - Каждые 5 с на экране звонка идёт таймер (00:10 → 01:35) и кнопки
+      «Выкл. микрофон», «Вкл. видео», «Динамик телефона»; входящие байты у
+      веба 11 541 → 216 335.
+    - Веб положил трубку в 01:12:43 (`onDisconnect` → `CallTeardown: endCall
+      reason=DISCONNECT`), после этого `MODE_NORMAL`.
+- Измерено 2026-09-17 без владельца, Pixel-половина шагов 1 и 4 (`ee6e99a3`, три звонка на шаг 1 и два на шаг 4).
+  Samsung SM-A528B (Android 14) звонит на Pixel 9 (Android 17), оба по Wi-Fi, APK `ee6e99a3`. Скрипт
+  `scratchpad/run-pixel-shade.sh`, логи `scratchpad/runs/pshade0-*` и `pshade1-*`. Время по часам Pixel (они на 1,2 с
+  впереди Samsung).
+  - Шаг 1 прошёл, 3 из 3. Во время ринга Pixel получал Home, сверху был лаунчер. «Answer» в развёрнутой шторке дошло
+    до рингера, рингтон остановлен через 21–29 мс, оба телефона сообщили о соединении через 1–2 с. Через 45 с на Pixel
+    сверху `CallActivity`, режим `MODE_IN_COMMUNICATION`, завершений звонка нет. После отбоя через 30 с на обоих
+    `MODE_NORMAL`:
+    ```
+    18:59:52.477 D/IncomingCallActivity: onNewIntent: dispatching action=accept on resident instance
+    18:59:52.477 D/IncomingCallActivity: Accept pressed
+    18:59:52.498 D/IncomingRinger: stop callId=…
+    ```
+  - Шаг 4 прошёл в первом круге, во втором уложился в 3,1 с. «Decline» в шторке: `onReject` и `m.call.reject` через
+    25–50 мс после нажатия, `endCall reason=REJECT`. Samsung получил `onRejectReceived()` через 0,4 с (первый круг) и
+    3,1 с (второй) — во втором сервер отвечал на `PUT m.call.reject` 2 978 мс, в первом 216 мс. Через 30 с на обоих
+    `MODE_NORMAL`.
+  - Не проверены на Pixel: шаг 2 (экран блокировки с PIN) и шаг 3 (убитый процесс, выключенный экран) — PIN вводит
+    владелец.
+- Измерено 2026-09-17 с владельцем, Pixel-половина шагов 2 и 3. Samsung SM-A528B звонит на Pixel 9 (Android 17, PIN),
+  оба по Wi-Fi, APK `ee6e99a3`. Скрипт `scratchpad/run-pixel-lock.sh`, логи `scratchpad/runs/plock1-*` (шаг 2) и
+  `plock2-*` (шаг 3). Время по часам Pixel.
+  - Шаг 2 прошёл. Приложение живо, Pixel заблокирован, экран погашен. Звонок поднял экран входящего поверх экрана
+    блокировки, владелец ответил через 6 с. Оба телефона сообщили о соединении через 3 с после ответа, сверху
+    `CallActivity`, экран блокировки снят. Через 20 с разговор жив (`MODE_IN_COMMUNICATION` на обоих). После отбоя
+    Samsung через 30 с на обоих `MODE_NORMAL`.
+  - Шаг 3 прошёл. Владелец смахнул Forta из недавних, процесс завершился, Pixel заблокирован и погашен. Звонок пришёл
+    пушем через 2,6 с после отправки invite, владелец ответил на экране входящего через 5 с, ещё при показанном экране
+    блокировки. WebView ещё не было, ответ отложили и повторили, когда JS поднялся. Холодный старт увидел живой звонок и
+    не тронул его. Соединение — через 7 с после ответа:
+    ```
+    19:34:21.705 D/FortaPush: WebView not alive, skipping JS forward
+    19:34:26.081 D/IncomingCallActivity: Accept pressed
+    19:34:26.123 W/CallConnection: onAnswer: JS listener not wired, queued for replay
+    19:34:26.546 I/CallTeardown: endCall reason=COLD_START callId=… State(audioMode=3, otherCallLive=true, …) actions=[]
+    19:34:31.838 I/Capacitor/Console: [call-service] Pre-accepted incoming call, skipping ringer: …
+    19:34:33.133 D/NativeWebRTCManager: [pc_…] ICE connection state: CONNECTED
+    ```
+    Через 20 с разговор жив. Отбой Samsung пришёл пушем, соединение закрылось через 6 мс, через 30 с на обоих
+    `MODE_NORMAL`.
+- Измерено 2026-09-21 с владельцем на Samsung SM-A528B (Android 14, PIN), звонящий — веб TEST1, скрипт
+  `scratchpad/run-owner-lock.sh` (со стенда только звонок и логи; экрана блокировки и PIN стенд не касается):
+  - Шаг 2, `lockA1`: телефон заблокирован, процесс жив. Рингер с 22:15:50, владелец ответил кнопкой уведомления —
+    `onNewIntent: dispatching action=accept on resident instance` в 22:16:02.571, `IncomingRinger: stop` через 33 мс,
+    `matrixCall ready, answering` через 0,36 с, веб `connected` в 22:16:05. Разговор 49 с, на 10-й…40-й секунде сверху
+    `CallActivity` поверх блокировки (`showing=false occluded=true`), `MODE_IN_COMMUNICATION`, у веба входящий звук
+    1,8 → 54 КБ, исходящий 31 → 124 КБ. После отбоя веба `endCall reason=DISCONNECT`, `MainActivity`, `MODE_NORMAL`.
+  - Шаг 3, `lockB1`: Forta смахнута, процесса нет, телефон заблокирован. Пуш поднял рингер в 22:18:43 (через 2 с после
+    набора), ответ в 22:18:58.784, `stop` через 21 мс, `onAnswer: JS listener not wired, queued for replay`; после
+    холодного старта `[call-service] Pre-accepted incoming call, skipping ringer` в 22:19:04.7, веб `connected` в
+    22:19:07 — через 8 с после нажатия. Разговор 49 с, звук в обе стороны (45 и 124 КБ), затем `MODE_NORMAL`.
+- Статус: ☑ Pixel: шаги 1–4 прошли 2026-09-17; Samsung: шаги 1 и 4 — 2026-09-10, шаги 2–3 — 2026-09-21 (`lockA1`,
+  `lockB1`)
 ### Отредактированное сообщение в группе не становится «[encrypted]»
 - Коммит: `466338aa`
 - Почему нужен человек: `edit-content.test.ts` и `parse-edit.test.ts` доказывают форму события и запасную расшифровку.
