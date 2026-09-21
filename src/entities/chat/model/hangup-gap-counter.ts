@@ -38,7 +38,9 @@ export interface HangupGapCounter {
   get(query: HangupGapQuery): number | null;
 }
 
-const PAGE_SIZE = 50;
+// A call is up to four of the fetched events (invite, answer, select_answer, hangup), twice what it was
+// when only hangups were asked for; the page doubled with it so the gap reaches as far back as before.
+const PAGE_SIZE = 100;
 const MAX_PAGES = 5;
 const MAX_CONCURRENT = 3;
 const MAX_CACHED = 500;
