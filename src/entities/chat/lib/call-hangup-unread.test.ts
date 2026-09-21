@@ -10,8 +10,14 @@ import { unreadPeerHangupCount, unreadCountWithoutHangups, countPeerHangupsAfter
 const ME = "@me:s";
 const PEER = "@peer:s";
 
-function ev(id: string | undefined, type: string, sender: string, ts: number) {
-  return { getId: () => id, getType: () => type, getSender: () => sender, getTs: () => ts };
+function ev(id: string | undefined, type: string, sender: string, ts: number, callId?: string) {
+  return {
+    getId: () => id,
+    getType: () => type,
+    getSender: () => sender,
+    getTs: () => ts,
+    getContent: () => (callId ? { call_id: callId } : {}),
+  };
 }
 const readIds = (ids: string[]) => (id: string) => ids.includes(id);
 
@@ -152,5 +158,51 @@ describe("countPeerHangupsAfter with the select_answer rule", () => {
 
   it("counts none of them without that rule", () => {
     expect(countPeerHangupsAfter(raw, { myUserId: ME, since: 0, after: 0 })).toBe(1);
+  });
+});
+
+// A call answered in Bastyon left «1» on the chat: the invite the default call rule counts
+// (`ownerb4`, 2026-09-18). An answered call is nothing to catch up on; a missed one is.
+describe("the invite of an answered call", () => {
+  const answeredElsewhere = [
+    ev("$invite", "m.call.invite", PEER, 100, "c1"),
+    ev("$answer", "m.call.answer", ME, 120, "c1"),
+    ev("$select", "m.call.select_answer", PEER, 150, "c1"),
+    ev("$hangup", "m.call.hangup", PEER, 200, "c1"),
+  ];
+
+  it("is taken back together with the select_answer and the hangup", () => {
+    const opts = { myUserId: ME, since: 0, selectAnswerSince: 0, hasRead: readIds([]) };
+    expect(unreadPeerHangupCount(answeredElsewhere, opts)).toBe(3);
+  });
+
+  it("is taken back whatever the dates of the hangup and select_answer rules", () => {
+    const opts = { myUserId: ME, since: Infinity, selectAnswerSince: null, hasRead: readIds([]) };
+    expect(unreadPeerHangupCount(answeredElsewhere, opts)).toBe(1);
+  });
+
+  it("stays in the badge for a missed call, and for a call only the peer's side answered", () => {
+    const missed = [ev("$invite", "m.call.invite", PEER, 100, "c2"), ev("$hangup", "m.call.hangup", PEER, 200, "c2")];
+    expect(unreadPeerHangupCount(missed, { myUserId: ME, since: 0, hasRead: readIds([]) })).toBe(1);
+    const myCall = [ev("$invite", "m.call.invite", ME, 100, "c3"), ev("$answer", "m.call.answer", PEER, 120, "c3")];
+    expect(unreadPeerHangupCount(myCall, { myUserId: ME, since: 0, hasRead: readIds([]) })).toBe(0);
+  });
+
+  it("stays when the answer names another call, and is left alone once read", () => {
+    const other = [ev("$invite", "m.call.invite", PEER, 100, "c4"), ev("$answer", "m.call.answer", ME, 120, "c5")];
+    expect(unreadPeerHangupCount(other, { myUserId: ME, since: 0, hasRead: readIds([]) })).toBe(0);
+    const opts = { myUserId: ME, since: 0, selectAnswerSince: 0, hasRead: readIds(["$invite"]) };
+    expect(unreadPeerHangupCount(answeredElsewhere, opts)).toBe(2);
+  });
+
+  it("is found in /messages pages, where the answer comes before its invite", () => {
+    const raw = (type: string, id: string, sender: string, ts: number, callId: string) =>
+      ({ type, event_id: id, sender, origin_server_ts: ts, content: { call_id: callId } });
+    const answeredCallIds = new Set<string>();
+    const opts = { myUserId: ME, since: 0, selectAnswerSince: 0, after: 0, answeredCallIds };
+    const newer = [raw("m.call.hangup", "$h", PEER, 200, "c1"), raw("m.call.answer", "$a", ME, 120, "c1")];
+    const older = [raw("m.call.invite", "$i", PEER, 100, "c1"), raw("m.call.invite", "$i0", PEER, 50, "c0")];
+    expect(countPeerHangupsAfter(newer, opts)).toBe(1);
+    expect(countPeerHangupsAfter(older, opts)).toBe(1);
   });
 });

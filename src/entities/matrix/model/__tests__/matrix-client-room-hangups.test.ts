@@ -29,7 +29,12 @@ describe("MatrixClientService.fetchRoomHangups", () => {
     expect(from).toBe("t1");
     expect(limit).toBe(50);
     expect(dir).toBe("b");
-    expect(filter.getRoomTimelineFilterComponent().toJSON().types).toEqual(["m.call.hangup", "m.call.select_answer"]);
+    expect(filter.getRoomTimelineFilterComponent().toJSON().types).toEqual([
+      "m.call.hangup",
+      "m.call.select_answer",
+      "m.call.invite",
+      "m.call.answer",
+    ]);
   });
 
   it("returns null without a client", async () => {

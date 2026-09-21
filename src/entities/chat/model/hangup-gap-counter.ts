@@ -65,6 +65,7 @@ export function createHangupGapCounter(
     let count = 0;
     let token = q.fromToken;
     const earliest = Math.min(q.since, q.selectAnswerSince ?? Infinity);
+    const answeredCallIds = new Set<string>();
     for (let page = 0; page < maxPages; page++) {
       let res: HangupGapPage | null;
       try {
@@ -79,6 +80,7 @@ export function createHangupGapCounter(
         since: q.since,
         selectAnswerSince: q.selectAnswerSince,
         after,
+        answeredCallIds,
       });
       // Pages run newest first: one event at or before either bound ends the gap.
       const passedBound = res.chunk.some(

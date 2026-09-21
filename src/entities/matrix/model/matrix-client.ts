@@ -1244,7 +1244,8 @@ export class MatrixClientService {
     }
   }
 
-  /** One page of a room's call hangups and select_answers, newest first, backwards from a pagination token.
+  /** One page of the call events the unread badge takes back (hangups, select_answers, and the invites and
+   *  answers that tell an answered call), newest first, backwards from a pagination token.
    *  The unread badge counts the hangups a gap in the live timeline hides from it. */
   async fetchRoomHangups(
     roomId: string,
@@ -1254,7 +1255,7 @@ export class MatrixClientService {
     if (!this.client) return null;
     try {
       const filter = new sdk.Filter(this.client.getUserId());
-      filter.setDefinition({ room: { timeline: { types: ["m.call.hangup", "m.call.select_answer"] } } });
+      filter.setDefinition({ room: { timeline: { types: ["m.call.hangup", "m.call.select_answer", "m.call.invite", "m.call.answer"] } } });
       const res = await this.client.createMessagesRequest(roomId, fromToken, limit, sdk.Direction.Backward, filter);
       return { chunk: (res?.chunk ?? []) as Record<string, unknown>[], end: res?.end ?? null };
     } catch (e) {
