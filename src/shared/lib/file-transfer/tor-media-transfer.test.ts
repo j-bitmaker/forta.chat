@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockUpload = vi.fn();
 const mockDownload = vi.fn();
@@ -131,6 +131,71 @@ describe('uploadMediaViaTorFile', () => {
         mimeType: 'application/octet-stream',
       }),
     );
+  });
+});
+
+// The plugin's percent is the hand-off to the local proxy: 100 % within a second, then
+// 45 s of real upload through Tor with a full ring (Samsung, 6 MB, 2026-09-19).
+describe('estimateTorUploadPercent', () => {
+  const MB = 1024 * 1024;
+
+  it('follows the time a file of this size is expected to take', async () => {
+    const { estimateTorUploadPercent } = await import('./tor-media-transfer');
+    // 6 MB at the assumed 100 KB/s is 61 s for the 95 % the estimate may show.
+    expect(estimateTorUploadPercent(100, 0, 6 * MB)).toBe(0);
+    expect(estimateTorUploadPercent(100, 30_000, 6 * MB)).toBe(46);
+    expect(estimateTorUploadPercent(100, 600_000, 6 * MB)).toBe(95);
+  });
+
+  it('never runs ahead of what the plugin has handed over', async () => {
+    const { estimateTorUploadPercent } = await import('./tor-media-transfer');
+    expect(estimateTorUploadPercent(10, 600_000, 6 * MB)).toBe(10);
+  });
+
+  it('never shows a full ring before the server answers, and survives odd input', async () => {
+    const { estimateTorUploadPercent } = await import('./tor-media-transfer');
+    expect(estimateTorUploadPercent(100, Number.MAX_SAFE_INTEGER, 1)).toBe(95);
+    expect(estimateTorUploadPercent(100, -5, 0)).toBe(0);
+  });
+});
+
+describe('uploadMediaViaTorFile progress', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // FileReader in jsdom needs real timeouts; only the ticker and the clock are faked.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    torState.mode = 'always';
+    torState.isReady = true;
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it('keeps the ring moving while Tor carries the body, and stops ticking once done', async () => {
+    const { uploadMediaViaTorFile } = await import('./tor-media-transfer');
+    let finish: (body: string) => void = () => {};
+    mockUpload.mockImplementation((opts: { onProgress?: (p: number) => void }) => {
+      opts.onProgress?.(100); // the proxy took the whole body at once
+      return new Promise<string>((resolve) => { finish = resolve; });
+    });
+    const seen: number[] = [];
+    const blob = new Blob(['x'.repeat(6 * 1024 * 1024)]);
+    const done = uploadMediaViaTorFile({
+      blob,
+      mimeType: 'application/octet-stream',
+      getUploadEndpoint: () => ({ url: 'https://matrix.example/_matrix/media/v3/upload', authorization: 'Bearer t' }),
+      onProgress: ({ loaded, total }) => seen.push(Math.round((loaded * 100) / total)),
+    });
+
+    await vi.waitFor(() => expect(mockUpload).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(Math.max(...seen)).toBeLessThan(60);
+    expect(Math.max(...seen)).toBeGreaterThan(30);
+    expect(seen).toEqual([...seen].sort((a, b) => a - b));
+
+    finish('{"content_uri":"mxc://server/uploaded"}');
+    await expect(done).resolves.toBe('mxc://server/uploaded');
+    const count = seen.length;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(seen.length).toBe(count);
   });
 });
 
