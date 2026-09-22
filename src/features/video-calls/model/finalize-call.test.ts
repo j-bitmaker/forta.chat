@@ -27,6 +27,7 @@ const mockStopAudioRouting: Mock = vi.fn().mockResolvedValue(undefined);
 const mockReportCallEnded: Mock = vi.fn().mockResolvedValue(undefined);
 const mockForceStopAudio: Mock = vi.fn().mockResolvedValue(undefined);
 const mockCloseAllPeerConnections: Mock = vi.fn().mockResolvedValue(undefined);
+const mockRetirePendingMarkers: Mock = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("@/shared/lib/native-calls", () => ({
   nativeCallBridge: {
@@ -34,6 +35,7 @@ vi.mock("@/shared/lib/native-calls", () => ({
     reportCallEnded: mockReportCallEnded,
     forceStopAudio: mockForceStopAudio,
   },
+  retirePendingMarkers: mockRetirePendingMarkers,
 }));
 
 const mockDismissCallUI: Mock = vi.fn().mockResolvedValue(undefined);
@@ -46,6 +48,12 @@ vi.mock("@/shared/lib/native-webrtc", () => ({
       return vi.fn().mockResolvedValue({});
     },
   }),
+}));
+
+const mockReleasePageAwake: Mock = vi.fn();
+
+vi.mock("./page-awake-tone", () => ({
+  releasePageAwake: mockReleasePageAwake,
 }));
 
 // ---------------------------------------------------------------------------
@@ -76,6 +84,40 @@ describe("finalizeCall — central call cleanup", () => {
     expect(mockCloseAllPeerConnections).toHaveBeenCalledOnce();
   });
 
+  it("retires the call's pending answer/reject markers, with the room", async () => {
+    // Without this the marker outlives the call and matches the NEXT invite
+    // from the same room: the redial is auto-answered without a ringer, or
+    // declined unheard. Both were seen on the Samsung bench, 2026-09-09.
+    // finalizeCall is the one place every termination path passes through.
+    // The room has to travel with the callId — a connection created from a
+    // push is keyed by an event_id that never equals the Matrix callId, so
+    // the room is the only key both arrival paths share.
+    const { finalizeCall } = await import("./finalize-call");
+    await finalizeCall("hangup", "callId-markers", "!room:matrix.org");
+
+    expect(mockRetirePendingMarkers).toHaveBeenCalledWith("callId-markers", "!room:matrix.org");
+  });
+
+  it("retires the markers on every termination path, not just hangup", async () => {
+    const { finalizeCall } = await import("./finalize-call");
+    for (const reason of ["reject", "sdk-ended", "error", "ice-failed"] as const) {
+      await finalizeCall(reason, `callId-${reason}`, "!room:matrix.org");
+      expect(mockRetirePendingMarkers).toHaveBeenCalledWith(`callId-${reason}`, "!room:matrix.org");
+    }
+  });
+
+  it("retires the markers before the slower native steps", async () => {
+    // The bridge arms its ordering guard inside retirePendingMarkers. Running
+    // it after stopAudioRouting (which can wait up to 500ms on its own) would
+    // leave a redial arriving in between with nothing to wait for.
+    const { finalizeCall } = await import("./finalize-call");
+    await finalizeCall("hangup", "callId-first", "!room:matrix.org");
+
+    expect(mockRetirePendingMarkers.mock.invocationCallOrder[0]).toBeLessThan(
+      mockStopAudioRouting.mock.invocationCallOrder[0],
+    );
+  });
+
   it("preserves cleanup ordering: stopAudio → reportEnded → dismissUI → closePeers", async () => {
     const { finalizeCall } = await import("./finalize-call");
     await finalizeCall("hangup", "callId-order");
@@ -88,6 +130,31 @@ describe("finalizeCall — central call cleanup", () => {
     expect(stopOrder).toBeLessThan(reportOrder);
     expect(reportOrder).toBeLessThan(dismissOrder);
     expect(dismissOrder).toBeLessThan(closeOrder);
+  });
+
+  it("lets the page fall silent for this call only after the native teardown", async () => {
+    // The page-awake tone keeps Chromium from freezing the page while the
+    // native call screen hides it. Every step above waits on a native reply
+    // that a frozen page never receives, so the tone goes last.
+    const { finalizeCall } = await import("./finalize-call");
+    await finalizeCall("hangup", "callId-tone");
+
+    expect(mockReleasePageAwake).toHaveBeenCalledWith("callId-tone");
+    expect(mockReleasePageAwake.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mockCloseAllPeerConnections.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("releases the page-awake tone even when every native step fails", async () => {
+    mockStopAudioRouting.mockRejectedValueOnce(new Error("a"));
+    mockReportCallEnded.mockRejectedValueOnce(new Error("b"));
+    mockDismissCallUI.mockRejectedValueOnce(new Error("c"));
+    mockCloseAllPeerConnections.mockRejectedValueOnce(new Error("d"));
+
+    const { finalizeCall } = await import("./finalize-call");
+    await finalizeCall("error", "callId-tone-allfail");
+
+    expect(mockReleasePageAwake).toHaveBeenCalledWith("callId-tone-allfail");
   });
 
   it("invokes the same four steps for reject", async () => {
@@ -285,6 +352,75 @@ describe("finalizeCall — central call cleanup", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     await finalizeCall("hangup", "callId-gc");
     expect(mockStopAudioRouting).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("waitForFinalizeSettled — the dial path waits for the previous call", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockStopAudioRouting.mockResolvedValue(undefined);
+    mockReportCallEnded.mockResolvedValue(undefined);
+    mockDismissCallUI.mockResolvedValue(undefined);
+    mockCloseAllPeerConnections.mockResolvedValue(undefined);
+    const mod = await import("./finalize-call");
+    mod.__resetFinalizeCallStateForTests();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("names the call in dismissCallUI and closeAllPeerConnections so native acts on that call only", async () => {
+    const { finalizeCall } = await import("./finalize-call");
+    await finalizeCall("hangup", "callId-named");
+    expect(mockDismissCallUI).toHaveBeenCalledWith({ callId: "callId-named" });
+    expect(mockCloseAllPeerConnections).toHaveBeenCalledWith({ callId: "callId-named" });
+  });
+
+  it("resolves at once when nothing is finalizing", async () => {
+    const { waitForFinalizeSettled } = await import("./finalize-call");
+    await expect(waitForFinalizeSettled(2000)).resolves.toBe(true);
+  });
+
+  it("resolves once the in-flight finalize has run its last step", async () => {
+    vi.useFakeTimers();
+    let releaseDismiss!: () => void;
+    mockDismissCallUI.mockReturnValueOnce(new Promise<void>((resolve) => { releaseDismiss = resolve; }));
+    const { finalizeCall, waitForFinalizeSettled, __hasFinalizeInFlightForTests } = await import("./finalize-call");
+
+    const finalize = finalizeCall("hangup", "callId-inflight");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(__hasFinalizeInFlightForTests()).toBe(true);
+
+    let settled: boolean | null = null;
+    const wait = waitForFinalizeSettled(2000).then((v) => { settled = v; });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(settled).toBeNull();
+    expect(mockCloseAllPeerConnections).not.toHaveBeenCalled();
+
+    releaseDismiss();
+    await finalize;
+    await wait;
+    expect(settled).toBe(true);
+    expect(__hasFinalizeInFlightForTests()).toBe(false);
+    expect(mockCloseAllPeerConnections).toHaveBeenCalledOnce();
+  });
+
+  it("gives up after the timeout while a native step never answers", async () => {
+    vi.useFakeTimers();
+    mockDismissCallUI.mockReturnValueOnce(new Promise<void>(() => {}));
+    const { finalizeCall, waitForFinalizeSettled } = await import("./finalize-call");
+
+    void finalizeCall("hangup", "callId-stuck");
+    await vi.advanceTimersByTimeAsync(0);
+
+    let settled: boolean | null = null;
+    const wait = waitForFinalizeSettled(2000).then((v) => { settled = v; });
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(settled).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    await wait;
+    expect(settled).toBe(false);
   });
 });
 

@@ -6,6 +6,30 @@ import { fileTransferService } from './file-transfer-service';
 /** Stream large uploads through TorFile instead of the WebView XHR path. */
 export const NATIVE_TOR_UPLOAD_THRESHOLD_BYTES = 5 * 1024 * 1024;
 
+/**
+ * What an upload through Tor is assumed to carry, for the progress estimate only.
+ * Measured on the Samsung bench: 6 MB in 47 s, about 130 KB/s (2026-09-19).
+ */
+const ASSUMED_TOR_UPLOAD_BYTES_PER_SEC = 100 * 1024;
+const ESTIMATE_CEILING_PERCENT = 95;
+const ESTIMATE_TICK_MS = 1000;
+
+/**
+ * Upload progress to show for a file going through Tor.
+ *
+ * The plugin reports the bytes it handed to the local reverse proxy, which takes the
+ * whole body within a second and then spends the real time pushing it through Tor:
+ * the ring filled to 100 % at once and sat there for 45 s. Nothing downstream reports
+ * how much has left the phone, so the ring follows the time a file of this size is
+ * expected to take, never runs ahead of the hand-off, and stops short of full until
+ * the server has answered.
+ */
+export function estimateTorUploadPercent(handedOverPercent: number, elapsedMs: number, sizeBytes: number): number {
+  const expectedMs = Math.max(1000, (sizeBytes / ASSUMED_TOR_UPLOAD_BYTES_PER_SEC) * 1000);
+  const byTime = (ESTIMATE_CEILING_PERCENT * Math.max(0, elapsedMs)) / expectedMs;
+  return Math.floor(Math.max(0, Math.min(ESTIMATE_CEILING_PERCENT, handedOverPercent, byTime)));
+}
+
 export interface MediaUploadEndpoint {
   url: string;
   authorization: string;
@@ -102,6 +126,14 @@ export async function uploadMediaViaTorFile(
     path: cachePath,
   });
 
+  let handedOverPercent = 0;
+  const startedAt = Date.now();
+  const report = (): void => {
+    const percent = estimateTorUploadPercent(handedOverPercent, Date.now() - startedAt, blob.size);
+    onProgress?.({ loaded: Math.round((blob.size * percent) / 100), total: blob.size });
+  };
+  const ticker = onProgress ? setInterval(report, ESTIMATE_TICK_MS) : null;
+
   try {
     const { url, authorization } = getUploadEndpoint();
     const responseBody = await fileTransferService.upload({
@@ -111,10 +143,8 @@ export async function uploadMediaViaTorFile(
       authorization,
       onProgress: onProgress
         ? (percent) => {
-            onProgress({
-              loaded: Math.round((blob.size * percent) / 100),
-              total: blob.size,
-            });
+            handedOverPercent = percent;
+            report();
           }
         : undefined,
     });
@@ -125,6 +155,7 @@ export async function uploadMediaViaTorFile(
 
     return parseMatrixUploadResponse(responseBody);
   } finally {
+    if (ticker !== null) clearInterval(ticker);
     await deleteCacheUpload(cachePath);
   }
 }

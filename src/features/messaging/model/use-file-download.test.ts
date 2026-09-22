@@ -10,8 +10,13 @@ vi.mock("@/shared/lib/platform", () => ({
   get isNative() { return mockIsNative; },
   get isElectron() { return mockIsElectron; },
   get isAndroid() { return mockIsAndroid; },
-  get isIOS() { return false; },
   getElectronAPI: () => window.electronAPI,
+  isIOS: false,
+  isWeb: true,
+  hasTor: false,
+  isAndroidWeb: false,
+  currentPlatform: "web",
+  resolveAppUpdaterEnabled: () => false,
 }));
 
 // --- Auth store mock ---

@@ -72,6 +72,7 @@ import {
   installNativeWebRTCProxy,
   uninstallNativeWebRTCProxy,
 } from "./rtc-peer-connection-proxy";
+import { __resetSilentAudioTrackForTests } from "./silent-audio-track";
 
 // Helper: wait a microtask tick so async init of NativeRTCPeerConnection completes.
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
@@ -622,6 +623,225 @@ describe("NativeRTCPeerConnection proxy", () => {
       expect(localStream.id).toBe("native-stream-v2");
 
       pc.close();
+    });
+  });
+
+  describe("negotiationneeded from addTrack", () => {
+    // A browser fires one negotiationneeded per batch of changes. The SDK adds
+    // a video call's audio and video tracks in one loop; firing once per track
+    // made it send a second offer (m.call.negotiate) before the callee
+    // answered, and the callee's own answer then failed against a connection
+    // that early offer had already made stable.
+    const countNegotiationNeeded = (pc: RTCPeerConnection) => {
+      const seen = { count: 0 };
+      pc.addEventListener("negotiationneeded", () => {
+        seen.count += 1;
+      });
+      return seen;
+    };
+
+    it("fires once when the SDK adds a video call's audio and video tracks together", async () => {
+      const pc = new window.RTCPeerConnection();
+      await tick();
+      await tick();
+      const seen = countNegotiationNeeded(pc);
+      const stream = new MediaStream();
+
+      pc.addTrack({ kind: "audio", enabled: true } as MediaStreamTrack, stream);
+      pc.addTrack({ kind: "video", enabled: true } as MediaStreamTrack, stream);
+      await tick();
+
+      expect(seen.count).toBe(1);
+      pc.close();
+    });
+
+    it("fires again for a track added later, as in a voice-to-video upgrade", async () => {
+      const pc = new window.RTCPeerConnection();
+      await tick();
+      await tick();
+      const seen = countNegotiationNeeded(pc);
+      const stream = new MediaStream();
+
+      pc.addTrack({ kind: "audio", enabled: true } as MediaStreamTrack, stream);
+      await tick();
+      pc.addTrack({ kind: "video", enabled: true } as MediaStreamTrack, stream);
+      await tick();
+
+      expect(seen.count).toBe(2);
+      pc.close();
+    });
+
+    it("stays silent while answering: remote offer set, ICE not yet connected", async () => {
+      const pc = new window.RTCPeerConnection();
+      await tick();
+      await tick();
+      await pc.setRemoteDescription({ type: "offer", sdp: "v=0\r\n" });
+      const seen = countNegotiationNeeded(pc);
+
+      pc.addTrack({ kind: "audio", enabled: true } as MediaStreamTrack, new MediaStream());
+      await tick();
+
+      expect(seen.count).toBe(0);
+      pc.close();
+    });
+  });
+
+  describe("remote tracks of one msid share one MediaStream", () => {
+    // libwebrtc raises onTrack once per track. A browser hands every track of
+    // one msid the same MediaStream, and the SDK relies on it: it builds the
+    // feed from the first stream and ignores a later stream with the same id
+    // ("already have a feed for it"). A fresh stream per event left a video
+    // call's feed holding only its audio track, so the native call screen hid
+    // the remote picture for the whole call.
+
+    const globals = globalThis as { AudioContext?: unknown };
+    let savedAudioContext: unknown;
+    const streamProto = MediaStream.prototype as { getTracks?: () => MediaStreamTrack[] };
+    let polyfilledGetTracks = false;
+
+    let audioContextsOpened = 0;
+
+    beforeEach(() => {
+      // happy-dom has no Web Audio; the placeholder audio track comes from it.
+      savedAudioContext = globals.AudioContext;
+      __resetSilentAudioTrackForTests();
+      audioContextsOpened = 0;
+      let n = 0;
+      const placeholderTrack = (): object => ({
+        kind: "audio",
+        id: `placeholder-audio-${n++}`,
+        enabled: true,
+        readyState: "live",
+        clone: placeholderTrack,
+      });
+      globals.AudioContext = class {
+        state = "running";
+        constructor() {
+          audioContextsOpened++;
+        }
+        createOscillator() {
+          return { connect: () => {}, start: () => {} };
+        }
+        createMediaStreamDestination() {
+          const track = placeholderTrack();
+          return { stream: { getAudioTracks: () => [track] } };
+        }
+        async close() {
+          this.state = "closed";
+        }
+      };
+      // happy-dom's MediaStream has no getTracks, which the proxy logs with.
+      polyfilledGetTracks = typeof streamProto.getTracks !== "function";
+      if (polyfilledGetTracks) {
+        streamProto.getTracks = function (this: MediaStream) {
+          return [...this.getAudioTracks(), ...this.getVideoTracks()];
+        };
+      }
+    });
+
+    afterEach(() => {
+      __resetSilentAudioTrackForTests();
+      globals.AudioContext = savedAudioContext;
+      if (polyfilledGetTracks) delete streamProto.getTracks;
+    });
+
+    type TrackEventLike = { track: MediaStreamTrack; streams: MediaStream[] };
+
+    async function newPcWithTrackEvents(): Promise<{
+      pc: RTCPeerConnection;
+      peerId: string;
+      events: TrackEventLike[];
+    }> {
+      const pc = new window.RTCPeerConnection();
+      await tick();
+      await tick();
+      const arg = getBridgeMethod("createPeerConnection").mock.calls.at(-1)?.[0] as {
+        peerId: string;
+      };
+      const events: TrackEventLike[] = [];
+      pc.addEventListener("track", (e) => events.push(e as unknown as TrackEventLike));
+      return { pc, peerId: arg.peerId, events };
+    }
+
+    it("adds the video track to the stream the audio track created, and announces it", async () => {
+      const { pc, peerId, events } = await newPcWithTrackEvents();
+
+      fireNativeEvent("onTrack", { peerId, kind: "audio", trackId: "a1", streamId: "remote-1" });
+      const stream = events[0].streams[0];
+      expect(stream.id).toBe("remote-1");
+      const videoTracksOnAnnounce: number[] = [];
+      stream.addEventListener("addtrack", () =>
+        videoTracksOnAnnounce.push(stream.getVideoTracks().length),
+      );
+
+      fireNativeEvent("onTrack", { peerId, kind: "video", trackId: "v1", streamId: "remote-1" });
+
+      expect(events[1].streams[0]).toBe(stream);
+      expect(stream.getAudioTracks()).toHaveLength(1);
+      expect(stream.getVideoTracks()).toEqual([events[1].track]);
+      // CallFeed re-reads its tracks on addtrack, and Chrome fires none for a
+      // script's own addTrack — the proxy has to announce it.
+      expect(videoTracksOnAnnounce.length).toBeGreaterThan(0);
+      expect(videoTracksOnAnnounce.every((count) => count === 1)).toBe(true);
+      pc.close();
+    });
+
+    it("does not add a second placeholder when native repeats onTrack for a track", async () => {
+      const { pc, peerId, events } = await newPcWithTrackEvents();
+
+      fireNativeEvent("onTrack", { peerId, kind: "audio", trackId: "a1", streamId: "remote-1" });
+      fireNativeEvent("onTrack", { peerId, kind: "video", trackId: "v1", streamId: "remote-1" });
+      fireNativeEvent("onTrack", { peerId, kind: "video", trackId: "v1", streamId: "remote-1" });
+
+      const stream = events[0].streams[0];
+      expect(events[2].streams[0]).toBe(stream);
+      expect(events[2].track).toBe(events[1].track);
+      expect(stream.getVideoTracks()).toHaveLength(1);
+      pc.close();
+    });
+
+    it("keeps tracks of different msids in different streams", async () => {
+      const { pc, peerId, events } = await newPcWithTrackEvents();
+
+      fireNativeEvent("onTrack", { peerId, kind: "audio", trackId: "a1", streamId: "remote-1" });
+      fireNativeEvent("onTrack", { peerId, kind: "video", trackId: "v2", streamId: "remote-2" });
+
+      expect(events[1].streams[0]).not.toBe(events[0].streams[0]);
+      expect(events[1].streams[0].id).toBe("remote-2");
+      expect(events[0].streams[0].getVideoTracks()).toHaveLength(0);
+      pc.close();
+    });
+
+    // A placeholder's AudioContext outlived its call and kept one of Chromium's
+    // 10 audio output streams. After a few native calls the page-awake tone
+    // could not play, the hidden page froze a minute into the next call and
+    // missed the peer's hangup (wifion-in2, 2026-09-17).
+    it("opens one AudioContext for the audio placeholders of every call", async () => {
+      for (let call = 0; call < 3; call++) {
+        const { pc, peerId, events } = await newPcWithTrackEvents();
+        fireNativeEvent("onTrack", { peerId, kind: "audio", trackId: `a${call}`, streamId: `remote-${call}` });
+        expect(events[0].track.kind).toBe("audio");
+        expect(events[0].track.enabled).toBe(false);
+        pc.close();
+      }
+      // happy-dom has no mediaDevices; install again so the proxy replaces a stub's getUserMedia.
+      Object.defineProperty(navigator, "mediaDevices", {
+        value: { getUserMedia: vi.fn() },
+        configurable: true,
+      });
+      try {
+        uninstallNativeWebRTCProxy();
+        installNativeWebRTCProxy();
+        for (let call = 0; call < 2; call++) {
+          const local = await navigator.mediaDevices.getUserMedia({ audio: true });
+          expect(local.getAudioTracks()).toHaveLength(1);
+        }
+      } finally {
+        uninstallNativeWebRTCProxy();
+        delete (navigator as { mediaDevices?: unknown }).mediaDevices;
+      }
+
+      expect(audioContextsOpened).toBe(1);
     });
   });
 });

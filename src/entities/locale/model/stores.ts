@@ -1,5 +1,6 @@
 import type { Locale } from "@/entities/locale/model/types";
 import { useLocalStorage } from "@/shared/lib/browser";
+import { detectBrowserLocale } from "@/shared/lib/i18n/detect-locale";
 import { isNative, isIOS } from "@/shared/lib/platform";
 import { registerPlugin } from "@capacitor/core";
 import { defineStore } from "pinia";
@@ -18,11 +19,6 @@ interface AppLocalePlugin {
 const AppLocale = isNative && !isIOS
   ? registerPlugin<AppLocalePlugin>("AppLocale")
   : null;
-
-function detectBrowserLocale(): Locale {
-  const lang = navigator.language?.slice(0, 2);
-  return lang === "ru" ? "ru" : "en";
-}
 
 export const useLocaleStore = defineStore(NAMESPACE, () => {
   const { setLSValue: setLSLocale, value: lsLocale } =

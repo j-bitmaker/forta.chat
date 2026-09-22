@@ -20,6 +20,14 @@ export default defineConfig({
     // `test:*` scripts (`NODE_OPTIONS=--experimental-sqlite`). Harmless for
     // every other test file, which never touches node:sqlite.
     execArgv: ["--experimental-sqlite"],
+    // local-ai/adapters/node-testing imports node-llama-cpp at top level, but it
+    // is only local-ai's devDependency and never installed here. Our tests use
+    // the Fake*/Node* adapters, so point it at a stub; inlining local-ai makes
+    // the alias apply inside the package too.
+    alias: {
+      "node-llama-cpp": path.resolve(__dirname, "./src/test-utils/node-llama-cpp-stub.ts"),
+    },
+    server: { deps: { inline: ["local-ai"] } },
   },
   plugins: [
     vue(),

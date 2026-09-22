@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.telecom.TelecomManager
 import android.util.Log
+import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -48,6 +49,14 @@ class CallPlugin : Plugin() {
 
     private var audioRouter: AudioRouter? = null
 
+    /**
+     * Exactly the three callbacks this plugin instance installed on
+     * [CallConnection]'s companion. Kept so [handleOnDestroy] can clear its own
+     * without stealing a newer instance's.
+     */
+    private var installedCallbacks:
+        Triple<(String, String) -> Unit, (String, String) -> Unit, (String, String) -> Unit>? = null
+
     override fun load() {
         try {
             CallConnectionService.registerPhoneAccount(context)
@@ -55,27 +64,56 @@ class CallPlugin : Plugin() {
             Log.e(TAG, "Failed to register phone account", e)
         }
 
-        CallConnection.onAnswered = { callId ->
+        // Cold-start sweep. The JS audio watchdog only runs on a resume
+        // transition, so a process that died mid-call and comes back fresh
+        // never checks the mode it left behind. The policy acts only on our
+        // own persisted session marker — never on another app's live call —
+        // and never touches MODE_RINGTONE, which Telecom releases itself when
+        // the dead process's connections go with it.
+        runCatching {
+            CallTeardown.endCall(context, CallTeardownPolicy.Reason.COLD_START, null)
+        }.onFailure { Log.w(TAG, "cold-start teardown sweep threw", it) }
+
+        val onAnswered: (String, String) -> Unit = { callId, roomId ->
             notifyListeners("callAnswered", JSObject().apply {
                 put("callId", callId)
                 // Include roomId: on this homeserver the push payload has
                 // the push event_id in place of the Matrix content.call_id,
-                // so JS can't correlate by callId alone. By the time this
-                // callback fires CallConnection.onAnswer has already set
-                // pendingAnswerRoomId, so read it here.
-                put("roomId", CallConnection.pendingAnswerRoomId ?: "")
+                // so JS can't correlate by callId alone.
+                //
+                // It arrives as a parameter rather than being read out of
+                // `CallConnection.pendingAnswer`. That global belongs to
+                // whichever call last wrote a marker, and on the path where
+                // IncomingCallActivity answers with no Telecom connection the
+                // marker for THIS call is written a few statements after the
+                // callback fires — so the read could pair the tapped call's id
+                // with a previous call's room, and JS would arm its answer wait
+                // against that room.
+                put("roomId", roomId)
             })
         }
-        CallConnection.onRejected = { callId ->
+        // Both carry the room for the same reason callAnswered does: a
+        // push-created connection is keyed by the push payload's call_id, which
+        // this homeserver fills with the event_id, so its callId can never equal
+        // the Matrix callId JS holds. Without the room JS cannot tell an event
+        // about the call on screen from one about a call that already ended, and
+        // acts on whichever call it happens to be holding.
+        val onRejected: (String, String) -> Unit = { callId, roomId ->
             notifyListeners("callDeclined", JSObject().apply {
                 put("callId", callId)
+                put("roomId", roomId)
             })
         }
-        CallConnection.onEnded = { callId ->
+        val onEnded: (String, String) -> Unit = { callId, roomId ->
             notifyListeners("callEnded", JSObject().apply {
                 put("callId", callId)
+                put("roomId", roomId)
             })
         }
+        CallConnection.onAnswered = onAnswered
+        CallConnection.onRejected = onRejected
+        CallConnection.onEnded = onEnded
+        installedCallbacks = Triple(onAnswered, onRejected, onEnded)
 
         // Shared AudioRouter instance — same one CallActivity attaches its
         // UI listener to via setUiListener. Prior to Session 01 CallPlugin
@@ -121,14 +159,56 @@ class CallPlugin : Plugin() {
      * Safe to call unconditionally from JS — it's a no-op when a ringer is
      * already present.
      */
+    /**
+     * Telecom's callbacks are process-global statics; this plugin instance is not.
+     * When the activity goes away — the OS reclaiming it mid-call, or
+     * `MainActivity.recreate()` recovering from a dead WebView renderer — leaving
+     * them pointed here sends a native Accept into a Bridge that is being torn
+     * down, instead of letting it take the marker-replay path `onAnswer` already
+     * prepared for exactly this case ("JS listener not wired, queued for replay").
+     *
+     * Cleared by identity: during a recreate the incoming instance may already
+     * have installed its own, and clearing those would silence a live plugin.
+     */
+    override fun handleOnDestroy() {
+        installedCallbacks?.let { (answered, rejected, ended) ->
+            if (CallConnection.onAnswered === answered) CallConnection.onAnswered = null
+            if (CallConnection.onRejected === rejected) CallConnection.onRejected = null
+            if (CallConnection.onEnded === ended) CallConnection.onEnded = null
+        }
+        installedCallbacks = null
+        super.handleOnDestroy()
+    }
+
     @PluginMethod
     fun ensureIncomingCallVisible(call: PluginCall) {
-        val alreadyVisible = IncomingCallActivity.currentInstance != null ||
-            CallConnectionService.currentConnection != null
+        val slot = CallConnectionService.currentConnection
+        val alreadyVisible = IncomingSurfacePolicy.isAlreadyVisibleFor(
+            requestedCallId = call.getString("callId"),
+            activityUp = IncomingCallActivity.currentInstance != null,
+            slotCallId = slot?.callId,
+            slotState = slot?.state,
+            ringingCallId = IncomingRinger.ringingCallId,
+        )
         if (alreadyVisible) {
             Log.d(TAG, "ensureIncomingCallVisible: ringer already up, skip")
             call.resolve()
             return
+        }
+        if (slot != null) {
+            // Nothing presents this connection — no activity, no armed ringer —
+            // so it is an orphan holding the single slot. It has to go before we
+            // offer the new call: Telecom refuses addNewIncomingCall outright
+            // while this app holds a RINGING self-managed call, failing it before
+            // onCreateIncomingConnection (where displacement lives) ever runs.
+            Log.w(TAG, "ensureIncomingCallVisible: releasing an unpresented slot ${slot.callId}")
+            // A refusal is not a reason to give up on the new call: the slot may
+            // have been vacated by its own teardown in the meantime, in which
+            // case Telecom will accept the call anyway. Worth logging, because
+            // it is also what a connection that went live under us looks like.
+            if (!CallConnectionService.releaseUnpresentedConnection()) {
+                Log.w(TAG, "ensureIncomingCallVisible: the unpresented slot was not released")
+            }
         }
         Log.d(TAG, "ensureIncomingCallVisible: no ringer present, launching")
         // Delegate to the existing reportIncomingCall path so we share the
@@ -144,6 +224,16 @@ class CallPlugin : Plugin() {
         val hasVideo = call.getBoolean("hasVideo", false) ?: false
 
         Log.d(TAG, "reportIncomingCall: $callerName ($callId)")
+
+        // The push path skips an invite for a call whose hangup/reject/answer it
+        // has already seen; this path must too. An invite push queued for a
+        // paused page reaches JS after the hangup push tore the ringer down, and
+        // registering it again rang a dead call for 30 s (`dual0`, 2026-09-18).
+        if (callId.isNotEmpty() && CancelledCallStore(context).isCancelled(callId)) {
+            Log.d(TAG, "reportIncomingCall($callId): the call already ended — not ringing")
+            call.resolve()
+            return
+        }
 
         try {
             val telecomManager = context.getSystemService(TelecomManager::class.java)
@@ -195,16 +285,25 @@ class CallPlugin : Plugin() {
         val hasVideo = call.getBoolean("hasVideo", false) ?: false
 
         Log.d(TAG, "reportOutgoingCall: $callerName ($callId)")
+        captureHangupTarget(callId)
 
         try {
             val telecomManager = context.getSystemService(TelecomManager::class.java)
             val handle = CallConnectionService.getPhoneAccountHandle(context)
 
-            val extras = Bundle().apply {
+            // Telecom hands a ConnectionService only the bundle nested under
+            // EXTRA_OUTGOING_CALL_EXTRAS; keys put straight into placeCall's
+            // extras never reach onCreateOutgoingConnection. That is why every
+            // outgoing Connection used to log "callId=" and could not be
+            // matched by id — every keyed teardown treated it as another call.
+            val callExtras = Bundle().apply {
                 putString("callId", callId)
                 putString("callerName", callerName)
                 putBoolean("hasVideo", hasVideo)
+            }
+            val extras = Bundle().apply {
                 putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle)
+                putBundle(TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS, callExtras)
             }
 
             telecomManager.placeCall(
@@ -222,6 +321,16 @@ class CallPlugin : Plugin() {
                 TelecomManager.PRESENTATION_ALLOWED
             )
             connection.setDialing()
+            // Same displacement rule as CallConnectionService's outgoing path,
+            // including why it is unconditional there: this is a dial, and JS
+            // will not dial while a call is live, so anything still in the slot
+            // is a leftover.
+            CallConnectionService.currentConnection?.let { previous ->
+                if (previous !== connection) {
+                    runCatching { previous.onDisconnect() }
+                        .onFailure { Log.w(TAG, "displaced connection teardown threw", it) }
+                }
+            }
             CallConnectionService.currentConnection = connection
             call.resolve()
         }
@@ -229,14 +338,119 @@ class CallPlugin : Plugin() {
 
     @PluginMethod
     fun reportCallEnded(call: PluginCall) {
-        CallConnectionService.currentConnection?.onDisconnect()
-        CallConnectionService.currentConnection = null
+        val callId = call.getString("callId")
+        // Before the connection work and whatever the slot holds: when /sync
+        // beats FCM to the hangup this is the only path that runs, and the FCM
+        // branch that used to be the sole caller of dismissIfShowing never
+        // fires. A null connection must not swallow the dismiss either, or the
+        // ringer keeps playing for a call that is already over. Keyed on the
+        // reported call, so finalizing a stale invite leaves the call that
+        // rings now alone.
+        IncomingCallActivity.dismissIfShowing(callId)
+        // onDisconnect vacates the slot itself, identity-guarded. Clearing it
+        // again here is not just redundant: this method runs on Capacitor's
+        // plugin thread while Telecom assigns a new connection on the main
+        // thread, so an unconditional null can land between the assignment for
+        // the *next* call and anything that reads it — leaving that call with
+        // no Connection to answer, and its own ring backstop hanging it up 45
+        // seconds after the user picked up.
+        val slot = CallConnectionService.currentConnection
+        if (slot != null && !CallSlotPolicy.owns(slot.callId, callId)) {
+            // The slot holds a different call — ending it here is how a
+            // refused second invite used to hang up the conversation.
+            Log.w(TAG, "reportCallEnded($callId): slot holds ${slot.callId}, leaving it")
+        } else {
+            slot?.onDisconnect()
+        }
         call.resolve()
+    }
+
+    /** How long the page gets to install its provider before the capture is retried. */
+    private val CAPTURE_RETRY_MS = 2_000L
+
+    /**
+     * Reads the context native code needs to hang up [callId] itself if a task
+     * swipe destroys the WebView mid-call ([CallHangupSignal]). Taken while
+     * dialling and again once connected — the client may have failed over to
+     * another homeserver mirror in between.
+     */
+    private fun captureHangupTarget(callId: String?, retriesLeft: Int = 1) {
+        if (callId.isNullOrEmpty()) return
+        val bridge = bridge ?: return
+        CallHangupSignal.attach(context)
+        bridge.executeOnMainThread {
+            runCatching {
+                bridge.webView.evaluateJavascript(CallHangupSignal.captureScript(callId)) { result ->
+                    val target = CallHangupSignal.parse(result)?.takeIf { it.callId == callId }
+                    if (target != null) {
+                        CallHangupSignal.remember(target)
+                        Log.d(TAG, "hangup target ready: $target")
+                    } else if (retriesLeft > 0) {
+                        // The page can still be starting when a dial lands right
+                        // after a cold start (`hswipe1`, first call after install).
+                        Log.d(TAG, "no hangup context from JS for $callId yet — retrying")
+                        bridge.webView.postDelayed(
+                            { captureHangupTarget(callId, retriesLeft - 1) },
+                            CAPTURE_RETRY_MS,
+                        )
+                    } else {
+                        Log.w(TAG, "no hangup context from JS for $callId")
+                    }
+                }
+            }.onFailure { Log.w(TAG, "captureHangupTarget($callId) threw", it) }
+        }
     }
 
     @PluginMethod
     fun reportCallConnected(call: PluginCall) {
-        CallConnectionService.currentConnection?.setActive()
+        // setActive() here bypasses CallConnection.onAnswer(), so the silencing
+        // that lives there does not cover this route. JS reaches it whenever the
+        // call connects without Telecom having answered it itself.
+        IncomingRinger.stopAll()
+        IncomingCallActivity.stopRingerIfShowing()
+        val callId = call.getString("callId")
+        captureHangupTarget(callId)
+        val connection = CallConnectionService.currentConnection?.takeIf { slot ->
+            CallSlotPolicy.owns(slot.callId, callId).also { owns ->
+                if (!owns) Log.w(TAG, "reportCallConnected($callId): slot holds ${slot.callId}, leaving it")
+            }
+        }
+        // A slot created from a push is keyed by the push's `$event_id`; its
+        // own onDisconnect stops the foreground service under that id, and
+        // the ledger only knows the Matrix id launchCallUI recorded.
+        connection?.let { CallForegroundService.aliasCall(it.callId, callId) }
+        connection?.setActive()
+        // The answer has been picked up: disarm the backstop that releases a
+        // connection Telecom answered while JS was not there.
+        connection?.markAdoptedByJs()
+        // The answer is on the wire now — JS only reaches here from the
+        // connected state — so the marker has nothing left to carry. It exists
+        // only to replay a decision across a process that was not alive to send
+        // it; kept until finalizeCall instead, it sat there for the whole call
+        // and outlived it entirely whenever teardown never ran (a task swipe),
+        // which is how a later call from the same room got answered unattended.
+        //
+        // Retired here rather than from JS because the key must be the
+        // connection's own: a marker written from a push is keyed by the
+        // event_id, so a JS-side retire carrying the Matrix callId would be
+        // inert on exactly the path that matters most.
+        //
+        // By callId alone, never by room. Any marker belonging to this
+        // connection was written under this connection's id — onAnswer and
+        // IncomingCallActivity both use it — so the room buys nothing here, and
+        // a room-scoped retire from native code would be a guess: only JS knows
+        // whether another call is live in that room. A second invite for the
+        // same room still reaches the push-side ringer even while Telecom
+        // answers it BUSY, and declining it writes a marker this would
+        // otherwise wipe before JS ever read it.
+        connection?.let { CallConnection.retirePendingMarkersForCall(it.callId, null) }
+        // Same reason as CallConnection.onAnswer: the push notification's
+        // Decline button must not outlive the ring.
+        connection?.roomId?.takeIf { it.isNotEmpty() }?.let { roomId ->
+            runCatching {
+                com.forta.chat.FortaFirebaseMessagingService.dismissPushCallNotification(context, roomId)
+            }
+        }
         call.resolve()
     }
 
@@ -436,8 +650,13 @@ class CallPlugin : Plugin() {
                 return
             }
         }
-        audioRouter?.setDevice(device)
-        call.resolve()
+        // A refusal reaches JS as a reject so the toggle can roll back
+        // instead of showing a loudspeaker that is not on.
+        if (audioRouter?.setDevice(device) == true) {
+            call.resolve()
+        } else {
+            call.reject("Audio routing inactive — $type not applied", "router_inactive")
+        }
     }
 
     @PluginMethod
@@ -529,6 +748,36 @@ class CallPlugin : Plugin() {
      * resume. Returns mode as a string identifier so JS does not have
      * to hardcode the Android numeric constants.
      */
+    /**
+     * Release a self-managed Telecom connection that has been ringing past its
+     * deadline, and report whether one was found.
+     *
+     * The JS app-resume watchdog already recovers a stranded
+     * MODE_IN_COMMUNICATION, but it never covered MODE_RINGTONE — which is
+     * where most of the "phone is stuck after a call" reports were submitted
+     * from. That mode is not ours to reset directly (a real cellular call
+     * ringing sets it too); the honest fix is to release *our* connection and
+     * let Telecom drop the mode on its own. [StaleCallPolicy] keeps this from
+     * touching a call the user is about to answer.
+     *
+     * The same sweep releases a connection Telecom answered that JS never
+     * picked up ([CallConnectionService.releaseUnadoptedAnswer]); the JS
+     * watchdog calls this only while it holds no call of its own.
+     */
+    @PluginMethod
+    fun releaseStaleRingingCall(call: PluginCall) {
+        val released = try {
+            // Each net finds nothing unless its own deadline has passed.
+            val ringing = CallConnectionService.releaseStaleRingingConnection()
+            val unadopted = CallConnectionService.releaseUnadoptedAnswer()
+            ringing || unadopted
+        } catch (e: Throwable) {
+            Log.w(TAG, "releaseStaleRingingCall threw", e)
+            false
+        }
+        call.resolve(JSObject().put("released", released))
+    }
+
     @PluginMethod
     fun getAudioStatus(call: PluginCall) {
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -549,6 +798,38 @@ class CallPlugin : Plugin() {
             put("isBtScoOn", isBtScoOn)
         }
         call.resolve(result)
+    }
+
+    /**
+     * Ordered audio events for the current call, oldest first, with times
+     * relative to the first entry. Bug reports attach this so triage can see
+     * how the audio stack reached its final state rather than only what that
+     * state is — the difference between a device that never left MODE_RINGTONE
+     * and one that fell back into it.
+     *
+     * Never fails: an empty timeline (call never started, router replaced) is
+     * a valid answer and must not break report submission.
+     */
+    @PluginMethod
+    fun getAudioTimeline(call: PluginCall) {
+        val entries = try {
+            AudioRouter.getSharedInstance(context).timeline.snapshot()
+        } catch (e: Exception) {
+            Log.w(TAG, "getAudioTimeline failed", e)
+            emptyList()
+        }
+        val firstAt = entries.firstOrNull()?.atMs ?: 0L
+        val array = JSArray()
+        for (entry in entries) {
+            array.put(
+                JSObject().apply {
+                    put("atMs", entry.atMs - firstAt)
+                    put("event", entry.event)
+                    put("detail", entry.detail)
+                },
+            )
+        }
+        call.resolve(JSObject().apply { put("entries", array) })
     }
 
     /**
@@ -579,25 +860,40 @@ class CallPlugin : Plugin() {
 
     @PluginMethod
     fun getPendingAnswer(call: PluginCall) {
-        val pendingCallId = CallConnection.pendingAnswerCallId
-        val pendingRoomId = CallConnection.pendingAnswerRoomId
-        CallConnection.pendingAnswerCallId = null
-        CallConnection.pendingAnswerRoomId = null
+        // One atomic read-and-clear: the three parts can never be mixed
+        // across calls, and a write landing right now is not lost.
+        val marker = CallConnection.takePendingAnswer()
         val ret = com.getcapacitor.JSObject()
-        ret.put("callId", pendingCallId)
-        ret.put("roomId", pendingRoomId)
+        ret.put("callId", marker.callId)
+        ret.put("roomId", marker.roomId)
+        // Lets the JS matcher refuse a room-scoped marker older than an
+        // invite lifetime, which would otherwise hit an unrelated later call.
+        ret.put("atMs", marker.atMs)
         call.resolve(ret)
     }
 
     @PluginMethod
     fun getPendingReject(call: PluginCall) {
-        val pendingCallId = CallConnection.pendingRejectCallId
-        val pendingRoomId = CallConnection.pendingRejectRoomId
-        CallConnection.pendingRejectCallId = null
-        CallConnection.pendingRejectRoomId = null
+        // See getPendingAnswer — one atomic read-and-clear.
+        val marker = CallConnection.takePendingReject()
         val ret = com.getcapacitor.JSObject()
-        ret.put("callId", pendingCallId)
-        ret.put("roomId", pendingRoomId)
+        ret.put("callId", marker.callId)
+        ret.put("roomId", marker.roomId)
+        ret.put("atMs", marker.atMs)
         call.resolve(ret)
+    }
+
+    /**
+     * Called from `finalizeCall` once JS has finished with a call, so its
+     * queued answer/reject cannot reach the next invite from that room.
+     * See [CallConnection.retirePendingMarkersForCall].
+     */
+    @PluginMethod
+    fun retirePendingMarkers(call: PluginCall) {
+        CallConnection.retirePendingMarkersForCall(
+            call.getString("callId"),
+            call.getString("roomId"),
+        )
+        call.resolve()
     }
 }

@@ -41,6 +41,13 @@ interface PushDataPlugin extends Plugin {
    *  system-owned (the channel is immutable), so this is the canonical place
    *  to manage notification sound. */
   openNotificationSettings(): Promise<void>;
+  /** O10: can the incoming-call screen still take over the display? Android 14+
+   *  revokes USE_FULL_SCREEN_INTENT for sideloaded apps and the ringer degrades
+   *  to a heads-up card; `manageable` says a system screen exists to grant it.
+   *  Always allowed before Android 14. */
+  getFullScreenIntentStatus(): Promise<{ allowed: boolean; manageable: boolean }>;
+  /** Open the system screen that grants the full-screen intent (Android 14+). */
+  openFullScreenIntentSettings(): Promise<void>;
   addListener(event: 'pushReceived', handler: (data: PushPayload) => void): Promise<PluginListenerHandle>;
   addListener(event: 'pushOpenRoom', handler: (data: { roomId: string; eventId?: string }) => void): Promise<PluginListenerHandle>;
 }

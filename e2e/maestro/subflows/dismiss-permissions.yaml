@@ -1,0 +1,34 @@
+appId: com.forta.chat
+---
+# Everything here is best-effort: none of these dialogs appear on every run, so
+# each is guarded by `when.visible` and the flow must pass when none show up.
+
+# Android 13+ notification permission, plus the OEM variants.
+- runFlow:
+    when:
+      visible: "Allow"
+    commands:
+      - tapOn: "Allow"
+
+- runFlow:
+    when:
+      visible: "While using the app"
+    commands:
+      - tapOn: "While using the app"
+
+# A software-rendered emulator is slow enough that the system posts
+# "System UI isn't responding" over our app. Choosing Wait dismisses it; Close
+# app would kill the run. Not an app defect — do not "fix" it in the app.
+- runFlow:
+    when:
+      visible: "Wait"
+    commands:
+      - tapOn: "Wait"
+
+# The sideload flavour checks GitHub for a newer release on launch and puts a
+# modal over the sign-in screen.
+- runFlow:
+    when:
+      visible: "LATER"
+    commands:
+      - tapOn: "LATER"

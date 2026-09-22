@@ -208,9 +208,8 @@ class WebRTCPlugin : Plugin() {
                     }
                     notifyListeners("onTrack", data)
 
-                    // Auto-attach remote video to renderer + notify CallActivity
+                    // The manager has already put the track on the call screen's renderer.
                     if (track is VideoTrack) {
-                        mgr.addRemoteTrackSink(track)
                         com.forta.chat.plugins.calls.CallActivity.onRemoteVideo?.invoke()
                     }
                 }
@@ -297,13 +296,7 @@ class WebRTCPlugin : Plugin() {
             call.reject("Missing sdp")
             return
         }
-        val typeStr = call.getString("type") ?: "offer"
-        val type = when (typeStr) {
-            "offer" -> SessionDescription.Type.OFFER
-            "answer" -> SessionDescription.Type.ANSWER
-            "pranswer" -> SessionDescription.Type.PRANSWER
-            else -> SessionDescription.Type.OFFER
-        }
+        val type = SdpTypes.parse(call.getString("type"), SessionDescription.Type.OFFER)
         val sdp = SessionDescription(type, sdpStr)
 
         manager?.setLocalDescription(peerId, sdp) { success ->
@@ -321,13 +314,7 @@ class WebRTCPlugin : Plugin() {
             call.reject("Missing sdp")
             return
         }
-        val typeStr = call.getString("type") ?: "answer"
-        val type = when (typeStr) {
-            "offer" -> SessionDescription.Type.OFFER
-            "answer" -> SessionDescription.Type.ANSWER
-            "pranswer" -> SessionDescription.Type.PRANSWER
-            else -> SessionDescription.Type.ANSWER
-        }
+        val type = SdpTypes.parse(call.getString("type"), SessionDescription.Type.ANSWER)
         val sdp = SessionDescription(type, sdpStr)
 
         manager?.setRemoteDescription(peerId, sdp) { success ->
@@ -493,9 +480,10 @@ class WebRTCPlugin : Plugin() {
         val callId = call.getString("callId") ?: ""
         val direction = call.getString("direction") ?: "outgoing"
 
-        // Start foreground service to keep call alive in background
+        // Start foreground service to keep call alive in background. Keyed by
+        // callId so this call's own stop, however late, cannot end the next one.
         com.forta.chat.plugins.calls.CallForegroundService.start(
-            context, callerName, callType
+            context, callerName, callType, callId
         )
 
         com.forta.chat.plugins.calls.CallActivity.launch(
@@ -506,8 +494,17 @@ class WebRTCPlugin : Plugin() {
 
     @PluginMethod
     fun dismissCallUI(call: PluginCall) {
-        com.forta.chat.plugins.calls.CallActivity.onCallEnded?.invoke()
-        com.forta.chat.plugins.calls.CallForegroundService.stop(context)
+        val callId = call.getString("callId")
+        // The call screen is process-wide like the service: a finalize that
+        // reaches native after the next call's launchCallUI must not close that
+        // call's screen (`redial5`, 2026-09-18: the conversation went on with
+        // MainActivity on top and no call controls).
+        if (com.forta.chat.plugins.calls.CallForegroundService.isStartStale(callId)) {
+            Log.w(TAG, "dismissCallUI for $callId: screen left up — a newer call started")
+        } else {
+            com.forta.chat.plugins.calls.CallActivity.onCallEnded?.invoke()
+        }
+        com.forta.chat.plugins.calls.CallForegroundService.stop(context, callId)
         call.resolve()
     }
 
@@ -553,8 +550,20 @@ class WebRTCPlugin : Plugin() {
      */
     @PluginMethod
     fun closeAllPeerConnections(call: PluginCall) {
+        // The PeerConnections are global. The finalize of an ended call can
+        // reach this step after the next call's launchCallUI — a step that
+        // blocked past the dial's wait, or an incoming call answered in the
+        // window — and would close the new call's connection with the old
+        // one's. Named by the finalize, the close is skipped for a call a
+        // newer start has replaced; that call's own finalize closes all.
+        val callId = call.getString("callId")
+        if (com.forta.chat.plugins.calls.CallForegroundService.isStartStale(callId)) {
+            Log.w(TAG, "closeAllPeerConnections for $callId skipped — a newer call started")
+            call.resolve(JSObject().apply { put("skipped", true) })
+            return
+        }
         manager?.closeAllPeerConnections()
-        call.resolve()
+        call.resolve(JSObject().apply { put("skipped", false) })
     }
 
     @PluginMethod

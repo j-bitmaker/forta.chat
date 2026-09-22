@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // Mock localStorage
 const storage = new Map<string, string>();
@@ -20,7 +20,12 @@ describe("tRaw", () => {
     storage.clear();
   });
 
-  it("returns English text when no locale is set", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns English text when no locale is set on an English device", () => {
+    vi.stubGlobal("navigator", { language: "en-US" });
     const result = tRaw("push.newMessage");
     expect(result).toBe("New message");
   });
@@ -35,6 +40,21 @@ describe("tRaw", () => {
     storage.set("forta-chat:locale", "ru");
     const result = tRaw("push.newMessage");
     expect(result).toBe("Новое сообщение");
+  });
+
+  // The locale store shows a Russian UI on a Russian device without ever
+  // saving that choice, so tRaw must not answer in English there.
+  it("follows the device language when no locale was ever saved", () => {
+    vi.stubGlobal("navigator", { language: "ru-RU" });
+    expect(tRaw("call.warning.torBypassed")).toBe(
+      "Звонки идут мимо Tor: собеседник может видеть ваш IP-адрес.",
+    );
+  });
+
+  it("prefers a saved locale over the device language", () => {
+    vi.stubGlobal("navigator", { language: "ru-RU" });
+    storage.set("forta-chat:locale", JSON.stringify("en"));
+    expect(tRaw("push.newMessage")).toBe("New message");
   });
 
   it("falls back to English for unknown locale", () => {

@@ -9,6 +9,7 @@ import android.content.IntentFilter
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.media.audiofx.AcousticEchoCanceler
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -34,6 +35,13 @@ import android.util.Log
  * [setUiListener] fan state updates out to JS and the call Activity in parallel.
  */
 class AudioRouter private constructor(private val context: Context) {
+
+    /**
+     * Audio events for the current call, surfaced in bug reports. A snapshot
+     * of the audio mode cannot distinguish "never left MODE_RINGTONE" from
+     * "returned to it after the call", which need opposite fixes.
+     */
+    val timeline = CallAudioTimeline()
 
     companion object {
         private const val TAG = "AudioRouter"
@@ -82,6 +90,50 @@ class AudioRouter private constructor(private val context: Context) {
         }
 
         /**
+         * WEE-110: test-friendly pure predicate for whether the device can
+         * successfully create an AcousticEchoCanceler on a given session.
+         *
+         * Returns:
+         *   - true: AcousticEchoCanceler.create(sessionId) succeeded
+         *   - false: it returned null, or setEnabled threw
+         *   - null: the check could not be performed (APIs not available,
+         *           or an exception was caught)
+         *
+         * Exposed at companion scope so it can be covered by a JVM-only test
+         * without running on a real device or mocking AudioEffect.
+         */
+        @androidx.annotation.VisibleForTesting
+        internal fun canCreateHardwareAec(sessionId: Int): Boolean? {
+            return try {
+                // Check if the effect class is available at all
+                if (!AcousticEchoCanceler.isAvailable()) {
+                    return null // API available but effect not supported
+                }
+                // Try to create an instance
+                val aec = AcousticEchoCanceler.create(sessionId)
+                if (aec == null) {
+                    return false // create() returned null
+                }
+                // Try to enable it
+                try {
+                    aec.enabled = true
+                    val success = aec.hasControl()
+                    aec.release()
+                    return success
+                } catch (e: Exception) {
+                    aec.release()
+                    return false // setEnabled threw
+                }
+            } catch (e: Exception) {
+                // Audio APIs on some OEM ROMs are documented to throw
+                // (MIUI privacy shield, Huawei AudioRecord guard). Fall back
+                // to the vendor list in [VendorAudioPolicy].
+                Log.w(LIFECYCLE_TAG, "canCreateHardwareAec threw", e)
+                return null
+            }
+        }
+
+        /**
          * Pure predicate used by the orphan-watchdog (Session 54).
          *
          * Returns true when the watchdog should brute-force restore
@@ -117,6 +169,85 @@ class AudioRouter private constructor(private val context: Context) {
             currentMode: Int,
             isActive: Boolean,
         ): Boolean = isActive && currentMode != AudioManager.MODE_IN_COMMUNICATION
+
+        /**
+         * Pure predicate for adopting a VoIP audio mode the router never set.
+         *
+         * `NativeWebRTCManager.startLocalAudio` writes
+         * `MODE_IN_COMMUNICATION` itself, before the router starts, because
+         * several OEM firmwares mute the microphone unless VoIP mode is
+         * established before the first capture. That write has no owner: if
+         * call setup fails afterwards, or the JS side never reaches
+         * `startAudioRouting`, the router never becomes active — and
+         * [stop] used to return on its `isActive` guard with the device still
+         * in VoIP mode, so media volume stayed broken until the next app
+         * resume. That is the "phone is stuck after a call" report.
+         *
+         * Restricted to `MODE_IN_COMMUNICATION` on purpose: `MODE_IN_CALL`
+         * belongs to a cellular call and `MODE_RINGTONE` to the system
+         * ringer, and resetting either would break something that is not ours.
+         */
+        @androidx.annotation.VisibleForTesting
+        internal fun shouldAdoptStrandedMode(
+            isActive: Boolean,
+            currentMode: Int,
+        ): Boolean = !isActive && currentMode == AudioManager.MODE_IN_COMMUNICATION
+
+        /**
+         * Pure predicate for the watchdog armed by [ensureCommunicationMode]
+         * when the router was not yet active: VoIP mode was set on behalf of
+         * a call that never reached [start] (or whose foreground service is
+         * gone), so nobody else will reset it.
+         */
+        @androidx.annotation.VisibleForTesting
+        internal fun shouldForceStopAfterEnsure(
+            isRouterActive: Boolean,
+            currentMode: Int?,
+            callAlive: Boolean,
+        ): Boolean = !isRouterActive && !callAlive &&
+            currentMode == AudioManager.MODE_IN_COMMUNICATION
+
+        /**
+         * The ensure watchdog stays armed while the call is still alive but
+         * routing never started; [start] cancels it, and a dead call resolves
+         * through [shouldForceStopAfterEnsure].
+         */
+        @androidx.annotation.VisibleForTesting
+        internal fun shouldRearmEnsureWatchdog(
+            isRouterActive: Boolean,
+            callAlive: Boolean,
+        ): Boolean = !isRouterActive && callAlive
+
+        private const val SESSION_PREFS = "forta_audio_router"
+        private const val SESSION_OPEN_KEY = "session_open"
+
+        /**
+         * Whether a previous audio session was opened and never closed — the
+         * marker is written to disk on [start] / [ensureCommunicationMode]
+         * and cleared by [stop] / [forceStop], so it survives process death.
+         * The audio mode is global and carries no owner: without this marker
+         * a cold-start sweep could not tell our stranded VoIP mode from
+         * another app's live call and would reset that call's audio.
+         */
+        fun hasOpenSessionMarker(context: Context): Boolean =
+            context.applicationContext
+                .getSharedPreferences(SESSION_PREFS, Context.MODE_PRIVATE)
+                .getBoolean(SESSION_OPEN_KEY, false)
+
+        /**
+         * Close the marker without touching audio. For the cold-start sweep:
+         * a fresh process cannot have a session of ours open, so whatever the
+         * marker says about the previous one is settled once the sweep ran.
+         */
+        fun clearSessionMarker(context: Context) {
+            try {
+                context.applicationContext
+                    .getSharedPreferences(SESSION_PREFS, Context.MODE_PRIVATE)
+                    .edit().putBoolean(SESSION_OPEN_KEY, false).apply()
+            } catch (e: Exception) {
+                Log.w(LIFECYCLE_TAG, "session marker clear threw", e)
+            }
+        }
 
         /**
          * WEE-16: schedule of re-apply ticks (in ms after `start()`).
@@ -263,6 +394,18 @@ class AudioRouter private constructor(private val context: Context) {
     @Volatile private var coreListener: Listener? = null
     @Volatile private var uiListener: Listener? = null
     private var activeDevice: Device = Device.EARPIECE
+
+    // The device the user picked by hand during this call (setDevice from
+    // the in-call UI). Read by handleDevicesChanged through AudioRoutePolicy;
+    // cleared by start() so a pin never outlives its call.
+    @Volatile private var pinnedDevice: Device? = null
+
+    // Guards the pin together with the route it belongs to. setDevice runs
+    // on the plugin thread, handleDevicesChanged on the main handler; a
+    // volatile alone leaves "read pin → decide → clear pin → route" open to
+    // a tap landing in the middle, which would let a Bluetooth event route
+    // over a loudspeaker the user had just chosen.
+    private val routeLock = Any()
     // WEE-56: coarse OEM classification used for vendor-conditional audio
     // tweaks. Resolved once from Build at construction — the manufacturer
     // does not change at runtime. GENERIC for any unrecognised device, so the
@@ -274,8 +417,19 @@ class AudioRouter private constructor(private val context: Context) {
     // [vendor]; keyed off manufacturer/brand rather than the coarse CallVendor
     // enum so OEMs that detect() classifies as GENERIC (Infinix/XOS #1008,
     // ZTE/nubia #1009) — and HUAWEI (#1009) — are no longer missed by the gate.
-    private val requiresMicUnmute: Boolean =
-        VendorAudioPolicy.requiresExplicitMicUnmuteOnStart(Build.MANUFACTURER, Build.BRAND)
+    // Also consults a runtime probe so devices outside the vendor list whose HW
+    // AEC fails at runtime are covered too (WEE-110). The probe is passed as a
+    // provider, not a value: a listed vendor is already decided by the list, and
+    // creating an AcousticEchoCanceler on those ROMs is exactly the kind of call
+    // this file elsewhere documents as prone to throwing. Resolved lazily, so
+    // the probe runs at most once and only on the first call of the process.
+    private val requiresMicUnmute: Boolean by lazy {
+        VendorAudioPolicy.requiresExplicitMicUnmuteOnStart(
+            Build.MANUFACTURER,
+            Build.BRAND,
+            ::queryHardwareAecAvailability,
+        )
+    }
     // WEE-16: @Volatile so the periodic re-apply runnables observe a
     // stop()/forceStop()-side write across threads. start()/stop()/
     // forceStop() are invoked from arbitrary Capacitor plugin threads
@@ -304,6 +458,9 @@ class AudioRouter private constructor(private val context: Context) {
     // every runnable here so stop()/forceStop() can cancel each one.
     private val reapplyRunnables = mutableListOf<Runnable>()
     private var stopWatchdog: Runnable? = null
+    // Armed by ensureCommunicationMode() when the router is not yet active;
+    // cancelled by start()/stop()/forceStop(). See shouldForceStopAfterEnsure.
+    private var ensureWatchdog: Runnable? = null
 
     private val deviceCallback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
@@ -335,6 +492,32 @@ class AudioRouter private constructor(private val context: Context) {
         }
     }
 
+    /**
+     * WEE-110: probe the device's hardware AEC capability so
+     * [VendorAudioPolicy] can make an informed decision about whether to fall
+     * back to software processing. Called at most once per process, on the
+     * first call, and only for devices the vendor list does not already cover.
+     *
+     * Returns the result of [canCreateHardwareAec], which is:
+     *   - true: HW AEC can be created and enabled
+     *   - false: HW AEC creation/enable failed (device has broken HW AEC)
+     *   - null: the check could not be performed (API unavailable or threw)
+     *
+     * When null, [VendorAudioPolicy] falls back to the vendor list.
+     */
+    private fun queryHardwareAecAvailability(): Boolean? {
+        // Session 0 is AUDIO_SESSION_ID_GENERATE — no live capture is attached,
+        // because the WebRTC session does not exist yet. A HAL that will only
+        // engage AEC against a real stream can therefore answer "no control"
+        // here, which reads as false rather than null: this probe can say a
+        // healthy device has broken HW AEC, never the reverse. That direction
+        // is safe for the one thing it feeds — an explicit mic unmute only ever
+        // releases a stranded capture path, it cannot break a working one — so
+        // do NOT wire this value into the AEC engine choice without first
+        // probing against a live AudioRecord session.
+        return canCreateHardwareAec(0)
+    }
+
     fun start(callType: String) = synchronized(lifecycleLock) {
         // Idempotent: second start() in the same call cycle (e.g. JS side
         // hits startAudioRouting twice because of renegotiation) must not
@@ -350,8 +533,21 @@ class AudioRouter private constructor(private val context: Context) {
         this.callType = callType
         this.isActive = true
 
+        // One timeline per call: the previous call's entries would only
+        // confuse triage. An orphaned router never reaches start(), so its
+        // stale entries survive — which is exactly the case worth seeing.
+        timeline.clear()
+        timeline.record("start", callType)
+
         activeDevice = if (callType == "video") Device.SPEAKER else Device.EARPIECE
+        pinnedDevice = null
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        timeline.record("mode", "MODE_IN_COMMUNICATION")
+        // From here the session has a real owner with its own watchdog; the
+        // pre-start ensure watchdog would only race it.
+        ensureWatchdog?.let { mainHandler.removeCallbacks(it) }
+        ensureWatchdog = null
+        markSessionOpen()
         Log.d(LIFECYCLE_TAG, "start($callType): set mode=MODE_IN_COMMUNICATION, initial active=$activeDevice")
 
         // OEM fix: Some Chinese ROMs (MIUI, RealmeUI, XOS, HyperOS, EMUI,
@@ -376,6 +572,7 @@ class AudioRouter private constructor(private val context: Context) {
                             "Audio mode reset detected at +${delayMs}ms — re-applying MODE_IN_COMMUNICATION",
                         )
                         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                        timeline.record("mode_reapply", "+${delayMs}ms")
                     }
                     // WEE-60: the OEM that resets the audio mode in this window
                     // can also re-assert the global mic-mute flag, clobbering the
@@ -390,6 +587,7 @@ class AudioRouter private constructor(private val context: Context) {
                         )
                     ) {
                         audioManager.setMicrophoneMute(false)
+                        timeline.record("mic_unmute", "reapply +${delayMs}ms")
                         Log.w(
                             LIFECYCLE_TAG,
                             "[vendor=$vendor] OEM re-muted mic at +${delayMs}ms — releasing",
@@ -417,6 +615,7 @@ class AudioRouter private constructor(private val context: Context) {
             override fun run() {
                 val callAlive = CallForegroundService.isRunning
                 if (shouldForceStopForWatchdog(callAlive = callAlive, isRouterActive = isActive)) {
+                    timeline.record("watchdog", "orphaned router — forcing stop")
                     Log.w(
                         LIFECYCLE_TAG,
                         "Audio watchdog: no active call after ${AUDIO_MAX_LIFETIME_MS}ms — forceStop",
@@ -443,7 +642,9 @@ class AudioRouter private constructor(private val context: Context) {
 
         val available = getAvailableDevices()
         if (Device.BLUETOOTH in available) {
-            setDevice(Device.BLUETOOTH)
+            // Auto-selection, not a pin: only setDevice() from the UI pins.
+            setDeviceInternal(Device.BLUETOOTH)
+            notifyListener()
         } else {
             setDeviceInternal(activeDevice)
         }
@@ -474,10 +675,90 @@ class AudioRouter private constructor(private val context: Context) {
         if (requiresMicUnmute) {
             try {
                 audioManager.setMicrophoneMute(false)
+                timeline.record("mic_unmute", "vendor start tweak")
                 Log.d(LIFECYCLE_TAG, "[vendor=$vendor] explicit setMicrophoneMute(false) on start")
             } catch (e: Exception) {
                 Log.w(LIFECYCLE_TAG, "[vendor=$vendor] setMicrophoneMute(false) on start threw", e)
             }
+        }
+    }
+
+    /**
+     * Put the device in `MODE_IN_COMMUNICATION` on the router's behalf.
+     *
+     * Two surfaces used to write the mode directly: `NativeWebRTCManager`
+     * before the first capture (several OEM firmwares mute the microphone
+     * unless VoIP mode is established first), and `CallActivity.onResume`
+     * restoring it during a live call. Neither write had an owner, so when the
+     * call never reached [start] — or the process died before [stop] — the
+     * mode stayed set until reboot. Routing both through here gives the write
+     * a timeline entry, the persisted session marker and a watchdog.
+     *
+     * Deliberately does not flip [isActive]: [start] is idempotent on that
+     * flag and must still run its device selection and callbacks afterwards.
+     */
+    fun ensureCommunicationMode(source: String) = synchronized(lifecycleLock) {
+        val current = runCatching { audioManager.mode }.getOrNull()
+        if (current == AudioManager.MODE_IN_COMMUNICATION) return@synchronized
+        try {
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        } catch (e: Exception) {
+            Log.w(LIFECYCLE_TAG, "ensureCommunicationMode($source): setMode threw", e)
+            return@synchronized
+        }
+        if (isActive) {
+            // The OS (or an OEM ROM) reset a mode we own; the re-apply ticks
+            // and the orphan watchdog from start() are still armed.
+            timeline.record("mode_reapply", source)
+            Log.w(LIFECYCLE_TAG, "ensureCommunicationMode($source): re-applied MODE_IN_COMMUNICATION")
+            return@synchronized
+        }
+        timeline.record("mode_ensure", source)
+        markSessionOpen()
+        Log.d(LIFECYCLE_TAG, "ensureCommunicationMode($source): set MODE_IN_COMMUNICATION before start()")
+        ensureWatchdog?.let { mainHandler.removeCallbacks(it) }
+        val watchdog = object : Runnable {
+            override fun run() {
+                val callAlive = CallForegroundService.isRunning
+                val mode = runCatching { audioManager.mode }.getOrNull()
+                if (shouldForceStopAfterEnsure(isActive, mode, callAlive)) {
+                    Log.w(LIFECYCLE_TAG, "Ensure watchdog: VoIP mode set for a call that never started routing — forceStop")
+                    forceStop("ensure_watchdog")
+                } else if (shouldRearmEnsureWatchdog(isActive, callAlive)) {
+                    mainHandler.postDelayed(this, AUDIO_MAX_LIFETIME_MS)
+                }
+            }
+        }
+        ensureWatchdog = watchdog
+        mainHandler.postDelayed(watchdog, AUDIO_MAX_LIFETIME_MS)
+    }
+
+    /** Whether [start] ran and [stop]/[forceStop] have not yet. */
+    fun isRoutingActive(): Boolean = isActive
+
+    private fun markSessionOpen() {
+        // apply(), not commit(): this runs on the capture hot path, under
+        // NativeWebRTCManager's media lock as well as ours, and a blocking
+        // disk write there is what the OEM mic-mute workaround is timing-
+        // sensitive about. apply() is flushed before lifecycle transitions;
+        // the only way to lose it is a SIGKILL in the same instant, and a lost
+        // marker fails safe — the next cold start leaves the mode alone.
+        try {
+            context.getSharedPreferences(SESSION_PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean(SESSION_OPEN_KEY, true).apply()
+        } catch (e: Exception) {
+            Log.w(LIFECYCLE_TAG, "session marker write threw", e)
+        }
+    }
+
+    private fun markSessionClosed() {
+        // A lost close is equally safe: the next cold start finds the marker
+        // open with a normal mode, does nothing, and clears it.
+        try {
+            context.getSharedPreferences(SESSION_PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean(SESSION_OPEN_KEY, false).apply()
+        } catch (e: Exception) {
+            Log.w(LIFECYCLE_TAG, "session marker clear threw", e)
         }
     }
 
@@ -488,11 +769,29 @@ class AudioRouter private constructor(private val context: Context) {
         // unregisterAudioDeviceCallback on an already-unregistered callback
         // and log a spurious warning.
         if (!isActive) {
+            // Adopt a VoIP mode nobody else will reset — see
+            // [shouldAdoptStrandedMode]. The monitor is reentrant, so
+            // delegating to forceStop() inside the lock is safe.
+            val currentMode = runCatching { audioManager.mode }.getOrNull()
+            if (currentMode != null && shouldAdoptStrandedMode(isActive, currentMode)) {
+                Log.w(
+                    LIFECYCLE_TAG,
+                    "stop() — inactive but device left in MODE_IN_COMMUNICATION, brute-resetting",
+                )
+                timeline.record("stop_adopted_stranded_mode")
+                forceStop()
+                return@synchronized
+            }
+            // Nothing of ours is open once stop() is called; a marker left
+            // behind by ensureCommunicationMode() after the OS already reset
+            // the mode must not survive to claim another app's call later.
+            markSessionClosed()
             Log.w(LIFECYCLE_TAG, "stop() — already inactive, no-op")
             return@synchronized
         }
 
         isActive = false
+        timeline.record("stop")
 
         // Session 54: cancel the orphan watchdog and the OEM re-apply
         // runnables before tearing down. Without these removeCallbacks,
@@ -502,6 +801,8 @@ class AudioRouter private constructor(private val context: Context) {
         // WEE-16: the single runnable is now a list (modeReapplyScheduleMs).
         stopWatchdog?.let { mainHandler.removeCallbacks(it) }
         stopWatchdog = null
+        ensureWatchdog?.let { mainHandler.removeCallbacks(it) }
+        ensureWatchdog = null
         cancelReapplyRunnables()
 
         // Session 23: previously a single call chain. If
@@ -535,6 +836,7 @@ class AudioRouter private constructor(private val context: Context) {
 
             try {
                 audioManager.mode = AudioManager.MODE_NORMAL
+                markSessionClosed()
             } catch (e: Exception) {
                 Log.w(LIFECYCLE_TAG, "setMode(MODE_NORMAL) threw", e)
             }
@@ -619,9 +921,12 @@ class AudioRouter private constructor(private val context: Context) {
      * the foreground service) and the device is stuck in
      * MODE_IN_COMMUNICATION.
      */
-    fun forceStop() = synchronized(lifecycleLock) {
-        Log.w(LIFECYCLE_TAG, "forceStop() — bypassing guards, brute reset")
+    fun forceStop(reason: String = "brute reset") = synchronized(lifecycleLock) {
+        Log.w(LIFECYCLE_TAG, "forceStop($reason) — bypassing guards, brute reset")
+        timeline.record("force_stop", reason)
         isActive = false
+        ensureWatchdog?.let { mainHandler.removeCallbacks(it) }
+        ensureWatchdog = null
 
         // Session 54: same cancellation as stop() — the watchdog itself
         // may have triggered this forceStop, but a no-op removeCallbacks
@@ -646,12 +951,15 @@ class AudioRouter private constructor(private val context: Context) {
             try { audioManager.clearCommunicationDevice() } catch (_: Exception) {}
         }
 
-        try { audioManager.mode = AudioManager.MODE_NORMAL } catch (_: Exception) {}
+        try {
+            audioManager.mode = AudioManager.MODE_NORMAL
+            markSessionClosed()
+        } catch (_: Exception) {}
         @Suppress("DEPRECATION")
         try { audioManager.isSpeakerphoneOn = false } catch (_: Exception) {}
         releaseGlobalMicMute()
 
-        Log.d(LIFECYCLE_TAG, "forceStop() complete")
+        Log.d(LIFECYCLE_TAG, "forceStop($reason) complete")
     }
 
     /**
@@ -734,10 +1042,55 @@ class AudioRouter private constructor(private val context: Context) {
         return devices
     }
 
-    fun setDevice(device: Device) {
+    /**
+     * A route chosen by the user. Returns false — and applies nothing — when
+     * the router is not running: the call has not reached start() yet or is
+     * already torn down. The old silent return let the in-call toggle flip
+     * to "speaker on" while the earpiece stayed live (O08). A refusal here
+     * must not start the router either: setDevice outside a call would
+     * otherwise put the phone in VoIP mode with no one to end it.
+     */
+    fun setDevice(device: Device): Boolean {
+        if (!isActive) {
+            Log.w(TAG, "setDevice($device) refused: router inactive")
+            timeline.record("route", "$device refused: router inactive")
+            return false
+        }
+        Log.d(TAG, "setDevice: $device (pinned)")
+        synchronized(routeLock) {
+            pinnedDevice = device
+            setDeviceInternal(device)
+        }
+        notifyListener()
+        return true
+    }
+
+    /**
+     * Telecom switched this call's audio route.
+     *
+     * Telecom owns the route of a self-managed call and switches it on its own —
+     * to a headset the moment one connects — so its report is what the call
+     * really uses and what the UI shows. A loudspeaker the user pinned, and the
+     * loudspeaker of a video call Telecom dropped onto the earpiece, are asked
+     * back through [setDeviceInternal]; see [AudioRoutePolicy.onTelecomRouteChanged].
+     * Reports before [start] are ignored: start picks the call's first route
+     * itself and asks Telecom for it.
+     */
+    fun onTelecomRouteChanged(route: Device) {
         if (!isActive) return
-        Log.d(TAG, "setDevice: $device")
-        setDeviceInternal(device)
+        synchronized(routeLock) {
+            val decision = AudioRoutePolicy.onTelecomRouteChanged(route, pinnedDevice, callType)
+            if (!decision.keepPin) pinnedDevice = null
+            val target = decision.target
+            if (target != null) {
+                Log.d(TAG, "Telecom moved the call to $route — asking for $target")
+                timeline.record("route", "telecom moved to $route, asking for $target")
+                setDeviceInternal(target)
+            } else if (activeDevice != route) {
+                activeDevice = route
+                timeline.record("route", "telecom reports $route")
+            }
+        }
         notifyListener()
     }
 
@@ -754,6 +1107,15 @@ class AudioRouter private constructor(private val context: Context) {
 
     private fun setDeviceInternal(device: Device) {
         activeDevice = device
+        // Telecom owns the route of a self-managed call: while it held the audio
+        // mode on a Samsung with Android 14, the platform ignored every
+        // AudioManager request below (stage 3, 2026-09-13). Ask it first. The
+        // AudioManager path stays for a call Telecom never registered and for
+        // platforms that honour it; both name the same device.
+        CallConnectionService.currentConnection?.let { connection ->
+            val asked = connection.requestAudioRoute(device)
+            timeline.record("route", "telecom $device${if (asked) "" else " refused: released"}")
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             setDeviceModern(device)
         } else {
@@ -783,6 +1145,10 @@ class AudioRouter private constructor(private val context: Context) {
 
         if (target != null) {
             val success = audioManager.setCommunicationDevice(target)
+            timeline.record(
+                "route",
+                "${deviceTypeToString(target.type)}${if (success) "" else " FAILED"}",
+            )
             Log.d(LIFECYCLE_TAG, "setCommunicationDevice(${deviceTypeToString(target.type)}): $success")
         } else if (shouldClearWhenTargetMissing(device)) {
             // Removable device (BT / wired) genuinely gone — fall back to the
@@ -820,6 +1186,7 @@ class AudioRouter private constructor(private val context: Context) {
 
     @Suppress("DEPRECATION")
     private fun setDeviceLegacy(device: Device) {
+        timeline.record("route", "$device (legacy)")
         when (device) {
             Device.EARPIECE -> {
                 audioManager.isSpeakerphoneOn = false
@@ -853,19 +1220,16 @@ class AudioRouter private constructor(private val context: Context) {
     private fun handleDevicesChanged() {
         if (!isActive) return
         val available = getAvailableDevices()
-        Log.d(TAG, "Devices changed: available=$available, active=$activeDevice")
+        Log.d(TAG, "Devices changed: available=$available, active=$activeDevice, pinned=$pinnedDevice")
 
-        if (Device.BLUETOOTH in available && activeDevice != Device.BLUETOOTH) {
-            Log.d(TAG, "BT appeared, auto-switching")
-            setDeviceInternal(Device.BLUETOOTH)
-        } else if (activeDevice !in available) {
-            val fallback = when {
-                Device.WIRED_HEADSET in available -> Device.WIRED_HEADSET
-                callType == "video" -> Device.SPEAKER
-                else -> Device.EARPIECE
+        synchronized(routeLock) {
+            val decision = AudioRoutePolicy.onDevicesChanged(activeDevice, available.toSet(), pinnedDevice, callType)
+            if (!decision.keepPin) pinnedDevice = null
+            decision.target?.let { target ->
+                Log.d(TAG, "Devices changed: routing to $target (pinned=$pinnedDevice)")
+                timeline.record("route", "$target on devices changed")
+                setDeviceInternal(target)
             }
-            Log.d(TAG, "Active device $activeDevice gone, fallback to $fallback")
-            setDeviceInternal(fallback)
         }
 
         notifyListener()

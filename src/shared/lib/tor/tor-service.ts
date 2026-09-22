@@ -258,6 +258,12 @@ class TorService {
     });
   }
 
+  /** The daemon's state as the native plugin reports it, or null where Tor does not run. */
+  async getStatus(): Promise<{ progress: number; isReady: boolean; state: string } | null> {
+    if (isIOS || !isNative) return null;
+    return TorNative.getStatus();
+  }
+
   async isUseWithTor(url: string): Promise<boolean> {
     if (isIOS || !isNative || this._mode.value === 'neveruse') {
       return false;

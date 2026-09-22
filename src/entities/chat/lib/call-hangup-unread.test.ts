@@ -1,0 +1,208 @@
+import { describe, it, expect } from "vitest";
+import { unreadPeerHangupCount, unreadCountWithoutHangups, countPeerHangupsAfter, hasCallEvent } from "./call-hangup-unread";
+
+/**
+ * With the account's `m.call.hangup` push rule, the server counts every hangup a
+ * peer sends as an unread notification. On the test account a missed call raised
+ * the chat-list badge by 2 instead of 1, an answered call by 2 instead of 1
+ * (`hcount-rule`, 2026-09-15). The badge takes those hangups back out.
+ */
+const ME = "@me:s";
+const PEER = "@peer:s";
+
+function ev(id: string | undefined, type: string, sender: string, ts: number, callId?: string) {
+  return {
+    getId: () => id,
+    getType: () => type,
+    getSender: () => sender,
+    getTs: () => ts,
+    getContent: () => (callId ? { call_id: callId } : {}),
+  };
+}
+const readIds = (ids: string[]) => (id: string) => ids.includes(id);
+
+describe("unreadPeerHangupCount", () => {
+  const call = [
+    ev("$invite", "m.call.invite", PEER, 100),
+    ev("$hangup", "m.call.hangup", PEER, 200),
+    ev("$msg", "m.room.message", PEER, 300),
+    ev("$hangup2", "m.call.hangup", PEER, 400),
+  ];
+
+  it("counts the unread hangups a peer sent since the rule was seen", () => {
+    expect(unreadPeerHangupCount(call, { myUserId: ME, since: 0, hasRead: readIds([]) })).toBe(2);
+  });
+
+  it("leaves out my own hangups, which the server never counts for me", () => {
+    const mine = [ev("$h", "m.call.hangup", ME, 200)];
+    expect(unreadPeerHangupCount(mine, { myUserId: ME, since: 0, hasRead: readIds([]) })).toBe(0);
+  });
+
+  it("leaves out hangups already read", () => {
+    expect(unreadPeerHangupCount(call, { myUserId: ME, since: 0, hasRead: readIds(["$hangup"]) })).toBe(1);
+  });
+
+  it("leaves out hangups sent before the rule was seen, which the server did not count", () => {
+    expect(unreadPeerHangupCount(call, { myUserId: ME, since: 400, hasRead: readIds([]) })).toBe(1);
+    expect(unreadPeerHangupCount(call, { myUserId: ME, since: 401, hasRead: readIds([]) })).toBe(0);
+  });
+
+  it("leaves out an event without an id", () => {
+    const pending = [ev(undefined, "m.call.hangup", PEER, 200)];
+    expect(unreadPeerHangupCount(pending, { myUserId: ME, since: 0, hasRead: readIds([]) })).toBe(0);
+  });
+});
+
+// With the `m.call.select_answer` rule the server counts the caller's select_answer of
+// every answered call as well (forta-bugs#809, variant A, 2026-09-18).
+describe("unreadPeerHangupCount with the select_answer rule", () => {
+  const answered = [
+    ev("$invite", "m.call.invite", PEER, 100),
+    ev("$select", "m.call.select_answer", PEER, 150),
+    ev("$hangup", "m.call.hangup", PEER, 200),
+  ];
+
+  it("takes back the peer's select_answer once that rule was seen", () => {
+    const opts = { myUserId: ME, since: 0, selectAnswerSince: 0, hasRead: readIds([]) };
+    expect(unreadPeerHangupCount(answered, opts)).toBe(2);
+  });
+
+  it("leaves select_answer in the count while the account has no rule for it", () => {
+    expect(unreadPeerHangupCount(answered, { myUserId: ME, since: 0, hasRead: readIds([]) })).toBe(1);
+    expect(unreadPeerHangupCount(answered, { myUserId: ME, since: 0, selectAnswerSince: null, hasRead: readIds([]) })).toBe(1);
+  });
+
+  it("dates select_answer by its own rule, not by the hangup rule", () => {
+    const opts = { myUserId: ME, since: 0, selectAnswerSince: 160, hasRead: readIds([]) };
+    expect(unreadPeerHangupCount(answered, opts)).toBe(1);
+  });
+
+  it("counts select_answer alone when the hangup rule is off", () => {
+    const opts = { myUserId: ME, since: Infinity, selectAnswerSince: 0, hasRead: readIds([]) };
+    expect(unreadPeerHangupCount(answered, opts)).toBe(1);
+  });
+
+  it("leaves out my own select_answer, sent when I was the caller", () => {
+    const mine = [ev("$s", "m.call.select_answer", ME, 150)];
+    expect(unreadPeerHangupCount(mine, { myUserId: ME, since: 0, selectAnswerSince: 0, hasRead: readIds([]) })).toBe(0);
+  });
+});
+
+describe("countPeerHangupsAfter", () => {
+  // Raw events from /messages for the stretch the live timeline lost to a gap. The sync filter
+  // returns at most 4 room events per response, so after three missed calls with JS dead the
+  // live timeline held one hangup of five and the badge went 2 → 9 instead of 2 → 5 (hburst1).
+  const raw = (event_id: unknown, sender: unknown, origin_server_ts: unknown, type: unknown = "m.call.hangup") =>
+    ({ event_id, sender, origin_server_ts, type });
+
+  it("counts the peer hangups sent after the receipt's event and since the rule was seen", () => {
+    const events = [raw("$h3", PEER, 3000), raw("$h2", PEER, 2000), raw("$h1", PEER, 1000)];
+    expect(countPeerHangupsAfter(events, { myUserId: ME, since: 0, after: 1500 })).toBe(2);
+  });
+
+  it("leaves out my own hangups and hangups at or before the receipt", () => {
+    const events = [raw("$mine", ME, 3000), raw("$at", PEER, 1500), raw("$ok", PEER, 1600)];
+    expect(countPeerHangupsAfter(events, { myUserId: ME, since: 0, after: 1500 })).toBe(1);
+  });
+
+  it("leaves out hangups sent before the rule was seen", () => {
+    const events = [raw("$new", PEER, 3000), raw("$old", PEER, 2000)];
+    expect(countPeerHangupsAfter(events, { myUserId: ME, since: 2500, after: -Infinity })).toBe(1);
+  });
+
+  it("leaves out other event types and malformed events", () => {
+    const events = [
+      raw("$invite", PEER, 3000, "m.call.invite"),
+      raw(undefined, PEER, 3000),
+      raw("$nots", PEER, "3000"),
+      raw("$ok", PEER, 3000),
+    ];
+    expect(countPeerHangupsAfter(events, { myUserId: ME, since: 0, after: 0 })).toBe(1);
+  });
+});
+
+describe("hasCallEvent", () => {
+  // Only a room with a call in view is worth a /messages request for the gap: asking for every
+  // unread room would send one request per chat after a long offline stretch.
+  it("is true when any event is call signalling", () => {
+    expect(hasCallEvent([ev("$m", "m.room.message", PEER, 1), ev("$c", "m.call.candidates", PEER, 2)])).toBe(true);
+  });
+
+  it("is false for a room with no call in view", () => {
+    expect(hasCallEvent([ev("$m", "m.room.message", PEER, 1), ev("$r", "m.reaction", PEER, 2)])).toBe(false);
+    expect(hasCallEvent([])).toBe(false);
+  });
+});
+
+describe("unreadCountWithoutHangups", () => {
+  it("takes the hangups out of the server count", () => {
+    expect(unreadCountWithoutHangups(4, 2)).toBe(2);
+  });
+
+  it("never goes below zero", () => {
+    expect(unreadCountWithoutHangups(1, 3)).toBe(0);
+  });
+});
+
+describe("countPeerHangupsAfter with the select_answer rule", () => {
+  const raw = [
+    { type: "m.call.select_answer", event_id: "$s2", sender: PEER, origin_server_ts: 2000 },
+    { type: "m.call.select_answer", event_id: "$s1", sender: PEER, origin_server_ts: 500 },
+    { type: "m.call.hangup", event_id: "$h", sender: PEER, origin_server_ts: 2100 },
+  ];
+
+  it("counts the select_answers sent after the receipt and since their own rule was seen", () => {
+    expect(countPeerHangupsAfter(raw, { myUserId: ME, since: 0, selectAnswerSince: 1000, after: 0 })).toBe(2);
+    expect(countPeerHangupsAfter(raw, { myUserId: ME, since: 0, selectAnswerSince: 0, after: 0 })).toBe(3);
+  });
+
+  it("counts none of them without that rule", () => {
+    expect(countPeerHangupsAfter(raw, { myUserId: ME, since: 0, after: 0 })).toBe(1);
+  });
+});
+
+// A call answered in Bastyon left «1» on the chat: the invite the default call rule counts
+// (`ownerb4`, 2026-09-18). An answered call is nothing to catch up on; a missed one is.
+describe("the invite of an answered call", () => {
+  const answeredElsewhere = [
+    ev("$invite", "m.call.invite", PEER, 100, "c1"),
+    ev("$answer", "m.call.answer", ME, 120, "c1"),
+    ev("$select", "m.call.select_answer", PEER, 150, "c1"),
+    ev("$hangup", "m.call.hangup", PEER, 200, "c1"),
+  ];
+
+  it("is taken back together with the select_answer and the hangup", () => {
+    const opts = { myUserId: ME, since: 0, selectAnswerSince: 0, hasRead: readIds([]) };
+    expect(unreadPeerHangupCount(answeredElsewhere, opts)).toBe(3);
+  });
+
+  it("is taken back whatever the dates of the hangup and select_answer rules", () => {
+    const opts = { myUserId: ME, since: Infinity, selectAnswerSince: null, hasRead: readIds([]) };
+    expect(unreadPeerHangupCount(answeredElsewhere, opts)).toBe(1);
+  });
+
+  it("stays in the badge for a missed call, and for a call only the peer's side answered", () => {
+    const missed = [ev("$invite", "m.call.invite", PEER, 100, "c2"), ev("$hangup", "m.call.hangup", PEER, 200, "c2")];
+    expect(unreadPeerHangupCount(missed, { myUserId: ME, since: 0, hasRead: readIds([]) })).toBe(1);
+    const myCall = [ev("$invite", "m.call.invite", ME, 100, "c3"), ev("$answer", "m.call.answer", PEER, 120, "c3")];
+    expect(unreadPeerHangupCount(myCall, { myUserId: ME, since: 0, hasRead: readIds([]) })).toBe(0);
+  });
+
+  it("stays when the answer names another call, and is left alone once read", () => {
+    const other = [ev("$invite", "m.call.invite", PEER, 100, "c4"), ev("$answer", "m.call.answer", ME, 120, "c5")];
+    expect(unreadPeerHangupCount(other, { myUserId: ME, since: 0, hasRead: readIds([]) })).toBe(0);
+    const opts = { myUserId: ME, since: 0, selectAnswerSince: 0, hasRead: readIds(["$invite"]) };
+    expect(unreadPeerHangupCount(answeredElsewhere, opts)).toBe(2);
+  });
+
+  it("is found in /messages pages, where the answer comes before its invite", () => {
+    const raw = (type: string, id: string, sender: string, ts: number, callId: string) =>
+      ({ type, event_id: id, sender, origin_server_ts: ts, content: { call_id: callId } });
+    const answeredCallIds = new Set<string>();
+    const opts = { myUserId: ME, since: 0, selectAnswerSince: 0, after: 0, answeredCallIds };
+    const newer = [raw("m.call.hangup", "$h", PEER, 200, "c1"), raw("m.call.answer", "$a", ME, 120, "c1")];
+    const older = [raw("m.call.invite", "$i", PEER, 100, "c1"), raw("m.call.invite", "$i0", PEER, 50, "c0")];
+    expect(countPeerHangupsAfter(newer, opts)).toBe(1);
+    expect(countPeerHangupsAfter(older, opts)).toBe(1);
+  });
+});

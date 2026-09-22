@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { onMounted, onUnmounted } from "vue";
+import { App as CapApp } from "@capacitor/app";
+import type { PluginListenerHandle } from "@capacitor/core";
 import { SettingsSection } from "@/shared/ui/settings-section";
 import { isNative } from "@/shared/lib/platform";
 import { useNotificationSettings } from "../model/use-notification-settings";
@@ -20,9 +22,40 @@ const {
   vendorGuidanceId,
   openSystemNotificationSettings,
   detectVendor,
+  fullScreenIntentAllowed,
+  detectFullScreenIntent,
+  openFullScreenIntentSettings,
 } = useNotificationSettings();
 
-onMounted(detectVendor);
+// The banner's button leaves the app for a system screen where the user flips
+// the permission. Read it again whenever the app returns to the foreground —
+// read only on mount, the banner showed the state from before the trip.
+let appStateHandle: PluginListenerHandle | null = null;
+let unmounted = false;
+
+onMounted(async () => {
+  void detectVendor();
+  void detectFullScreenIntent();
+  if (!isNative) return;
+  try {
+    const handle = await CapApp.addListener("appStateChange", ({ isActive }) => {
+      if (isActive) void detectFullScreenIntent();
+    });
+    // Closed while the listener was being added: drop it, or it leaks.
+    if (unmounted) {
+      void handle.remove();
+      return;
+    }
+    appStateHandle = handle;
+  } catch (e) {
+    console.warn("[notification-settings] appStateChange listener failed:", e);
+  }
+});
+
+onUnmounted(() => {
+  unmounted = true;
+  void appStateHandle?.remove();
+});
 </script>
 
 <template>
@@ -91,6 +124,26 @@ onMounted(detectVendor);
           <polyline points="9 18 15 12 9 6" />
         </svg>
       </button>
+    </SettingsSection>
+
+    <!-- O10: Android 14+ revoked the full-screen incoming-call surface -->
+    <SettingsSection
+      v-if="fullScreenIntentAllowed === false"
+      :title="t('notificationsSettings.fsiTitle')"
+    >
+      <div
+        data-testid="fsi-banner"
+        class="space-y-3 rounded-xl border border-color-star-yellow/30 bg-color-star-yellow/5 p-4"
+      >
+        <p class="text-sm text-text-color">{{ t("notificationsSettings.fsiHint") }}</p>
+        <button
+          data-testid="fsi-open"
+          class="w-full rounded-lg bg-color-bg-ac px-4 py-2.5 text-sm font-medium text-text-on-bg-ac-color transition-opacity hover:opacity-90"
+          @click="openFullScreenIntentSettings"
+        >
+          {{ t("notificationsSettings.fsiOpen") }}
+        </button>
+      </div>
     </SettingsSection>
 
     <!-- Aggressive-OEM guidance (Xiaomi/MIUI & friends) -->

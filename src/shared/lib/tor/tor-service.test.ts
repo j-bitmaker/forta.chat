@@ -9,6 +9,7 @@ const mockVerifyTor = vi.fn();
 const mockClearTorCache = vi.fn();
 const mockAddListener = vi.fn().mockResolvedValue({ remove: vi.fn() });
 const mockIsUseWithTor = vi.fn().mockResolvedValue({ redirect: false });
+const mockGetStatus = vi.fn().mockResolvedValue({ progress: 55, isReady: false, state: 'STARTING' });
 const mockGetSettings = vi.fn().mockResolvedValue({
   mode: 'auto',
   bridgeType: 'NONE',
@@ -19,7 +20,7 @@ vi.mock('@capacitor/core', () => ({
   registerPlugin: () => ({
     startDaemon: (...args: unknown[]) => mockStartDaemon(...args),
     stopDaemon: (...args: unknown[]) => mockStopDaemon(...args),
-    getStatus: vi.fn(),
+    getStatus: (...args: unknown[]) => mockGetStatus(...args),
     configure: (...args: unknown[]) => mockConfigure(...args),
     verifyTor: (...args: unknown[]) => mockVerifyTor(...args),
     clearTorCache: (...args: unknown[]) => mockClearTorCache(...args),
@@ -202,5 +203,29 @@ describe('TorService — web/non-native branch', () => {
       bridgeType: 'NONE',
       isReady: false,
     });
+  });
+});
+
+describe('TorService — getStatus', () => {
+  it('reads the native plugin on Android', async () => {
+    mockIsNative = true;
+    const service = await importFreshService();
+
+    await expect(service.getStatus()).resolves.toEqual({ progress: 55, isReady: false, state: 'STARTING' });
+    expect(mockGetStatus).toHaveBeenCalledOnce();
+  });
+
+  it('returns null without touching the bridge on iOS and on web', async () => {
+    mockIsNative = true;
+    mockIsIOS = true;
+    const ios = await importFreshService();
+    await expect(ios.getStatus()).resolves.toBeNull();
+
+    mockIsNative = false;
+    mockIsIOS = false;
+    const web = await importFreshService();
+    await expect(web.getStatus()).resolves.toBeNull();
+
+    expect(mockGetStatus).not.toHaveBeenCalled();
   });
 });

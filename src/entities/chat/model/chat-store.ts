@@ -14,6 +14,11 @@ import { resetPowerLevel, isUserBanned } from "../lib/room-guards";
 import { categorizeJoinError, validateRoomId, type JoinRoomResult } from "../lib/join-error";
 import { getModeratorChange, isServiceRoomName, isWithinCreationBurst, isCreationBurstMemberEvent } from "../lib/system-event-filter";
 import { preservePendingRooms } from "../lib/preserve-pending-rooms";
+import { indexCallEvents, isMissedCallHangup, type CallEventIndex } from "../lib/call-outcome";
+import { unreadPeerHangupCount, unreadCountWithoutHangups, hasCallEvent } from "../lib/call-hangup-unread";
+import { createHangupGapCounter } from "./hangup-gap-counter";
+import { callHangupRuleSince } from "@/shared/lib/push/call-hangup-push-rule";
+import { callSelectAnswerRuleSince } from "@/shared/lib/push/call-select-answer-push-rule";
 import { buildExternalShareForward } from "../lib/external-share-forward";
 import type { ExternalShareData } from "@/shared/lib/share-target";
 import {
@@ -100,6 +105,73 @@ function isStreamHistoryVisibility(hv: string | null | undefined): boolean {
   return hv === "world_readable";
 }
 
+/** Recounts the badge once a timeline gap's hangups are counted; set by the store. */
+let onHangupGapCounted: (() => void) | null = null;
+
+const hangupGapCounter = createHangupGapCounter({
+  fetchHangups: (roomId, fromToken, limit) => getMatrixClientService().fetchRoomHangups(roomId, fromToken, limit),
+  fetchEventTs: async (roomId, eventId) => {
+    const event = await getMatrixClientService().fetchRoomEvent(roomId, eventId);
+    return typeof event?.origin_server_ts === "number" ? event.origin_server_ts : null;
+  },
+  onResolved: () => onHangupGapCounted?.(),
+});
+
+/**
+ * The room's unread count for the chat list: the server's count without the call
+ * hangups a peer sent, which the server counts once the account has the hangup push
+ * rule (`../lib/call-hangup-unread.ts`). Any failure leaves the server's count as is.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function roomUnreadCount(room: any, myUserId: string): number {
+  const total = (room.getUnreadNotificationCount?.("total") as number) ?? 0;
+  try {
+    // Read even at zero: the first sight of the rule dates the hangups it counts.
+    const pushRules = getMatrixClientService().client?.pushRules;
+    const hangupSince = callHangupRuleSince(myUserId, pushRules, Date.now(), localStorage);
+    const selectAnswerSince = callSelectAnswerRuleSince(myUserId, pushRules, Date.now(), localStorage);
+    if ((hangupSince === null && selectAnswerSince === null) || total <= 0) return total;
+    // A rule that is off counts nothing: no event is as late as Infinity.
+    const since = hangupSince ?? Infinity;
+    const liveTimeline = room.getLiveTimeline?.();
+    const events = liveTimeline?.getEvents?.() ?? [];
+    let hangups = unreadPeerHangupCount(events, {
+      myUserId,
+      since,
+      selectAnswerSince,
+      hasRead: (eventId) => room.hasUserReadEvent?.(myUserId, eventId) ?? true,
+    });
+    // The server counts everything after the real receipt, own events in between or not
+    // (an answered call added its invite and hangup, `hcount-rule`). When that receipt's
+    // event is not in the live timeline, a limited sync cut the timeline short and the
+    // hangups in the gap are unread too.
+    const receipt = room.getReadReceiptForUserId?.(myUserId, true);
+    const receiptEventId: string | null = receipt?.eventId ?? null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const covered = receiptEventId !== null && events.some((e: any) => e.getId?.() === receiptEventId);
+    // Only a room with a call in view asks /messages: hangups pile up right after calls, and
+    // asking for every unread room would send one request per chat after a long offline stretch.
+    const fromToken: string | null =
+      covered || !hasCallEvent(events) ? null : (liveTimeline?.getPaginationToken?.("b") ?? null);
+    if (fromToken) {
+      // A receipt sent before the rule was seen bounds nothing `since` does not; skip its fetch.
+      const receiptTs = receipt?.data?.ts;
+      const readBeforeRule = typeof receiptTs === "number" && receiptTs < Math.min(since, selectAnswerSince ?? Infinity);
+      hangups += hangupGapCounter.get({
+        roomId: room.roomId as string,
+        fromToken,
+        receiptEventId: readBeforeRule ? null : receiptEventId,
+        myUserId,
+        since,
+        selectAnswerSince,
+      }) ?? 0;
+    }
+    return unreadCountWithoutHangups(total, hangups);
+  } catch {
+    return total;
+  }
+}
+
 /** Convert a Matrix SDK room object into our ChatRoom type */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function matrixRoomToChatRoom(room: any, kit: MatrixKit, myUserId: string, nameHints?: Record<string, string>): ChatRoom {
@@ -132,8 +204,8 @@ function matrixRoomToChatRoom(room: any, kit: MatrixKit, myUserId: string, nameH
     // leave / ban — drop
   }
 
-  // Unread notification count
-  const unreadCount = (room.getUnreadNotificationCount?.("total") as number) ?? 0;
+  // Unread notification count, peer call hangups taken out
+  const unreadCount = roomUnreadCount(room, myUserId);
 
   // Get timeline events
   let timelineEvents: unknown[] = [];
@@ -151,6 +223,8 @@ function matrixRoomToChatRoom(room: any, kit: MatrixKit, myUserId: string, nameH
   let lastMessage: Message | undefined;
   let lastSystemMessage: Message | undefined; // fallback: member/call events
   let lastTs = 0;
+  // Indexed on the first hangup only: most rooms have no call in view.
+  let callEvents: CallEventIndex | undefined;
   // An edit (m.replace relation) is a separate event whose origin_server_ts
   // is the *edit time*, not the original send time. Treating it as the
   // room's "last event" inflates lastMessageTimestamp past lastReadOutboundTs
@@ -272,19 +346,20 @@ function matrixRoomToChatRoom(room: any, kit: MatrixKit, myUserId: string, nameH
         }
       } else if (raw.type === "m.call.hangup") {
         const callContent = raw.content as Record<string, unknown>;
-        const reason = callContent.reason as string | undefined;
         const isVideo = (callContent as any).offer_type === "video"
           || (callContent as any).version === 1;
         const durationMs = typeof callContent.duration === "number" ? callContent.duration : 0;
         const sender = matrixIdToAddress(raw.sender as string);
-        const callTemplateKey = reason === "invite_timeout"
+        if (!callEvents) callEvents = indexCallEvents(timelineEvents.map(getRawEvent));
+        const missed = isMissedCallHangup(raw, callEvents);
+        const callTemplateKey = missed
           ? (isVideo ? "system.missedVideoCall" : "system.missedVoiceCall")
           : (isVideo ? "system.videoCall" : "system.voiceCall");
         lastSystemMessage = {
           id: raw.event_id as string, roomId, senderId: sender,
           content: "", timestamp: (raw.origin_server_ts as number) ?? 0,
           status: MessageStatus.sent, type: MessageType.system,
-          callInfo: { callType: isVideo ? "video" : "voice", missed: reason === "invite_timeout", duration: Math.round(durationMs / 1000) },
+          callInfo: { callType: isVideo ? "video" : "voice", missed, duration: Math.round(durationMs / 1000), callId: callContent.call_id as string | undefined },
           systemMeta: { template: callTemplateKey, senderAddr: sender },
         };
       }
@@ -1218,7 +1293,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     if (lr && lr.unreadCount !== safeCount) {
       lr.unreadCount = safeCount;
       _dexieRoomMapVersion.value++;
-      patchSortedRooms([{ type: "upsert", room: lr }]);
+      // An inbound message's +1 joins the sidebar coalescer that its preview
+      // write goes through; applied at once, the row showed the new count next
+      // to the previous message's preview and reaction for ~400 ms.
+      if (source === "bump") sidebarDeltaCoalescer.push([{ type: "upsert", room: lr }]);
+      else patchSortedRooms([{ type: "upsert", room: lr }]);
     }
     perfCount(`unreadCount:${source}`);
 
@@ -1483,8 +1562,28 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     localStatus: string | null | undefined;
     readOutboundTs: number;
     lastMsgDecryptionStatus: string | undefined;
+    callPreview: string;
+    reaction: string;
     room: ChatRoom;
   }>();
+
+  /** The call and system-message details the chat list renders from. A hangup
+   *  record is rewritten in place — same event, timestamp and placeholder text —
+   *  when it turns out to be a missed call, so these must count on their own. */
+  const callPreviewKey = (lr: LocalRoom): string => {
+    const call = lr.lastMessageCallInfo;
+    const meta = lr.lastMessageSystemMeta;
+    return JSON.stringify([
+      call?.callType, call?.missed, call?.duration,
+      meta?.template, meta?.senderAddr, meta?.targetAddr, meta?.extra,
+    ]);
+  };
+
+  /** A reaction on the last message changes nothing else the cache keys on. */
+  const reactionKey = (lr: LocalRoom): string => {
+    const reaction = lr.lastMessageReaction;
+    return reaction ? `${reaction.emoji}|${reaction.senderAddress}|${reaction.timestamp}` : "";
+  };
 
   // ---------------------------------------------------------------------------
   // Map a single LocalRoom → ChatRoom (extracted from old computeSortedRooms)
@@ -1506,6 +1605,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     const readOutboundTs = lr.lastReadOutboundTs ?? 0;
     const lastMsgDecryptionStatus = lr.lastMessageDecryptionStatus;
     const lastMsgSenderId = lr.lastMessageSenderId ?? "";
+    const callPreview = callPreviewKey(lr);
+    const reaction = reactionKey(lr);
     const cached = _chatRoomFromDexieCache.get(lr.id);
     if (
       cached &&
@@ -1520,7 +1621,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       cached.eventId === (lr.lastMessageEventId ?? "") &&
       cached.localStatus === localStatus &&
       cached.readOutboundTs === readOutboundTs &&
-      cached.lastMsgDecryptionStatus === lastMsgDecryptionStatus
+      cached.lastMsgDecryptionStatus === lastMsgDecryptionStatus &&
+      cached.callPreview === callPreview &&
+      cached.reaction === reaction
     ) {
       return cached.room;
     }
@@ -1537,7 +1640,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       lastMessage: buildLastMessage(lr, decryptedPreview),
       lastMessageReaction: lr.lastMessageReaction ?? undefined,
     } as ChatRoom;
-    _chatRoomFromDexieCache.set(lr.id, { ts, updatedAt: effectiveSortKey, unread: lr.unreadCount, name: lr.name, membership: lr.membership, preview: effectivePreview, senderId: lastMsgSenderId, eventId: lr.lastMessageEventId ?? "", localStatus, readOutboundTs, lastMsgDecryptionStatus, room });
+    _chatRoomFromDexieCache.set(lr.id, { ts, updatedAt: effectiveSortKey, unread: lr.unreadCount, name: lr.name, membership: lr.membership, preview: effectivePreview, senderId: lastMsgSenderId, eventId: lr.lastMessageEventId ?? "", localStatus, readOutboundTs, lastMsgDecryptionStatus, callPreview, reaction, room });
     return room;
   };
 
@@ -1810,7 +1913,13 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   const sidebarDeltaCoalescer = createBurstCoalescer<RoomChange>(
     (batch) => {
       if (batch.length > 100) scheduleFullSortedRebuild();
-      else patchSortedRooms(batch);
+      // Patch with each room as dexieRoomMap holds it now. A queued room object
+      // can be stale: an unread bump queues the map's object, the bump's own
+      // Dexie write replaces it without a visible change, and a read then
+      // clears the new object — the queued one would bring the count back.
+      else patchSortedRooms(batch.map((c): RoomChange =>
+        c.type === "upsert" ? { type: "upsert", room: dexieRoomMap.get(c.room.id) ?? c.room } : c,
+      ));
     },
     { settleMs: SIDEBAR_DELTA_SETTLE_MS, maxWaitMs: SIDEBAR_DELTA_MAX_WAIT_MS },
   );
@@ -1858,7 +1967,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       || prev.lastMessageDecryptionStatus !== next.lastMessageDecryptionStatus
       || prev.lastMessageReaction !== next.lastMessageReaction
       || prev.isDeleted !== next.isDeleted
-      || prev.topic !== next.topic;
+      || prev.topic !== next.topic
+      || callPreviewKey(prev) !== callPreviewKey(next);
   };
 
   const applyDexieDeltas = (changes: RoomChange[]) => {
@@ -3377,7 +3487,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
    *  Called on app resume and after initial sync to fix any accumulated drift. */
   /**
    * Sync all unread counts from Matrix SDK → Dexie.
-   * Matrix SDK's getUnreadNotificationCount("total") is the single source of truth.
+   * Matrix SDK's getUnreadNotificationCount("total") is the single source of truth,
+   * read through roomUnreadCount, which takes the peer's call hangups out.
    * This heals any poisoned counts left in Dexie from previous buggy increments.
    */
   const syncAllUnreadFromMatrix = async () => {
@@ -3388,14 +3499,15 @@ export const useChatStore = defineStore(NAMESPACE, () => {
 
     try {
       const matrixRooms = matrixService.getRooms() as any[];
+      const myUserId = matrixService.getUserId() ?? "";
       const updates: Array<{ id: string; count: number }> = [];
 
       for (const mxRoom of matrixRooms) {
         const roomId = mxRoom.roomId as string;
-        const serverCount: number = (mxRoom.getUnreadNotificationCount?.("total") as number) ?? 0;
+        const unreadCount = roomUnreadCount(mxRoom, myUserId);
         const localRoom = dexieRoomMap.get(roomId);
-        if (localRoom && localRoom.unreadCount !== serverCount) {
-          updates.push({ id: roomId, count: serverCount });
+        if (localRoom && localRoom.unreadCount !== unreadCount) {
+          updates.push({ id: roomId, count: unreadCount });
         }
       }
 
@@ -3420,6 +3532,16 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     } catch (e) {
       console.warn("[chat-store] syncAllUnreadFromMatrix failed:", e);
     }
+  };
+
+  // Gap counts land one room at a time; a burst of them recounts the badge once.
+  let hangupRecountTimer: ReturnType<typeof setTimeout> | null = null;
+  onHangupGapCounted = () => {
+    if (hangupRecountTimer !== null) return;
+    hangupRecountTimer = setTimeout(() => {
+      hangupRecountTimer = null;
+      void syncAllUnreadFromMatrix();
+    }, 300);
   };
 
   /**
@@ -4696,6 +4818,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   });
   const scheduleMessagesTrigger = () => messagesTriggerScheduler.schedule([null]);
 
+  /** Whether /sync has already delivered this event into memory — a push that
+   *  trails it must not write its placeholder preview or count it again. */
+  const hasMessage = (roomId: string, eventId: string): boolean =>
+    messages.value[roomId]?.some((m) => m.id === eventId) ?? false;
+
   const addMessage = (roomId: string, message: Message) => {
     if (!messages.value[roomId]) {
       messages.value[roomId] = [];
@@ -4720,7 +4847,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     if (room) {
       room.lastMessage = lastMessageFromMessage(message, dexieRoomMap.get(roomId));
       room.updatedAt = message.timestamp;
-      if (roomId !== activeRoomId.value && message.senderId !== useAuthStore().address) {
+      // A call record is not bumped: the server already counts the invite, and the
+      // hangup it counts under the account's hangup rule is taken out (roomUnreadCount).
+      // A push for this very event already wrote its placeholder and counted it.
+      const countedByPush = dexieRoomMap.get(roomId)?.lastMessageEventId === message.id;
+      if (roomId !== activeRoomId.value && message.senderId !== useAuthStore().address && !message.callInfo && !countedByPush) {
         // Single writer — keeps Dexie + dexieRoomMap + sortedRooms in lock-step
         bumpUnreadCount(roomId, 1);
       }
@@ -5088,6 +5219,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     event: unknown,
     roomId: string,
     roomCrypto: PcryptoRoomInstance | undefined,
+    callEvents: CallEventIndex,
   ): Promise<Message | null> => {
     const raw = getRawEvent(event);
     if (!raw?.content) return null;
@@ -5101,13 +5233,13 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     // Handle call hangup events as system messages in timeline history
     if (raw.type === "m.call.hangup") {
       const callContent = raw.content as Record<string, unknown>;
-      const reason = callContent.reason as string | undefined;
       const isVideo = (callContent as any).offer_type === "video"
         || (callContent as any).version === 1;
       const durationMs = typeof callContent.duration === "number" ? callContent.duration : 0;
       const sender = matrixIdToAddress(raw.sender as string);
+      const missed = isMissedCallHangup(raw, callEvents);
       let callTemplateKey: string;
-      if (reason === "invite_timeout") {
+      if (missed) {
         callTemplateKey = isVideo ? "system.missedVideoCall" : "system.missedVoiceCall";
       } else {
         callTemplateKey = isVideo ? "system.videoCall" : "system.voiceCall";
@@ -5120,7 +5252,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         timestamp: (raw.origin_server_ts as number) ?? 0,
         status: MessageStatus.sent,
         type: MessageType.system,
-        callInfo: { callType: isVideo ? "video" : "voice", missed: reason === "invite_timeout", duration: Math.round(durationMs / 1000) },
+        callInfo: { callType: isVideo ? "video" : "voice", missed, duration: Math.round(durationMs / 1000), callId: callContent.call_id as string | undefined },
         systemMeta: { template: callTemplateKey, senderAddr: sender },
       };
     }
@@ -5399,9 +5531,12 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       }
     }
 
+    // A hangup reads as missed by the invite and answers around it (call-outcome.ts).
+    const callEvents = indexCallEvents(timelineEvents.map(getRawEvent));
+
     // Decrypt all messages in parallel
     const results = await Promise.all(
-      messageEvents.map((event) => parseSingleEvent(event, roomId, roomCrypto).catch(() => null))
+      messageEvents.map((event) => parseSingleEvent(event, roomId, roomCrypto, callEvents).catch(() => null))
     );
 
     const msgs = results.filter((m): m is Message => m !== null && (m.content !== "" || m.deleted === true || m.type === MessageType.system));
@@ -6346,13 +6481,15 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       // Handle call hangup events as system messages in the timeline
       if (raw.type === "m.call.hangup") {
         const callContent = raw.content as Record<string, unknown>;
-        const reason = callContent.reason as string | undefined;
         const isVideo = (callContent as any).offer_type === "video"
           || (callContent as any).version === 1;
         const durationMs = typeof callContent.duration === "number" ? callContent.duration : 0;
         const sender = matrixIdToAddress(raw.sender as string);
+        const matrixRoom = getMatrixClientService().getRoom(roomId);
+        const callEvents = indexCallEvents((matrixRoom ? getTimelineEvents(matrixRoom) : []).map(getRawEvent));
+        const missed = isMissedCallHangup(raw, callEvents);
         let callTemplateKey: string;
-        if (reason === "invite_timeout") {
+        if (missed) {
           callTemplateKey = isVideo ? "system.missedVideoCall" : "system.missedVoiceCall";
         } else {
           callTemplateKey = isVideo ? "system.videoCall" : "system.voiceCall";
@@ -6365,7 +6502,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           timestamp: (raw.origin_server_ts as number) ?? 0,
           status: MessageStatus.sent,
           type: MessageType.system,
-          callInfo: { callType: isVideo ? "video" : "voice", missed: reason === "invite_timeout", duration: Math.round(durationMs / 1000) },
+          callInfo: { callType: isVideo ? "video" : "voice", missed, duration: Math.round(durationMs / 1000), callId: callContent.call_id as string | undefined },
           systemMeta: { template: callTemplateKey, senderAddr: sender },
         };
         addMessage(roomId, sysMsg);
@@ -7530,6 +7667,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     chatDbKitRef,
     setChatDbKit,
     getDbKit,
+    hasMessage,
     dexieMessagesReady,
     dexieRoomMap,
     getPreOpenUnreadCount,
