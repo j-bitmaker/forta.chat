@@ -335,6 +335,7 @@ export const en = {
   // ── Message input ──
   "message.editing": "Editing",
   "message.placeholder": "Message",
+  "message.sendButton": "Send",
   "message.emoji": "Emoji",
   "message.attach": "Attach",
   "message.photo": "Photo",

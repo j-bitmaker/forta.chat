@@ -14,16 +14,26 @@ tags:
     visible: ".*${MAESTRO_E2E_TARGET_ROOM}.*"
     timeout: 300000
 - tapOn: ".*${MAESTRO_E2E_TARGET_ROOM}.*"
+# The composer's placeholder never reaches Maestro: the WebView exposes the
+# field as an EditText with an empty hint (Pixel 9, 2026-09-22), so it is
+# addressed by position: it sits right of the «Emoji» button, the one composer
+# control that carries text. The send button exists only once there is text.
 - extendedWaitUntil:
-    visible: "Message"
+    visible: "Emoji"
     timeout: 30000
 
 # A unique body per run: asserting on a fixed string would pass on a message
 # left behind by an earlier run.
 - evalScript: ${output.body = 'maestro ' + Date.now()}
-- tapOn: "Message"
+- tapOn:
+    rightOf: "Emoji"
 - inputText: ${output.body}
-- tapOn: "Send"
+- hideKeyboard
+# The send button reaches Android with no text or description at all (its
+# icon-only markup is exported empty), so it is found as the control right of
+# the composer, which now carries the typed body as its text.
+- tapOn:
+    rightOf: ${output.body}
 
 # The optimistic echo appears immediately; this asserts it reached the timeline,
 # not that the server accepted it.

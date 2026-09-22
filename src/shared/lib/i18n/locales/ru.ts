@@ -337,6 +337,7 @@ export const ru: Record<TranslationKey, string> = {
   // ── Message input ──
   "message.editing": "Редактирование",
   "message.placeholder": "Сообщение",
+  "message.sendButton": "Отправить",
   "message.emoji": "Эмодзи",
   "message.attach": "Прикрепить",
   "message.photo": "Фото",
