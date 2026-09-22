@@ -1,0 +1,19 @@
+appId: com.forta.chat
+name: Sign in with a test account
+tags:
+  - auth
+---
+# Proves the part every other credentialed flow depends on: the key is
+# accepted, Matrix credentials are derived and the first sync completes.
+# Separate from the chat flows so a login regression is not misreported as a
+# chat regression.
+- clearState
+- launchApp
+- runFlow: ../subflows/dismiss-permissions.yaml
+- runFlow: ../subflows/login.yaml
+
+# After login the app lands on the chat list. The tab bar is the stable
+# landmark — an account with no chats still shows it.
+- extendedWaitUntil:
+    visible: "Chats"
+    timeout: 180000

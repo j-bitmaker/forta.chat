@@ -21,7 +21,6 @@ import { AppPages } from "@/app/providers/router";
 import { registerPlugin } from "@capacitor/core";
 import { App } from "@capacitor/app";
 import {
-  BugReportModal,
   BugReportStatusSheet,
   useBugReport,
   useBugReportStatus,
@@ -743,7 +742,6 @@ const handleLogout = () => {
       @close="showAddModal = false"
     />
 
-    <BugReportModal />
 
     <BugReportStatusSheet
       v-if="authStore.address"

@@ -29,6 +29,7 @@ import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import com.forta.chat.R
 import com.forta.chat.plugins.locale.LocaleHelper
 import com.forta.chat.utils.WindowInsetsHelper
@@ -82,6 +83,29 @@ class CallActivity : Activity(), SensorEventListener {
         // Static callback for remote video mute state changes
         var onRemoteVideoMuted: ((Boolean) -> Unit)? = null
 
+        /** The call screen on display, for [scheduleRemoteHangupClose]. */
+        @Volatile
+        private var currentInstance: CallActivity? = null
+
+        private val backstopHandler by lazy { Handler(Looper.getMainLooper()) }
+
+        /**
+         * The peer's hangup push ended [endedCallId]. JS closes this screen when it
+         * processes the end; a page Chromium froze behind the screen never does, and
+         * the finished call stayed on screen. If that call's screen still shows after
+         * [CallScreenBackstopPolicy.GRACE_MS], native closes it.
+         */
+        fun scheduleRemoteHangupClose(endedCallId: String?) {
+            backstopHandler.postDelayed({
+                val screen = currentInstance ?: return@postDelayed
+                if (screen.isFinishing || !CallScreenBackstopPolicy.closes(screen.shownCallId, endedCallId)) {
+                    return@postDelayed
+                }
+                Log.w(TAG, "call screen for $endedCallId still open ${CallScreenBackstopPolicy.GRACE_MS} ms after the hangup push, closing it")
+                screen.finish()
+            }, CallScreenBackstopPolicy.GRACE_MS)
+        }
+
         fun launch(context: Context, callerName: String, callType: String, callId: String, direction: String) {
             val intent = Intent(context, CallActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -125,6 +149,8 @@ class CallActivity : Activity(), SensorEventListener {
     private var callerName = "Unknown"
     private var callDurationSeconds = 0
     private var isConnected = false
+    /** Matrix call id this screen shows, from the launch intent. */
+    private var shownCallId = ""
 
     // Shared audio router — obtained via AudioRouter.getSharedInstance in
     // onCreate; lifecycle-wise the Activity only attaches / detaches its UI
@@ -213,6 +239,7 @@ class CallActivity : Activity(), SensorEventListener {
         // Read extras
         callerName = intent.getStringExtra(EXTRA_CALLER_NAME) ?: "Unknown"
         callType = intent.getStringExtra(EXTRA_CALL_TYPE) ?: "video"
+        shownCallId = intent.getStringExtra(EXTRA_CALL_ID).orEmpty()
         isVideoEnabled = callType == "video"
 
         callerNameText.text = callerName
@@ -258,7 +285,7 @@ class CallActivity : Activity(), SensorEventListener {
         if (powerManager.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) {
             proximityWakeLock = powerManager.newWakeLock(
                 PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK,
-                "bastyon:call_proximity"
+                "forta:call_proximity"
             )
         }
 
@@ -272,6 +299,7 @@ class CallActivity : Activity(), SensorEventListener {
         }
         updateButtonStates()
 
+        currentInstance = this
         // Register for call end
         onCallEnded = { runOnUiThread { finish() } }
         // Register for remote video
@@ -304,9 +332,12 @@ class CallActivity : Activity(), SensorEventListener {
         // device's volume controls stuck on VoIP-only until reboot (#708).
         val hasActiveCall = WebRTCPlugin.manager != null && CallForegroundService.isRunning
         if (hasActiveCall) {
-            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            am.mode = AudioManager.MODE_IN_COMMUNICATION
-            Log.d("WebRTCAudio", "onResume: restored MODE_IN_COMMUNICATION, re-requesting audio focus")
+            // Through the router, not a direct AudioManager write: it re-applies
+            // the mode only when the OS actually reset it, records the event in
+            // the call's audio timeline, and keeps the reset owned by the same
+            // watchdog that owns start().
+            AudioRouter.getSharedInstance(applicationContext).ensureCommunicationMode("resume")
+            Log.d("WebRTCAudio", "onResume: ensured MODE_IN_COMMUNICATION, re-requesting audio focus")
             CallForegroundService.reRequestAudioFocus(this)
         }
     }
@@ -334,7 +365,14 @@ class CallActivity : Activity(), SensorEventListener {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // SINGLE_TOP: JS launches the screen again once the call is answered.
+        intent.getStringExtra(EXTRA_CALL_ID)?.takeIf { it.isNotEmpty() }?.let { shownCallId = it }
+    }
+
     override fun onDestroy() {
+        if (currentInstance === this) currentInstance = null
         handler.removeCallbacks(timerRunnable)
         handler.removeCallbacks(hideControlsRunnable)
         pulseAnimator?.cancel()
@@ -346,6 +384,8 @@ class CallActivity : Activity(), SensorEventListener {
 
         try {
             localVideoView.release()
+            // Off the remote tracks first, or the next call's track feeds a released view.
+            WebRTCPlugin.manager?.detachRemoteRenderer(remoteVideoView)
             remoteVideoView.release()
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing renderers", e)
@@ -419,7 +459,6 @@ class CallActivity : Activity(), SensorEventListener {
             localVideoView.init(eglBase.eglBaseContext, null)
             localVideoView.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
             localVideoView.setEnableHardwareScaler(true)
-            localVideoView.setMirror(true)
             localVideoView.setZOrderMediaOverlay(true)
 
             // Attach remote renderer (may already have tracks from WebRTC negotiation)
@@ -434,10 +473,13 @@ class CallActivity : Activity(), SensorEventListener {
             Log.d(TAG, "initVideoRenderers: renderers initialized, remote renderer attached")
         }
 
-        // Attach local video only for video calls with camera permission
+        // Bind the self-view only; the camera itself is opened by the plugin
+        // thread's startLocalMedia for every video call. Opening it here as
+        // well raced that path on outgoing calls (launchCallUI precedes
+        // placeVideoCall) and left the far side with a black picture.
         if (isVideoEnabled && checkSelfPermission(android.Manifest.permission.CAMERA)
             == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            mgr.startLocalVideo("", localVideoView)
+            mgr.attachLocalRenderer(localVideoView)
             setupLocalVideoDrag()
         } else if (!isVideoEnabled) {
             localVideoView.visibility = View.GONE
@@ -613,7 +655,15 @@ class CallActivity : Activity(), SensorEventListener {
             check.visibility = if (device == state.active) View.VISIBLE else View.GONE
 
             row.setOnClickListener {
-                audioRouter.setDevice(device)
+                // The router refuses while it is not running — between the
+                // answer and the first audio frame, and again after teardown.
+                // Dismissing regardless left the pick looking applied while
+                // the old route stayed live (O08); the JS control has said so
+                // since F29, this sheet is the surface actually on screen
+                // during a call.
+                if (!audioRouter.setDevice(device)) {
+                    Toast.makeText(this, R.string.call_route_unavailable, Toast.LENGTH_SHORT).show()
+                }
                 popup.dismiss()
             }
             container.addView(row)

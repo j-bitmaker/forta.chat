@@ -14,6 +14,8 @@
  */
 
 import { NativeWebRTC } from "./native-webrtc-bridge";
+import { addLocalCandidatesToSdp } from "./sdp-local-candidates";
+import { createSilentAudioTrack } from "./silent-audio-track";
 import type { PluginListenerHandle } from "@capacitor/core";
 
 // Save original for fallback / non-call usage
@@ -57,7 +59,7 @@ const SIGNALING_STATE_MAP: Record<string, RTCSignalingState> = {
  * the async gap before the native onSignalingStateChange event lands.
  * The native event (see _handleSignalingStateChange) still runs afterwards
  * as the authoritative correction for anything this local computation
- * can't foresee, such as an implicit rollback from a glare collision.
+ * can't foresee.
  */
 function nextSignalingState(isLocal: boolean, type: RTCSdpType): RTCSignalingState {
   if (type === "rollback") return "stable";
@@ -69,6 +71,23 @@ function nextSignalingState(isLocal: boolean, type: RTCSdpType): RTCSignalingSta
   if (type === "pranswer") return "have-remote-pranswer";
   if (type === "answer") return "stable";
   return "have-remote-offer";
+}
+
+/**
+ * A silent stand-in for a remote track. The media itself renders natively; the
+ * SDK only needs a track of the right kind in the stream it builds a feed from.
+ * Audio comes from the shared silent source, video from a 1x1 canvas; where Web
+ * Audio is unavailable the audio slot falls back to a canvas track.
+ */
+function createPlaceholderTrack(kind: string): MediaStreamTrack | undefined {
+  if (kind !== "video") {
+    const track = createSilentAudioTrack();
+    if (track) return track;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = 1;
+  canvas.height = 1;
+  return canvas.captureStream(0).getVideoTracks()[0];
 }
 
 class NativeRTCPeerConnection extends EventTarget {
@@ -122,6 +141,17 @@ class NativeRTCPeerConnection extends EventTarget {
   private _connectionState: RTCPeerConnectionState = "new";
   private _signalingState: RTCSignalingState = "stable";
   private _localDescription: RTCSessionDescription | null = null;
+  // Local candidates gathered so far. The native SDP carries none, and the SDK drops its queued
+  // candidates when it sends an offer or answer, expecting them in localDescription as in a browser.
+  private _localCandidates: RTCIceCandidateInit[] = [];
+  // The local description of the last completed exchange, put back when our offer is rolled back.
+  private _stableLocalDescription: RTCSessionDescription | null = null;
+  // A setLocalDescription on its way to native, so a peer's offer sees the state it leaves behind.
+  private _applyingLocal: Promise<void> | null = null;
+  // A peer's offer being applied: a second one waits for it before deciding whether to roll back.
+  private _applyingRemoteOffer: Promise<void> | null = null;
+  // Set from rolling our offer back until the peer's offer is applied: a restart offer must not go out in between.
+  private _holdRestartOffer = false;
   private _remoteDescription: RTCSessionDescription | null = null;
 
   // Callback-style event handlers (SDK uses these)
@@ -155,6 +185,12 @@ class NativeRTCPeerConnection extends EventTarget {
   // glare resolution). Two back-to-back native restarts while signaling is
   // mid-offer reliably wedge libwebrtc on Android — we must collapse them.
   private _lastRestartIceAt = 0;
+  // A finished native restart whose offer has not been asked for yet (see
+  // _requestIceRestartOffer).
+  private _iceRestartOfferPending = false;
+  private _iceEverConnected = false;
+  // Set while a pending restart offer waits for the device to come back online.
+  private _onlineListener: (() => void) | null = null;
   private static readonly DISCONNECT_RESTART_DELAY_MS = 10_000;
   private static readonly DEAD_CONNECTION_TIMEOUT_MS = 20_000;
   private static readonly RESTART_ICE_DEBOUNCE_MS = 3_000;
@@ -222,11 +258,13 @@ class NativeRTCPeerConnection extends EventTarget {
             this._fireEvent(new Event("icegatheringstatechange"));
           }
 
-          const candidate = new RTCIceCandidate({
+          const init: RTCIceCandidateInit = {
             candidate: data.candidate,
             sdpMid: data.sdpMid,
             sdpMLineIndex: data.sdpMLineIndex,
-          });
+          };
+          this._localCandidates.push(init);
+          const candidate = new RTCIceCandidate(init);
           const event = new RTCPeerConnectionIceEvent("icecandidate", {
             candidate,
           });
@@ -281,45 +319,39 @@ class NativeRTCPeerConnection extends EventTarget {
           let track: MediaStreamTrack | undefined;
 
           try {
-            // Create dummy track first
-            if (data.kind === "video") {
-              const canvas = document.createElement("canvas");
-              canvas.width = 1;
-              canvas.height = 1;
-              const cs = canvas.captureStream(0);
-              track = cs.getVideoTracks()[0];
-            } else {
-              try {
-                const ctx = new AudioContext();
-                const osc = ctx.createOscillator();
-                const dest = ctx.createMediaStreamDestination();
-                osc.connect(dest);
-                osc.start();
-                track = dest.stream.getAudioTracks()[0];
-                if (track) track.enabled = false;
-              } catch {
-                const canvas = document.createElement("canvas");
-                canvas.width = 1;
-                canvas.height = 1;
-                const cs = canvas.captureStream(0);
-                track = cs.getVideoTracks()[0];
+            // One placeholder per native track: a repeated onTrack for the
+            // same track must not grow the stream.
+            track = this._remoteTracks.get(data.trackId) ?? createPlaceholderTrack(data.kind);
+            if (track && data.trackId) this._remoteTracks.set(data.trackId, track);
+
+            const known = data.streamId ? this._remoteStreams.get(data.streamId) : undefined;
+            if (known) {
+              stream = known;
+              if (track && !stream.getTracks().includes(track)) {
+                stream.addTrack(track);
+                // Chrome fires no addtrack for a script's own addTrack, and the
+                // SDK's CallFeed re-reads its tracks on that event.
+                const added = new Event("addtrack") as Event & { track?: MediaStreamTrack };
+                added.track = track;
+                stream.dispatchEvent(added);
               }
-            }
+            } else {
+              // Create stream with the remote SDP's stream ID
+              // MediaStream constructor with existing tracks
+              stream = new MediaStream(track ? [track] : []);
 
-            // Create stream with the remote SDP's stream ID
-            // MediaStream constructor with existing tracks
-            stream = new MediaStream(track ? [track] : []);
-
-            // Override the stream id to match remote SDP's msid.
-            // The SDK does: this.remoteSDPStreamMetadata![stream.id].purpose.
-            // writable/configurable:true so the id can be updated on
-            // renegotiation (video upgrade, glare) without silently failing.
-            if (data.streamId) {
-              Object.defineProperty(stream, "id", {
-                value: data.streamId,
-                writable: true,
-                configurable: true,
-              });
+              // Override the stream id to match remote SDP's msid.
+              // The SDK does: this.remoteSDPStreamMetadata![stream.id].purpose.
+              // writable/configurable:true so the id can be updated on
+              // renegotiation (video upgrade, glare) without silently failing.
+              if (data.streamId) {
+                Object.defineProperty(stream, "id", {
+                  value: data.streamId,
+                  writable: true,
+                  configurable: true,
+                });
+                this._remoteStreams.set(data.streamId, stream);
+              }
             }
           } catch (err) {
             console.error("[NativeRTCProxy] onTrack: failed to create track:", err);
@@ -383,13 +415,19 @@ class NativeRTCPeerConnection extends EventTarget {
     return this._signalingState;
   }
   get localDescription(): RTCSessionDescription | null {
-    return this._localDescription;
+    return this._describeLocal();
   }
   get remoteDescription(): RTCSessionDescription | null {
     return this._remoteDescription;
   }
   get currentLocalDescription(): RTCSessionDescription | null {
-    return this._localDescription;
+    return this._describeLocal();
+  }
+
+  private _describeLocal(): RTCSessionDescription | null {
+    const desc = this._localDescription;
+    if (!desc || this._localCandidates.length === 0) return desc;
+    return new RTCSessionDescription({ type: desc.type, sdp: addLocalCandidatesToSdp(desc.sdp, this._localCandidates) });
   }
   get currentRemoteDescription(): RTCSessionDescription | null {
     return this._remoteDescription;
@@ -428,20 +466,58 @@ class NativeRTCPeerConnection extends EventTarget {
     desc: RTCSessionDescriptionInit
   ): Promise<void> {
     await this._waitReady();
-    console.log("[NativeRTCProxy] setLocalDescription:", desc.type, "peerId:", this._peerId);
-    await NativeWebRTC.setLocalDescription({
-      peerId: this._peerId,
-      sdp: desc.sdp ?? "",
-      type: desc.type ?? "offer",
-    });
-    this._localDescription = new RTCSessionDescription(desc);
-    this._applySignalingState(nextSignalingState(true, (desc.type ?? "offer") as RTCSdpType));
+    const applying = (async () => {
+      console.log("[NativeRTCProxy] setLocalDescription:", desc.type, "peerId:", this._peerId);
+      await NativeWebRTC.setLocalDescription({
+        peerId: this._peerId,
+        sdp: desc.sdp ?? "",
+        type: desc.type ?? "offer",
+      });
+      this._localDescription = new RTCSessionDescription(desc);
+      if (desc.type === "answer") this._stableLocalDescription = this._localDescription;
+      this._applySignalingState(nextSignalingState(true, (desc.type ?? "offer") as RTCSdpType));
+    })();
+    this._applyingLocal = applying;
+    try {
+      await applying;
+    } finally {
+      if (this._applyingLocal === applying) this._applyingLocal = null;
+    }
   }
 
   async setRemoteDescription(
     desc: RTCSessionDescriptionInit
   ): Promise<void> {
     await this._waitReady();
+    if (desc.type !== "offer") {
+      await this._applyRemoteDescription(desc);
+      return;
+    }
+    if (this._applyingLocal) await this._applyingLocal.catch(() => {});
+    while (this._applyingRemoteOffer) await this._applyingRemoteOffer.catch(() => {});
+    const applying = (async () => {
+      const rollBack = this._signalingState === "have-local-offer";
+      if (rollBack) this._holdRestartOffer = true;
+      try {
+        if (rollBack) await this._rollbackLocalOffer();
+        await this._applyRemoteDescription(desc);
+      } finally {
+        if (rollBack) {
+          this._holdRestartOffer = false;
+          // Answering the offer brings stable again; if applying it failed we are stable already.
+          if (this._iceRestartOfferPending) queueMicrotask(() => this._requestIceRestartOffer());
+        }
+      }
+    })();
+    this._applyingRemoteOffer = applying;
+    try {
+      await applying;
+    } finally {
+      if (this._applyingRemoteOffer === applying) this._applyingRemoteOffer = null;
+    }
+  }
+
+  private async _applyRemoteDescription(desc: RTCSessionDescriptionInit): Promise<void> {
     console.log("[NativeRTCProxy] setRemoteDescription:", desc.type, "peerId:", this._peerId);
     await NativeWebRTC.setRemoteDescription({
       peerId: this._peerId,
@@ -449,7 +525,20 @@ class NativeRTCPeerConnection extends EventTarget {
       type: desc.type ?? "answer",
     });
     this._remoteDescription = new RTCSessionDescription(desc);
+    if (desc.type === "answer") this._stableLocalDescription = this._localDescription;
     this._applySignalingState(nextSignalingState(false, (desc.type ?? "answer") as RTCSdpType));
+  }
+
+  /**
+   * A browser rolls its own offer back when the peer's offer arrives (the polite side of a glare). libwebrtc's
+   * native API does not: the offer failed with "Called in wrong state: have-local-offer", the impolite peer had
+   * already ignored ours, and both ends stayed in have-local-offer, so neither ICE restart ever completed.
+   */
+  private async _rollbackLocalOffer(): Promise<void> {
+    console.log("[NativeRTCProxy] setRemoteDescription: rolling back our offer for the peer's offer");
+    await NativeWebRTC.setLocalDescription({ peerId: this._peerId, sdp: "", type: "rollback" });
+    this._localDescription = this._stableLocalDescription;
+    this._applySignalingState("stable");
   }
 
   async addIceCandidate(
@@ -472,6 +561,20 @@ class NativeRTCPeerConnection extends EventTarget {
 
   private _senders: RTCRtpSender[] = [];
   private _localStreams: MediaStream[] = [];
+
+  /**
+   * Remote streams by msid, and the placeholder standing in for each native
+   * track. libwebrtc raises one onTrack per track; a browser hands every track
+   * of one msid the same MediaStream, and the SDK depends on that — it builds
+   * the feed from the first stream and ignores a later one with the same id.
+   * A fresh stream per event left a video call's feed with its audio track
+   * only, so the feed read "video muted" and the native call screen covered
+   * the remote picture with the avatar for the whole call.
+   */
+  private _remoteStreams = new Map<string, MediaStream>();
+  private _remoteTracks = new Map<string, MediaStreamTrack>();
+  // An addTrack negotiationneeded is waiting for its microtask.
+  private _negotiationNeededQueued = false;
 
   addTrack(track: MediaStreamTrack, ..._streams: MediaStream[]): RTCRtpSender {
     // Save reference to local streams for SDP msid rewriting
@@ -505,7 +608,15 @@ class NativeRTCPeerConnection extends EventTarget {
     // 2. Mid-call track additions (ICE already connected) — e.g. voice→video upgrade
     // Skip ONLY during incoming call setup (remote description set but ICE not yet connected)
     // to avoid unwanted renegotiation that breaks ICE establishment.
+    // One event per batch of addTrack calls, as a browser fires it: the SDK
+    // adds a video call's audio and video tracks in one loop, and an event per
+    // track made it send a second offer (m.call.negotiate) before the callee
+    // answered — the callee's answer then failed against the connection that
+    // early offer had already made stable.
+    if (this._negotiationNeededQueued) return sender;
+    this._negotiationNeededQueued = true;
     queueMicrotask(() => {
+      this._negotiationNeededQueued = false;
       if (this._closed) return;
       const iceConnected = this._iceConnectionState === "connected" || this._iceConnectionState === "completed";
       if (this._remoteDescription && !iceConnected) {
@@ -550,6 +661,12 @@ class NativeRTCPeerConnection extends EventTarget {
     // against close() racing with init so we don't call native on a
     // torn-down peer.
     if (this._closed) return;
+    // A finished native restart already waits for its offer (offline or mid-exchange). Restarting again
+    // would fire a second offer when that native call completes, right after the waiting one went out.
+    if (this._iceRestartOfferPending) {
+      this._requestIceRestartOffer();
+      return;
+    }
     const now = Date.now();
     const sinceLast = now - this._lastRestartIceAt;
     if (sinceLast < NativeRTCPeerConnection.RESTART_ICE_DEBOUNCE_MS) {
@@ -562,11 +679,66 @@ class NativeRTCPeerConnection extends EventTarget {
     }
     this._lastRestartIceAt = now;
     this._waitReady()
-      .then(() => {
+      .then(async () => {
         if (this._closed) return;
-        return NativeWebRTC.restartIce({ peerId: this._peerId });
+        await NativeWebRTC.restartIce({ peerId: this._peerId });
+        this._iceRestartOfferPending = true;
+        this._requestIceRestartOffer();
       })
       .catch((e) => console.error("[NativeRTCProxy] restartIce failed:", e));
+  }
+
+  /**
+   * Native restartIce only marks the connection: libwebrtc then reports
+   * renegotiation-needed, and NativeWebRTCManager suppresses that event (it
+   * also fires for our own track management). Without negotiationneeded the
+   * SDK never sends the restart offer and the restart does nothing, so the
+   * proxy fires it — as a browser does, only once signaling is stable.
+   *
+   * Not before ICE has ever connected: an offer in the middle of call setup
+   * is what addTrack's guard avoids, and there the restart stays a no-op as it
+   * always was.
+   *
+   * Not while the device is offline: the WebView rejects the request at once
+   * and the SDK ends the call when the offer can't be sent. The SDK asks for a
+   * restart 2 s after ICE goes disconnected, so a short Wi-Fi drop would end
+   * every call; the offer goes out when the network is back.
+   */
+  private _requestIceRestartOffer(): void {
+    if (!this._iceRestartOfferPending || this._closed || this._signalingState !== "stable" || this._holdRestartOffer) return;
+    if (!this._iceEverConnected) {
+      this._iceRestartOfferPending = false;
+      console.log("[NativeRTCProxy] restartIce: no restart offer, ICE has not connected yet");
+      return;
+    }
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      this._waitForOnline();
+      return;
+    }
+    this._iceRestartOfferPending = false;
+    // The offer is the restart: a restartIce from the same reconnect (the
+    // network-change handler, a watchdog) is debounced instead of restarting again.
+    this._lastRestartIceAt = Date.now();
+    console.log("[NativeRTCProxy] restartIce: firing negotiationneeded for the restart offer");
+    const event = new Event("negotiationneeded");
+    this.onnegotiationneeded?.(event);
+    this._fireEvent(event);
+  }
+
+  private _waitForOnline(): void {
+    if (this._onlineListener || typeof window === "undefined") return;
+    console.log("[NativeRTCProxy] restartIce: offline, the restart offer waits for the network");
+    this._onlineListener = () => {
+      this._stopWaitingForOnline();
+      this._requestIceRestartOffer();
+    };
+    window.addEventListener("online", this._onlineListener);
+  }
+
+  private _stopWaitingForOnline(): void {
+    if (!this._onlineListener) return;
+    window.removeEventListener("online", this._onlineListener);
+    this._onlineListener = null;
   }
 
   // -----------------------------------------------------------------------
@@ -607,6 +779,7 @@ class NativeRTCPeerConnection extends EventTarget {
   close(): void {
     if (this._closed) return;
     this._closed = true;
+    this._stopWaitingForOnline();
     this._iceConnectionState = "closed";
     this._connectionState = "closed";
     this._signalingState = "closed";
@@ -629,6 +802,8 @@ class NativeRTCPeerConnection extends EventTarget {
       handle.remove();
     }
     this.listeners = [];
+    this._remoteStreams.clear();
+    this._remoteTracks.clear();
   }
 
   // -----------------------------------------------------------------------
@@ -646,6 +821,11 @@ class NativeRTCPeerConnection extends EventTarget {
     this._signalingState = state;
     this.onsignalingstatechange?.(new Event("signalingstatechange"));
     this._fireEvent(new Event("signalingstatechange"));
+    // Outside the SDK's own signalingstatechange handling, which may still be
+    // finishing the exchange that just became stable.
+    if (state === "stable" && this._iceRestartOfferPending && !this._holdRestartOffer) {
+      queueMicrotask(() => this._requestIceRestartOffer());
+    }
   }
 
   /**
@@ -654,9 +834,7 @@ class NativeRTCPeerConnection extends EventTarget {
    * perfect-negotiation code (matrix-js-sdk-bastyon call.ts) assumes it is
    * reading from a spec-compliant RTCPeerConnection. This is the final
    * word on the state; it corrects whatever the optimistic local
-   * transition in setLocalDescription/setRemoteDescription computed
-   * (e.g. an implicit rollback from a glare collision that only
-   * libwebrtc's internal state machine could know about).
+   * transition in setLocalDescription/setRemoteDescription computed.
    */
   private _handleSignalingStateChange(state: string): void {
     const mapped = SIGNALING_STATE_MAP[state];
@@ -677,6 +855,7 @@ class NativeRTCPeerConnection extends EventTarget {
     this._iceConnectionState = ICE_STATE_MAP[state] ?? "new";
     if (state === "connected" || state === "completed") {
       this._connectionState = "connected";
+      this._iceEverConnected = true;
     } else if (state === "failed") {
       this._connectionState = "failed";
     } else if (state === "disconnected") {
@@ -910,22 +1089,9 @@ async function nativeGetUserMedia(
   // The SDK checks track count to determine if media is available.
   const stream = new MediaStream();
 
-  // Create a dummy audio track via AudioContext
-  try {
-    const ctx = new AudioContext();
-    const oscillator = ctx.createOscillator();
-    const dest = ctx.createMediaStreamDestination();
-    oscillator.connect(dest);
-    oscillator.start();
-    const audioTrack = dest.stream.getAudioTracks()[0];
-    if (audioTrack) {
-      // Mute it — real audio goes through native
-      audioTrack.enabled = false;
-      stream.addTrack(audioTrack);
-    }
-  } catch {
-    // Fallback — SDK may still work without tracks
-  }
+  // A disabled dummy audio track — real audio goes through native
+  const audioTrack = createSilentAudioTrack();
+  if (audioTrack) stream.addTrack(audioTrack);
 
   // Create a dummy video track via canvas if video requested
   if (hasVideo) {

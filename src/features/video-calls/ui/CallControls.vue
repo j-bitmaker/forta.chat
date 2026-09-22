@@ -4,6 +4,7 @@ import { isNative } from "@/shared/lib/platform";
 import { nativeCallBridge } from "@/shared/lib/native-calls/native-call-bridge";
 import type { NativeAudioDeviceType } from "@/shared/lib/native-calls/native-call-bridge";
 import { useCallService } from "../model/call-service";
+import { useToast } from "@/shared/lib/use-toast";
 import { useMediaDevices } from "../model/use-media-devices";
 
 const STORAGE_KEY_AUDIO = "bastyon_call_audio_device";
@@ -111,9 +112,21 @@ const selectOutput = async (deviceId: string) => {
   callStore.audioOutputId = deviceId;
   if (!isNative) return;
   const dev = audioOutputDevices.value.find(d => d.deviceId === deviceId);
-  const type = mapOutputLabelToNativeType(dev?.label ?? "");
+  await applyNativeRoute(mapOutputLabelToNativeType(dev?.label ?? ""));
+};
+
+const { toast } = useToast();
+
+// Flip the toggle first so the tap feels instant, then let the native
+// AudioRouter confirm. A refusal (router not running yet, or already torn
+// down) rolls the toggle back and says so — before, the toggle showed
+// "speaker on" while the earpiece stayed live (O08).
+const applyNativeRoute = async (type: NativeAudioDeviceType): Promise<void> => {
+  const before = speakerOn.value;
   speakerOn.value = type === "speaker";
-  await nativeCallBridge.setAudioDevice({ type });
+  if (await nativeCallBridge.setAudioDevice({ type })) return;
+  speakerOn.value = before;
+  toast(t("call.routeUnavailable"), "error");
 };
 
 // WEE-60 H1: standalone speaker toggle wired straight to the native
@@ -125,12 +138,10 @@ const selectOutput = async (deviceId: string) => {
 const speakerOn = ref(callStore.activeCall?.type === "video");
 
 const toggleSpeaker = async () => {
-  const next = !speakerOn.value;
-  speakerOn.value = next;
   // The native AudioRouter echoes back an audioDevicesChanged event, which
-  // re-syncs speakerOn — so the optimistic flip above self-corrects if the
-  // route ends up elsewhere (e.g. forced to BT).
-  await nativeCallBridge.setAudioDevice({ type: next ? "speaker" : "earpiece" });
+  // re-syncs speakerOn — so the optimistic flip self-corrects if the route
+  // ends up elsewhere (e.g. a headset the user did not pin against).
+  await applyNativeRoute(speakerOn.value ? "earpiece" : "speaker");
 };
 
 // Keep the toggle in sync with the real native output. enumerateDevices is

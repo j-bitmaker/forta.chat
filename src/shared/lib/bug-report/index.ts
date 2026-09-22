@@ -1,9 +1,15 @@
 export { collectEnvironment } from './collect-environment';
 export {
   collectCallDiagnostics,
+  registerCallDiagnosticsExtras,
   EMPTY_CALL_DIAGNOSTICS,
 } from './collect-call-diagnostics';
-export type { BugReportCallDiagnostics } from './collect-call-diagnostics';
+export type {
+  BugReportCallDiagnostics,
+  CallDiagnosticsExtras,
+  CallIceDiagnostics,
+  CallTorDiagnostics,
+} from './collect-call-diagnostics';
 export { sendBugReport } from './bug-report-sender';
 export {
   computeReporterHash,

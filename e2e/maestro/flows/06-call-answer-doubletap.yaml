@@ -1,0 +1,38 @@
+appId: com.forta.chat
+name: Answer with a double tap (accept-button race)
+tags:
+  - call
+  - race
+---
+# Reproduction attempt for the accept-button cluster (#1268 Xiaomi, #1108
+# Honor, 5 open reports): users report that tapping the green button drops the
+# call, or bounces it back as an outgoing one. A double tap is the cheapest
+# theory — answerCall has a guard against it since WEE-45, so this flow doubles
+# as a regression test for that guard.
+#
+# Passing means the guard holds: the call still connects despite the second tap.
+- launchApp:
+    stopApp: false
+- runFlow: ../subflows/dismiss-permissions.yaml
+
+- extendedWaitUntil:
+    visible: ".*Incoming (audio|video) call.*"
+    timeout: 120000
+
+# Two taps as fast as Maestro can issue them, with no wait in between.
+- tapOn: "Accept"
+- tapOn:
+    text: "Accept"
+    optional: true
+
+- runFlow:
+    when:
+      visible: "Allow"
+    commands:
+      - tapOn: "Allow"
+
+# The call must still be established. A drop here is the reported bug.
+- extendedWaitUntil:
+    visible: "Mute"
+    timeout: 60000
+- assertVisible: "Earpiece"

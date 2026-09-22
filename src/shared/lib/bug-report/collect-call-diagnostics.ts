@@ -18,10 +18,61 @@
  */
 
 import { isAndroid, isNative } from "@/shared/lib/platform";
+import {
+  getWebRTCEngine,
+  type WebRTCEngine,
+} from "@/shared/lib/native-webrtc/webrtc-engine-preference";
 import type {
+  AudioTimelineEntry,
   InviteThrottleRecord,
   InviteThrottleSnapshot,
 } from "@/shared/lib/native-calls";
+
+/** Mirror of the call feature's IceSummary; kept here so shared/ owns the envelope shape. */
+export interface CallIceDiagnostics {
+  total: number;
+  relay: number;
+  host: number;
+  srflx: number;
+  selectedPairType: string | null;
+  lastIceState: string | null;
+  turnServers: number | null;
+}
+
+export interface CallTorDiagnostics {
+  enabled: boolean;
+  connected: boolean;
+}
+
+export interface CallDiagnosticsExtras {
+  ice: CallIceDiagnostics | null;
+  tor: CallTorDiagnostics | null;
+}
+
+/**
+ * The call feature knows the last connection's ICE facts and the Tor
+ * state; this module must not import it (shared → features). The feature
+ * registers a provider instead, at wiring time. Null until it does.
+ */
+type ExtrasProvider = () => Promise<CallDiagnosticsExtras> | CallDiagnosticsExtras;
+let extrasProvider: ExtrasProvider | null = null;
+
+export function registerCallDiagnosticsExtras(provider: ExtrasProvider | null): void {
+  extrasProvider = provider;
+}
+
+const NO_EXTRAS: CallDiagnosticsExtras = { ice: null, tor: null };
+
+async function collectExtras(): Promise<CallDiagnosticsExtras> {
+  if (!extrasProvider) return { ...NO_EXTRAS };
+  try {
+    const extras = await extrasProvider();
+    return { ice: extras.ice ?? null, tor: extras.tor ?? null };
+  } catch (e) {
+    console.warn("[bug-report] call diagnostics extras failed:", e);
+    return { ...NO_EXTRAS };
+  }
+}
 
 export interface BugReportCallDiagnostics {
   /** AudioManager.mode as a string ("MODE_NORMAL", "MODE_IN_COMMUNICATION", ...). */
@@ -35,6 +86,32 @@ export interface BugReportCallDiagnostics {
   inviteHistory: InviteThrottleRecord[];
   /** Convenience: how many of the recorded invites were already expired on arrival. */
   expiredInviteCount: number;
+  /**
+   * Which media stack carried the call on this device. Android defaults to
+   * `native`; a device switched to `webview` is running the WebView's own
+   * WebRTC. Triage needs this to know whether a report says anything about
+   * the native engine at all.
+   */
+  webrtcEngine: WebRTCEngine;
+  /**
+   * Ordered audio-stack events for the call, oldest first, times relative to
+   * the first entry. Android only; empty elsewhere and on older native builds.
+   */
+  audioTimeline: AudioTimelineEntry[];
+  /**
+   * Relay/host/srflx candidates and the selected pair of the last call on
+   * this device, from the call feature's diagnostics. Null when no call
+   * has run in this process. Every platform.
+   */
+  ice: CallIceDiagnostics | null;
+  /** Tor mode at report time — calls bypass Tor, so a report should say whether it was on. */
+  tor: CallTorDiagnostics | null;
+  /**
+   * O10: whether Android still grants the full-screen incoming-call surface.
+   * False = revoked (Android 14+ sideload), the ringer degrades to a heads-up
+   * card. Null off Android, before Android 14, or when the query failed.
+   */
+  fullScreenIntentAllowed: boolean | null;
 }
 
 export const EMPTY_CALL_DIAGNOSTICS: BugReportCallDiagnostics = {
@@ -43,10 +120,21 @@ export const EMPTY_CALL_DIAGNOSTICS: BugReportCallDiagnostics = {
   isBtScoOn: false,
   inviteHistory: [],
   expiredInviteCount: 0,
+  webrtcEngine: "native",
+  audioTimeline: [],
+  ice: null,
+  tor: null,
+  fullScreenIntentAllowed: null,
 };
 
 export async function collectCallDiagnostics(): Promise<BugReportCallDiagnostics> {
-  if (!isNative) return { ...EMPTY_CALL_DIAGNOSTICS };
+  // ICE and Tor facts are platform-independent; a web report carries them too.
+  const extras = await collectExtras();
+  if (!isNative) return { ...EMPTY_CALL_DIAGNOSTICS, ...extras };
+
+  // Read before the awaits below: it is a synchronous localStorage lookup and
+  // must be reported even if the native queries that follow all fail.
+  const webrtcEngine = getWebRTCEngine();
 
   // Lazy import — the bug-report module loads on web too, where this
   // path is dead weight. Avoid pulling the native plugin graph until we
@@ -64,8 +152,15 @@ export async function collectCallDiagnostics(): Promise<BugReportCallDiagnostics
   // BugReportVoipDiagnostics block. The bridge already short-circuits
   // this on non-Android, but the explicit `if (!isAndroid)` here keeps
   // the bug-report envelope shape obvious to triagers reading the JSON.
+  let audioTimeline: AudioTimelineEntry[] = [];
   let inviteHistory: InviteThrottleRecord[] = [];
+  let fullScreenIntentAllowed: boolean | null = null;
   if (isAndroid) {
+    fullScreenIntentAllowed = await import("@/shared/lib/push/push-data-plugin")
+      .then(({ PushData }) => PushData.getFullScreenIntentStatus())
+      .then((status) => (status.manageable ? status.allowed : null))
+      .catch(() => null);
+    audioTimeline = await nativeCallBridge.getAudioTimeline().catch(() => []);
     const inviteSnapshot: InviteThrottleSnapshot = await nativeCallBridge
       .getInviteThrottleSnapshot()
       .catch(() => ({ records: [] }));
@@ -80,5 +175,9 @@ export async function collectCallDiagnostics(): Promise<BugReportCallDiagnostics
     isBtScoOn: audioStatus.isBtScoOn,
     inviteHistory,
     expiredInviteCount: inviteHistory.filter((r) => r.expired).length,
+    webrtcEngine,
+    audioTimeline,
+    ...extras,
+    fullScreenIntentAllowed,
   };
 }

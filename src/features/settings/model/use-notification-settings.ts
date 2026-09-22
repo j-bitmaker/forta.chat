@@ -30,6 +30,16 @@ export interface UseNotificationSettings {
   openSystemNotificationSettings: () => Promise<boolean>;
   /** Detect the device vendor so the UI can show targeted guidance. */
   detectVendor: () => Promise<void>;
+  /**
+   * O10: false when Android has revoked the full-screen incoming-call
+   * surface for this app (Android 14+ sideloads), true when it is allowed,
+   * null while unknown or where the question does not apply.
+   */
+  fullScreenIntentAllowed: Ref<boolean | null>;
+  /** Ask the OS whether the full-screen intent is still granted. */
+  detectFullScreenIntent: () => Promise<void>;
+  /** Open the system screen that grants it. False when unavailable. */
+  openFullScreenIntentSettings: () => Promise<boolean>;
 }
 
 export function useNotificationSettings(): UseNotificationSettings {
@@ -45,6 +55,31 @@ export function useNotificationSettings(): UseNotificationSettings {
     } catch (e) {
       console.warn("[notification-settings] vendor detection failed:", e);
       vendorGuidanceId.value = null;
+    }
+  };
+
+  const fullScreenIntentAllowed = ref<boolean | null>(null);
+
+  const detectFullScreenIntent = async (): Promise<void> => {
+    if (!isNative || !isAndroid) return;
+    try {
+      const status = await PushData.getFullScreenIntentStatus();
+      // Before Android 14 there is nothing to manage, so nothing to show.
+      fullScreenIntentAllowed.value = status.manageable ? status.allowed : null;
+    } catch (e) {
+      console.warn("[notification-settings] full-screen intent status failed:", e);
+      fullScreenIntentAllowed.value = null;
+    }
+  };
+
+  const openFullScreenIntentSettings = async (): Promise<boolean> => {
+    if (!canOpenSystemSettings.value) return false;
+    try {
+      await PushData.openFullScreenIntentSettings();
+      return true;
+    } catch (e) {
+      console.warn("[notification-settings] openFullScreenIntentSettings failed:", e);
+      return false;
     }
   };
 
@@ -64,5 +99,8 @@ export function useNotificationSettings(): UseNotificationSettings {
     vendorGuidanceId,
     openSystemNotificationSettings,
     detectVendor,
+    fullScreenIntentAllowed,
+    detectFullScreenIntent,
+    openFullScreenIntentSettings,
   };
 }

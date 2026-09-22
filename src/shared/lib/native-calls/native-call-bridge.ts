@@ -2,17 +2,28 @@ import { registerPlugin } from '@capacitor/core';
 import { isAndroid, isIOS, isNative } from '@/shared/lib/platform';
 import { NativeWebRTC } from '@/shared/lib/native-webrtc/native-webrtc-bridge';
 import { isInviteEventExpired } from './invite-ttl';
+import {
+  callIdNeedsRoomCorrelation,
+  matchesPendingCallMarker,
+  pendingCallMarkerIsFresh,
+  pendingCallMarkerOf,
+} from './pending-call-marker';
+import type { PendingCallMarker } from './pending-call-marker';
 import type {
   AudioProbeResult,
+  AudioTimelineEntry,
   InviteThrottleRecord,
   InviteThrottleSnapshot,
   NativeCallNativePlugin,
 } from './native-call-bridge.types';
+import { nativeCallEventAppliesTo } from './native-call-event-scope';
+import type { NativeCallEventTarget } from './native-call-event-scope';
 import { createIOSNativeCallAdapter } from './native-call-bridge.ios';
 import { withRetry } from './with-retry';
 
 export type {
   AudioProbeResult,
+  AudioTimelineEntry,
   InviteThrottleRecord,
   InviteThrottleSnapshot,
 } from './native-call-bridge.types';
@@ -50,12 +61,110 @@ const NativeCall: NativeCallNativePlugin = isIOS
  *
  * Two markers because the push-side `call_id` is often just the push
  * event_id on this homeserver, which does NOT match the Matrix SDK's
- * `call.callId`. We fall through to `roomId` for reliable correlation:
- * if the user tapped Answer on ANY incoming ringer for room R, then
- * the first MatrixCall we receive for room R is the one they accepted.
+ * `call.callId`. For such an id only, we fall through to `roomId`: if the
+ * user tapped Answer on a push-keyed ringer for room R, the first
+ * MatrixCall we receive for room R is the one they accepted. A marker
+ * holding a real Matrix callId matches that call alone.
  */
-let pendingAnswerCallId: string | null = null;
-let pendingAnswerRoomId: string | null = null;
+let pendingAnswer: PendingCallMarker | null = null;
+
+/**
+ * What to assume when the platform hands back a marker with no write time.
+ *
+ * iOS has none to give — its adapter reads live CallKit state instead of a
+ * stored marker — and `null` keeps the un-aged behaviour there. On Android
+ * the stamp is always written, so its absence means something is wrong; 0
+ * makes `matchesPendingCallMarker` refuse the roomId fallback rather than
+ * silently fall back to matching for ever. (JS and the Kotlin plugin ship
+ * inside one APK, so they cannot drift apart in practice — this is a
+ * belt-and-braces default, not a compatibility shim.)
+ */
+function missingStamp(): number | null {
+  return isAndroid ? 0 : null;
+}
+
+/**
+ * Tail of every retire still crossing the bridge. The native markers are
+ * read-and-clear, so a peek that overtook a retire in flight would consume a
+ * marker that is already meant to be gone — and act on it. Both consumers
+ * await this before peeking, which makes the ordering explicit instead of
+ * leaning on Capacitor's dispatch order.
+ */
+let markerRetireInFlight: Promise<void> = Promise.resolve();
+
+/**
+ * The key the native side knows JS's current call by, when JS was *told* it.
+ *
+ * A connection created from a push is keyed by the push's `call_id` — the
+ * event_id on this homeserver — so its lifecycle events carry an id that can
+ * never be compared with anything the SDK holds, and the room is all that is
+ * left to correlate on. That collapses when two calls share a room, and the
+ * connection key does not.
+ *
+ * Written ONLY from an exact id match, never from a room match. A room match
+ * is a guess between "this marker was written for the call I am adopting" and
+ * "this marker is a leftover from another connection in the same room inside
+ * the 60 s window" — and the two are indistinguishable. Recording a guess here
+ * would be far worse than the gap it closes: {@link nativeCallEventAppliesTo}
+ * treats a known key as decisive, so one wrong binding withholds that call's
+ * own teardown for the rest of its life — JS believing a call is live after
+ * Telecom ended it is the "stuck in call mode" state that dominates the bug
+ * reports. An exact id match is not a guess: markers are written under the
+ * connection's own id, so a marker whose id equals the SDK call's id proves
+ * the connection behind that call is keyed the same way.
+ *
+ * One entry, because JS holds one call at a time, and it is only ever read for
+ * the call it was recorded against — so a binding left over from a finished
+ * call is inert rather than wrong, and needs no separate expiry.
+ *
+ * A consequence of the exact-match rule: both fields always hold the same
+ * string, so what is really recorded is "this call's connection is keyed by
+ * its own Matrix id". The pair is kept because that is the question the reader
+ * of {@link nativeCallEventAppliesTo} is asking, and because a rule that could
+ * one day prove a different key would slot in here without touching either
+ * call site.
+ */
+let nativeKeyBinding: { callId: string; nativeKey: string } | null = null;
+
+/**
+ * Record that native knows `matrixCallId` as `nativeKey`.
+ *
+ * Refuses anything but an exact match, so a caller cannot hand over a
+ * room-correlated guess by accident. See the note above.
+ */
+function rememberNativeKey(
+  matrixCallId: string | null | undefined,
+  nativeKey: string | null | undefined,
+): void {
+  if (!matrixCallId || !nativeKey || matrixCallId !== nativeKey) return;
+  nativeKeyBinding = { callId: matrixCallId, nativeKey };
+}
+
+/** The native key for `matrixCallId`, or undefined when JS was never told it. */
+function nativeKeyFor(matrixCallId: string | null | undefined): string | undefined {
+  if (!matrixCallId || nativeKeyBinding?.callId !== matrixCallId) return undefined;
+  return nativeKeyBinding.nativeKey;
+}
+
+/**
+ * Bumped on every arm of {@link NativeCallBridge.waitForMatrixCallAndAnswer} and
+ * on every retire of the answer marker that drives one. Only the newest
+ * generation may answer.
+ */
+let answerWaitGeneration = 0;
+
+/**
+ * Stop the wait an answer marker was driving.
+ *
+ * A wait exists to replay a decision the user already made on the native ringer.
+ * Once that marker is retired the decision has been acted on, so a wait still
+ * polling for the rest of its 30 s can only adopt a call the user never accepted.
+ * That is reachable rather than theoretical: a push-keyed id keeps the room
+ * fallback open, so the next invite in the same room matches.
+ */
+function cancelAnswerWait(): void {
+  answerWaitGeneration++;
+}
 
 /**
  * Decide whether the given Matrix call is the one the user already
@@ -63,9 +172,11 @@ let pendingAnswerRoomId: string | null = null;
  *
  * Match order:
  *   1. exact callId equality (works when the push carries the real
- *      Matrix content.call_id)
- *   2. roomId equality (fallback — our homeserver's push payloads
- *      don't include the Matrix call_id, but they do include room_id)
+ *      Matrix content.call_id, and always on the /sync path)
+ *   2. roomId equality, only for a marker keyed by an event_id or by
+ *      nothing — a push without call_id still carries room_id. A real
+ *      callId that differs is a different call: on 2026-09-13 an answer
+ *      for one call pre-accepted the next one from the same room.
  *
  * Falls back to querying native directly when the in-memory markers
  * aren't set yet: on cold-start-from-push the Matrix SDK frequently
@@ -81,25 +192,40 @@ export async function consumePendingAnswerCallId(
   callId: string,
   roomId?: string,
 ): Promise<boolean> {
-  const matchAndClear = (mCall: string | null, mRoom: string | null): boolean => {
-    if (mCall && mCall === callId) {
-      pendingAnswerCallId = null;
-      pendingAnswerRoomId = null;
-      return true;
-    }
-    if (mRoom && roomId && mRoom === roomId) {
-      pendingAnswerCallId = null;
-      pendingAnswerRoomId = null;
-      return true;
-    }
-    return false;
+  const matchAndClear = (marker: PendingCallMarker | null): boolean => {
+    if (!marker || !matchesPendingCallMarker(marker, { callId, roomId })) return false;
+    // Only an exact id match tells us anything about the connection behind
+    // this call; the room branch above is a guess and rememberNativeKey
+    // refuses it. See the note on nativeKeyBinding.
+    rememberNativeKey(callId, marker.callId);
+    pendingAnswer = null;
+    // Whoever consumed this marker answers the call themselves, so a wait armed
+    // for the same decision is redundant — and redundant is not harmless. The
+    // wait matches against the marker it captured when it armed, not against
+    // this slot, so it would go on matching by room for the rest of its 30 s
+    // and could adopt a later call in that room that nobody accepted. This is
+    // the common path, not the edge case: handleIncomingCall consumes the
+    // marker for essentially every incoming call, which leaves nothing for the
+    // retire in finalizeCall to find.
+    cancelAnswerWait();
+    return true;
   };
 
-  if (matchAndClear(pendingAnswerCallId, pendingAnswerRoomId)) return true;
+  if (matchAndClear(pendingAnswer)) return true;
   if (!isNative) return false;
+  // A retire for a call that just ended may still be crossing the bridge;
+  // the native markers are read-and-clear, so a peek that overtook one would
+  // consume a marker already meant to be gone.
+  await markerRetireInFlight;
   try {
-    const { callId: nativeCall, roomId: nativeRoom } = await NativeCall.getPendingAnswer();
-    if (matchAndClear(nativeCall ?? null, nativeRoom ?? null)) return true;
+    const {
+      callId: nativeCall,
+      roomId: nativeRoom,
+      atMs: nativeAt,
+    } = await NativeCall.getPendingAnswer();
+    if (matchAndClear(pendingCallMarkerOf(nativeCall, nativeRoom, nativeAt ?? missingStamp()))) {
+      return true;
+    }
   } catch (e) {
     console.warn('[NativeCallBridge] consumePendingAnswerCallId peek failed:', e);
   }
@@ -107,46 +233,167 @@ export async function consumePendingAnswerCallId(
 }
 
 /**
- * Symmetric to pendingAnswerCallId/RoomId but for the Decline path.
+ * Symmetric to the pending-answer marker but for the Decline path.
  * Populated from CallConnection.onReject in Kotlin when the user taps
  * Decline in the native ringer, consumed by handleIncomingCall so the
  * matrixCall can be rejected back to Matrix (the caller otherwise keeps
  * ringing until their lifetime timeout).
  */
-let pendingRejectCallId: string | null = null;
-let pendingRejectRoomId: string | null = null;
+let pendingReject: PendingCallMarker | null = null;
 
 export async function consumePendingRejectCallId(
   callId: string,
   roomId?: string,
 ): Promise<boolean> {
-  const matchAndClear = (mCall: string | null, mRoom: string | null): boolean => {
-    if (mCall && mCall === callId) {
-      pendingRejectCallId = null;
-      pendingRejectRoomId = null;
-      return true;
-    }
-    if (mRoom && roomId && mRoom === roomId) {
-      pendingRejectCallId = null;
-      pendingRejectRoomId = null;
-      return true;
-    }
-    return false;
+  const matchAndClear = (marker: PendingCallMarker | null): boolean => {
+    if (!marker || !matchesPendingCallMarker(marker, { callId, roomId })) return false;
+    pendingReject = null;
+    return true;
   };
 
-  if (matchAndClear(pendingRejectCallId, pendingRejectRoomId)) return true;
+  if (matchAndClear(pendingReject)) return true;
   if (!isNative) return false;
+  // A retire for a call that just ended may still be crossing the bridge;
+  // the native markers are read-and-clear, so a peek that overtook one would
+  // consume a marker already meant to be gone.
+  await markerRetireInFlight;
   try {
-    const { callId: nativeCall, roomId: nativeRoom } = await NativeCall.getPendingReject();
-    if (matchAndClear(nativeCall ?? null, nativeRoom ?? null)) return true;
+    const {
+      callId: nativeCall,
+      roomId: nativeRoom,
+      atMs: nativeAt,
+    } = await NativeCall.getPendingReject();
+    if (matchAndClear(pendingCallMarkerOf(nativeCall, nativeRoom, nativeAt ?? missingStamp()))) {
+      return true;
+    }
   } catch (e) {
     console.warn('[NativeCallBridge] consumePendingRejectCallId peek failed:', e);
   }
   return false;
 }
 
+/**
+ * Calls JS currently knows about, by callId. Entries arrive as JS tells native
+ * about a call and leave as that call finalizes, so this is the set of live
+ * calls from JS's point of view. It exists to answer one question for the
+ * retire below: is there another call in this room that could still own a
+ * marker?
+ */
+const liveCalls = new Map<string, { roomId?: string; at: number; seq: number }>();
+
+/** Announcement order, so "announced before this one" needs no clock. */
+let liveCallSeq = 0;
+
+/**
+ * A call that never finalizes would otherwise pin its room forever. Six hours
+ * is far longer than any real call and far shorter than a session, so a
+ * stranded entry heals on its own; until it does, the retire simply falls back
+ * to matching on callId, which is what it did before this mechanism existed.
+ */
+const LIVE_CALL_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+/** Records a call JS has just told native about. */
+function noteCallSeen(callId: string | undefined, roomId?: string): void {
+  if (!callId) return;
+  const now = Date.now();
+  for (const [id, entry] of liveCalls) {
+    if (now - entry.at > LIVE_CALL_MAX_AGE_MS) liveCalls.delete(id);
+  }
+  if (!liveCalls.has(callId)) liveCalls.set(callId, { roomId, at: now, seq: ++liveCallSeq });
+}
+
+/**
+ * Retire both markers for a call JS has finished with.
+ *
+ * A marker only has to carry a decision across a process that was not alive
+ * to act on it. Once `finalizeCall` has run, JS has acted — and a marker left
+ * behind reaches the NEXT invite from that room through the roomId fallback:
+ * a queued answer picks it up with no ringer at all, a queued reject declines
+ * it unheard. Both were seen on the Samsung bench on 2026-09-09.
+ *
+ * Matches on callId OR roomId, and the room is the load-bearing half. A
+ * connection created from a push is keyed by the push's call_id, which this
+ * homeserver fills with the event_id — it can never equal the Matrix callId
+ * a finalize carries, so on the push path, which is the primary ringer
+ * surface, callId alone would retire nothing at all. The room is the only key
+ * the two paths share.
+ *
+ * The room match is withheld while another call JS knows about is still live
+ * in that room, so finishing one call cannot erase a marker a newer one still
+ * needs. Exact callId matches stay unconditional.
+ */
+export async function retirePendingMarkers(callId: string, roomId?: string): Promise<void> {
+  if (!callId && !roomId) return;
+  const own = callId ? liveCalls.get(callId) : undefined;
+  if (callId) liveCalls.delete(callId);
+  // A push-delivered call is announced twice: once by the push handler under
+  // `call_id`, which this homeserver fills with the event_id, and again under
+  // the Matrix callId once /sync delivers the invite. Only the second id can
+  // ever reach a finalize, so the first twin would sit in the map and make its
+  // room look busy for hours — disabling the room match on exactly the path
+  // that needs it. Sweeping the room's entries announced BEFORE the one being
+  // finalized clears the twin and leaves anything newer alone. Order, not a
+  // clock: the two announcements can land in the same millisecond.
+  if (roomId && own) {
+    for (const [id, entry] of liveCalls) {
+      if (entry.roomId === roomId && entry.seq < own.seq) liveCalls.delete(id);
+    }
+  }
+  // Match on the room only while no OTHER call JS knows about is live in it.
+  // A marker cannot belong to a call that does not exist, and this is what
+  // stops one finished call from erasing the marker of a newer one in the
+  // same room — the case Telecom makes real by displacing a still-ringing
+  // connection for a same-room re-invite. Timestamps cannot answer this: the
+  // marker is written when the user taps, which is often AFTER JS already
+  // knew the call being finalized.
+  const roomIsClear =
+    !!roomId && ![...liveCalls.values()].some((entry) => entry.roomId === roomId);
+  const byRoom = roomIsClear ? roomId : undefined;
+  const spent = (marker: PendingCallMarker | null): boolean =>
+    !!marker &&
+    ((!!callId && marker.callId === callId) || (!!byRoom && marker.roomId === byRoom));
+  if (spent(pendingAnswer)) {
+    pendingAnswer = null;
+    // Precisely scoped: `spent` already decided this marker belongs to the
+    // call being retired, so a wait armed for a different call is untouched.
+    cancelAnswerWait();
+  }
+  if (spent(pendingReject)) pendingReject = null;
+  if (!isNative) return;
+  const done = NativeCall.retirePendingMarkers({ callId, roomId: byRoom }).catch((e: unknown) => {
+    // Best effort, as everywhere else on this bridge. The room-scoped TTL
+    // still caps how long a marker that survives this can do damage.
+    console.warn('[NativeCallBridge] retirePendingMarkers failed:', e);
+  });
+  markerRetireInFlight = markerRetireInFlight.then(() => done);
+  await done;
+}
+
+/**
+ * What the bridge needs from the call service.
+ *
+ * Typed rather than `any` because the guard below reads `currentCall` off this
+ * field: an accessor lost to a rename would leave the optional chain returning
+ * undefined, which reads as "JS holds nothing" and silently restores the
+ * unscoped teardown this guard exists to prevent. The `wire()` contract can
+ * only police its own call site; the field type polices every use.
+ */
+interface BridgeCallService {
+  answerCall: () => void;
+  rejectCall: () => void;
+  hangup: () => void;
+  /**
+   * The call `rejectCall`/`hangup` would act on right now, with an undefined
+   * `callId` when JS holds none. Required, not optional: an absent accessor
+   * would silently restore the unscoped teardown rather than fail a call site.
+   */
+  currentCall: () => NativeCallEventTarget;
+  /** Android only — the native CallActivity's video toggle. */
+  setLocalVideoMuted?: (muted: boolean) => void;
+}
+
 class NativeCallBridge {
-  private callService: any = null;
+  private callService: BridgeCallService | null = null;
   /**
    * WEE-16: signal aborted by stop/forceStop so any in-flight
    * `startAudioRouting` retry bails immediately. Without this, a user
@@ -158,7 +405,35 @@ class NativeCallBridge {
    */
   private audioRoutingAbort: AbortController | null = null;
 
-  async wire(callService: { answerCall: () => void; rejectCall: () => void; hangup: () => void }): Promise<void> {
+  /**
+   * True when a native call-lifecycle event may act on the call JS holds now.
+   *
+   * The listeners below command `callService`, which acts on
+   * `callStore.matrixCall` — so the id is read off that same service, in the
+   * same synchronous turn as the command. Anything looser (a dynamic store
+   * import, a value cached at wire time) reintroduces the window this guard
+   * exists to close: on the Samsung the wrong call was torn down 3 ms after
+   * being offered.
+   */
+  private eventNamesCurrentCall(
+    event: string,
+    target: NativeCallEventTarget,
+  ): boolean {
+    const held = this.callService?.currentCall() ?? { callId: undefined };
+    const current: NativeCallEventTarget = {
+      ...held,
+      nativeKey: nativeKeyFor(held.callId),
+    };
+    if (nativeCallEventAppliesTo(target, current)) return true;
+    console.log(
+      '[NativeCallBridge] ' + event + ' names ' + target.callId + ' in ' +
+        target.roomId + ', but JS holds ' + current.callId + ' in ' +
+        current.roomId + ' — ignoring',
+    );
+    return false;
+  }
+
+  async wire(callService: BridgeCallService): Promise<void> {
     if (!isNative) return;
     this.callService = callService;
 
@@ -173,22 +448,27 @@ class NativeCallBridge {
       console.log('[NativeCallBridge] Call answered:', callId, 'room:', roomId);
       // Record the accept so handleIncomingCall on the JS side knows
       // to skip the duplicate-ring path and go straight to answered.
-      // BOTH callId and roomId are needed because on this homeserver
-      // the push payload's call_id is actually the event_id — it will
-      // NEVER match the Matrix SDK's call.callId. The roomId fallback
-      // is how we correlate the pending accept with the MatrixCall.
-      pendingAnswerCallId = callId;
-      if (roomId) pendingAnswerRoomId = roomId;
-      this.waitForMatrixCallAndAnswer(callId, roomId);
+      // BOTH callId and roomId are needed because a push without call_id
+      // keys the connection by its event_id, which will NEVER match the
+      // Matrix SDK's call.callId. For such an id the roomId fallback is how
+      // we correlate the pending accept with the MatrixCall.
+      // Assigned whole: this event names one call, so its room travels with
+      // its id. Keeping a previous call's room here and re-stamping it is
+      // exactly how a stale marker used to swallow an unrelated later call.
+      // Written on this side rather than natively, hence the local clock.
+      pendingAnswer = pendingCallMarkerOf(callId, roomId, Date.now());
+      this.waitForMatrixCallAndAnswer(callId, roomId, pendingAnswer);
     });
 
-    await NativeCall.addListener('callDeclined', ({ callId }) => {
+    await NativeCall.addListener('callDeclined', ({ callId, roomId }) => {
       console.log('[NativeCallBridge] Call declined:', callId);
+      if (!this.eventNamesCurrentCall('callDeclined', { callId, roomId })) return;
       this.callService?.rejectCall();
     });
 
-    await NativeCall.addListener('callEnded', ({ callId }) => {
+    await NativeCall.addListener('callEnded', ({ callId, roomId }) => {
       console.log('[NativeCallBridge] Call ended natively:', callId);
+      if (!this.eventNamesCurrentCall('callEnded', { callId, roomId })) return;
       this.callService?.hangup();
     });
 
@@ -211,12 +491,41 @@ class NativeCallBridge {
     // it never matches we just bail out — the auto-reject-after-30s
     // logic on the other side will take care of the caller's UI.
     try {
-      const { callId: pendingCallId, roomId: pendingRoomId } = await NativeCall.getPendingAnswer();
+      const {
+        callId: pendingCallId,
+        roomId: pendingRoomId,
+        atMs: pendingAtMs,
+      } = await NativeCall.getPendingAnswer();
       if (pendingCallId) {
-        console.log('[NativeCallBridge] Pending answer queued, waiting for matrixCall:', pendingCallId, 'room:', pendingRoomId);
-        pendingAnswerCallId = pendingCallId;
-        if (pendingRoomId) pendingAnswerRoomId = pendingRoomId;
-        this.waitForMatrixCallAndAnswer(pendingCallId, pendingRoomId ?? undefined);
+        const marker = pendingCallMarkerOf(
+          pendingCallId,
+          pendingRoomId,
+          pendingAtMs ?? missingStamp(),
+        );
+        // Seeded whatever its age: an exact callId still names the very call
+        // the user tapped, and `matchesPendingCallMarker` honours that with no
+        // time bound. Only the *replay* below is age-gated.
+        pendingAnswer = marker;
+        // A replay is speculative — there is no invite in hand to compare ids
+        // with, so this arms a poll that will answer whatever shows up. Past
+        // one invite lifetime nothing legitimate can still be waiting: the SDK
+        // has expired the invite itself. Observed on a Samsung 2026-09-09 —
+        // the user swiped the app away mid-call, so nothing retired the marker
+        // `onAnswer` had written; the next app start replayed it 141 s later
+        // and the poll picked up an entirely unrelated call from that room,
+        // with no ringer and the mic open.
+        if (marker && !pendingCallMarkerIsFresh(marker)) {
+          console.warn(
+            '[NativeCallBridge] Discarding a stale queued answer (age ' +
+              (typeof pendingAtMs === 'number' ? Date.now() - pendingAtMs : 'unknown') + 'ms):',
+            pendingCallId,
+          );
+          // Nothing to retire natively: getPendingAnswer is read-and-clear, so
+          // the read above already took it.
+        } else {
+          console.log('[NativeCallBridge] Pending answer queued, waiting for matrixCall:', pendingCallId, 'room:', pendingRoomId);
+          this.waitForMatrixCallAndAnswer(pendingCallId, pendingRoomId ?? undefined, marker);
+        }
       }
     } catch (e) {
       console.warn('[NativeCallBridge] getPendingAnswer failed:', e);
@@ -229,11 +538,18 @@ class NativeCallBridge {
     // delivers the invite via /sync) can call matrixCall.reject() and
     // the caller stops ringing.
     try {
-      const { callId: rejectCallId, roomId: rejectRoomId } = await NativeCall.getPendingReject();
+      const {
+        callId: rejectCallId,
+        roomId: rejectRoomId,
+        atMs: rejectAtMs,
+      } = await NativeCall.getPendingReject();
       if (rejectCallId || rejectRoomId) {
         console.log('[NativeCallBridge] Pending reject queued:', rejectCallId, 'room:', rejectRoomId);
-        pendingRejectCallId = rejectCallId;
-        pendingRejectRoomId = rejectRoomId;
+        pendingReject = pendingCallMarkerOf(
+          rejectCallId,
+          rejectRoomId,
+          rejectAtMs ?? missingStamp(),
+        );
       }
     } catch (e) {
       console.warn('[NativeCallBridge] getPendingReject failed:', e);
@@ -258,7 +574,7 @@ class NativeCallBridge {
       // Native CallActivity video toggle → SDK renegotiation
       await NativeWebRTC.addListener('onNativeVideoToggle', ({ enabled }) => {
         console.log('[NativeCallBridge] Native video toggle:', enabled);
-        this.callService?.setLocalVideoMuted(!enabled);
+        this.callService?.setLocalVideoMuted?.(!enabled);
       });
     }
   }
@@ -284,7 +600,18 @@ class NativeCallBridge {
    * into the handler so it re-emits Call.incoming and our normal
    * onIncomingCall → handleIncomingCall path kicks in.
    */
-  private waitForMatrixCallAndAnswer(callId: string, roomId?: string): void {
+  private waitForMatrixCallAndAnswer(
+    callId: string,
+    roomId?: string,
+    marker?: PendingCallMarker | null,
+  ): void {
+    // Only the newest wait may answer. Two sites arm one — wire()'s replay and
+    // the callAnswered listener — and neither used to hold a handle or stop on
+    // answer or hangup, so a poll armed for one call kept running for its full
+    // 30 s and could still fire on a later, unrelated one. In the Samsung
+    // swipe-away repro the poll armed at 23:04:41.913 answered at 23:04:52.503:
+    // eleven seconds and a different call later.
+    const generation = ++answerWaitGeneration;
     const MAX_WAIT_MS = 30_000;
     const POLL_MS = 300;
     // Don't even attempt the invite-recovery scan for the first
@@ -302,6 +629,12 @@ class NativeCallBridge {
     let recoveryAttempted = false;
 
     const tick = async (): Promise<void> => {
+      // Abandoning a superseded wait also abandons its recovery pass below.
+      // That is safe because the recovery is not the only route: whenever it
+      // has already re-emitted Call.incoming, handleIncomingCall consumes the
+      // same module-level marker through consumePendingAnswerCallId and
+      // answers from there, independently of any wait.
+      if (generation !== answerWaitGeneration) return;
       try {
         const { useCallStore } = await import('@/entities/call');
         const store = useCallStore();
@@ -312,9 +645,31 @@ class NativeCallBridge {
         // homeserver the push-side id doesn't equal Matrix's call.callId
         // (it's an event_id), so roomId is the reliable correlator.
         const matchById = !!current?.callId && current.callId === callId;
+        // ...but only for a marker whose own id cannot be compared. A push id
+        // is really an event_id and never equals `call.callId`, so there the
+        // room is the only correlator we have. When the connection was created
+        // from /sync the marker carries the real Matrix callId instead, and
+        // widening that to the room only ever lets it claim someone else's
+        // call — which is exactly what happened on the Samsung bench. The test
+        // is the id itself, not which path created the connection: a
+        // push-created one is keyed by the event_id and keeps its fallback.
+        // Re-checked every tick, not just at arm time: the poll runs for 30 s,
+        // and a marker that was 55 s old when it armed must not still be
+        // claiming calls 20 s later. Bounding it by the marker's own age caps
+        // the room fallback at one invite lifetime from the user's tap, which
+        // is the same rule matchesPendingCallMarker applies.
+        const roomStillFresh = !marker || pendingCallMarkerIsFresh(marker);
         const matchByRoom =
-          !!roomId && !!current?.roomId && current.roomId === roomId;
+          callIdNeedsRoomCorrelation(callId) &&
+          roomStillFresh &&
+          !!roomId &&
+          !!current?.roomId &&
+          current.roomId === roomId;
         if (current && (matchById || matchByRoom)) {
+          // Same rule as consumePendingAnswerCallId: only the exact-id arm of
+          // this match says anything about the connection behind the call, and
+          // rememberNativeKey drops the room-matched case on its own.
+          rememberNativeKey(current.callId, callId);
           console.log(
             '[NativeCallBridge] matrixCall ready, answering (matchById=' +
               matchById + ', matchByRoom=' + matchByRoom + '):',
@@ -444,6 +799,7 @@ class NativeCallBridge {
     roomId: string;
     hasVideo: boolean;
   }): Promise<void> {
+    noteCallSeen(options.callId, options.roomId);
     if (!isNative) return;
     await NativeCall.reportIncomingCall(options);
   }
@@ -462,6 +818,7 @@ class NativeCallBridge {
     roomId: string;
     hasVideo: boolean;
   }): Promise<void> {
+    noteCallSeen(options.callId, options.roomId);
     if (!isNative) return;
     try {
       const plugin = NativeCall as Partial<NativeCallNativePlugin>;
@@ -499,6 +856,7 @@ class NativeCallBridge {
     callerName: string;
     hasVideo: boolean;
   }): Promise<void> {
+    noteCallSeen(options.callId, undefined);
     if (!isNative) return;
     try {
       await NativeCall.reportOutgoingCall(options);
@@ -639,12 +997,17 @@ class NativeCallBridge {
    * the Vue speaker toggle has a typed entry point instead of reaching into the
    * raw Capacitor plugin.
    */
-  async setAudioDevice(options: { type: NativeAudioDeviceType }): Promise<void> {
-    if (!isNative) return;
+  async setAudioDevice(options: { type: NativeAudioDeviceType }): Promise<boolean> {
+    if (!isNative) return false;
     try {
       await NativeCall.setAudioDevice(options);
+      return true;
     } catch (e) {
+      // The native router refuses a route while it is not running (reject
+      // code `router_inactive`). The caller owns the optimistic UI state,
+      // so the refusal is returned rather than swallowed.
       console.warn('[NativeCallBridge] setAudioDevice failed:', e);
+      return false;
     }
   }
 
@@ -741,6 +1104,33 @@ class NativeCallBridge {
   }
 
   /**
+   * Ask native to release a Telecom connection that has been ringing past
+   * its deadline, and report whether it found one.
+   *
+   * The resume watchdog can recover a stranded MODE_IN_COMMUNICATION by
+   * resetting the audio mode, but MODE_RINGTONE — where most "the phone is
+   * stuck after a call" reports were filed from — is held by Telecom on
+   * behalf of our own connection, and a real cellular call ringing sets the
+   * same mode. Resetting it blindly would break the system ringer, so the
+   * recovery is to release our connection and let Telecom drop the mode.
+   * The staleness bar lives natively (StaleCallPolicy) so a call the user is
+   * about to answer is never touched.
+   *
+   * Android only, and safe on builds that predate the plugin method: a
+   * Capacitor "not implemented" rejection means there is nothing to release.
+   */
+  async releaseStaleRingingCall(): Promise<boolean> {
+    if (!isAndroid) return false;
+    try {
+      const result = await NativeCall.releaseStaleRingingCall();
+      return result?.released === true;
+    } catch (e) {
+      console.warn('[NativeCallBridge] releaseStaleRingingCall unavailable:', e);
+      return false;
+    }
+  }
+
+  /**
    * Read current AudioManager mode and routing flags from native.
    * Returns mode = "MODE_NORMAL" when no call active or
    * "MODE_IN_COMMUNICATION" while a VoIP call is in progress.
@@ -762,6 +1152,31 @@ class NativeCallBridge {
     } catch (e) {
       console.warn('[NativeCallBridge] getAudioStatus unavailable:', e);
       return { mode: 'MODE_NORMAL', isSpeakerOn: false, isBtScoOn: false };
+    }
+  }
+
+  /**
+   * Ordered audio-stack events for the current call, oldest first, times
+   * relative to the first entry. Attached to bug reports so triage can see
+   * how the audio stack reached its final state instead of only the state
+   * itself — a device that never left MODE_RINGTONE and one that fell back
+   * into it after hangup are indistinguishable in a snapshot.
+   *
+   * Android only. iOS drives audio through AVAudioSession, which has its own
+   * (separately reported) lifecycle; an empty list keeps the report envelope
+   * shape identical across platforms. An older native build without the
+   * plugin method surfaces as a Capacitor "not registered" rejection, which
+   * is likewise an empty list — a bug report must never fail to submit
+   * because diagnostics are unavailable.
+   */
+  async getAudioTimeline(): Promise<AudioTimelineEntry[]> {
+    if (!isAndroid) return [];
+    try {
+      const result = await NativeCall.getAudioTimeline();
+      return Array.isArray(result?.entries) ? result.entries : [];
+    } catch (e) {
+      console.warn('[NativeCallBridge] getAudioTimeline unavailable:', e);
+      return [];
     }
   }
 

@@ -37,7 +37,33 @@ export function isFrontFacingTrack(
   if (facing === "environment" || facing === "left" || facing === "right") {
     return false;
   }
+  if (facing === "user") return true;
+
+  // No facingMode: the native Android engine builds tracks through libwebrtc,
+  // which does not populate it, so on Android this is the normal case rather
+  // than an edge one — and without a fallback the back camera was treated as
+  // a selfie camera and mirrored (forta-bugs#939). Android labels its cameras
+  // "camera2 0, facing back", so the label answers the same question.
+  const byLabel = isFrontFacingByLabel(track.label);
+  if (byLabel !== undefined) return byLabel;
+
   return true;
+}
+
+/**
+ * Reads camera facing from a device label, for tracks that carry no
+ * `facingMode`. Returns `undefined` when the label says nothing either way, so
+ * the caller keeps its own default rather than guessing from a bare string.
+ */
+export function isFrontFacingByLabel(
+  label: string | null | undefined,
+): boolean | undefined {
+  if (!label) return undefined;
+  const normalised = label.toLowerCase();
+
+  if (/\b(back|rear|environment)\b/.test(normalised)) return false;
+  if (/\b(front|user|self|selfie)\b/.test(normalised)) return true;
+  return undefined;
 }
 
 /** Convenience: read the first video track from a MediaStream and inspect it. */

@@ -2,18 +2,26 @@ import { createNewMatrixCall, CallEvent, CallState as SDKCallState, CallErrorCod
 import type { MatrixCall, CallEventHandlerMap } from "matrix-js-sdk-bastyon/lib/webrtc/call";
 import { getMatrixClientService } from "@/entities/matrix";
 import { useCallStore, CallStatus } from "@/entities/call";
+import { ensureCallHangupContextProvider } from "./call-hangup-context";
 import type { CallType, CallInfo, CallHistoryEntry } from "@/entities/call";
 import { matrixIdToAddress } from "@/entities/chat/lib/chat-helpers";
 import { useUserStore } from "@/entities/user";
-import type { CallFeed } from "matrix-js-sdk-bastyon/lib/webrtc/callFeed";
+import type { CallFeed, CallFeedEvent } from "matrix-js-sdk-bastyon/lib/webrtc/callFeed";
 import { playRingtone, playDialtone, playEndTone, stopAllSounds } from "./call-sounds";
 import { checkOtherTabHasCall } from "./call-tab-lock";
 import { webrtcDiagnostics } from "./webrtc-diagnostics";
-import type { DiagnosticsWarningDetail } from "./webrtc-diagnostics";
+import { attachIceCandidateBuffer } from "./ice-candidate-buffer";
+import { installVoipSendRetry } from "./voip-send-retry";
+import type { DiagnosticsWarningDetail, DiagnosticsWarningType } from "./webrtc-diagnostics";
+import { registerCallDiagnosticsExtras, type CallTorDiagnostics } from "@/shared/lib/bug-report";
 import { isNative, isAndroid } from "@/shared/lib/platform";
 import { useBugReport } from "@/features/bug-report";
 import { tRaw } from "@/shared/lib/i18n";
-import { installNativeWebRTCProxy, NativeWebRTC } from "@/shared/lib/native-webrtc";
+import {
+  installNativeWebRTCProxy,
+  isNativeWebRTCEngineEnabled,
+  NativeWebRTC,
+} from "@/shared/lib/native-webrtc";
 import { onConnectivityChange } from "@/shared/lib/connectivity";
 import { useToast } from "@/shared/lib/use-toast";
 import {
@@ -22,7 +30,9 @@ import {
   consumePendingRejectCallId,
 } from "@/shared/lib/native-calls";
 import { ensureCallPermissions, PermissionDeniedError, callPermissionError } from "./permissions";
-import { finalizeCall } from "./finalize-call";
+import { finalizeCall, waitForFinalizeSettled, FINALIZE_SETTLE_WAIT_MS } from "./finalize-call";
+import { holdPageAwake } from "./page-awake-tone";
+import { waitUntil } from "@/shared/lib/wait-until";
 import {
   isLegacyWebView,
   shouldWarnLegacyWebView,
@@ -86,9 +96,20 @@ let _networkChangeUnsubscribe: (() => void) | null = null;
 // engine that follows Safari's WebRTC implementation. Installing the proxy on
 // iOS would hand the SDK a no-op `NativeWebRTC` plugin (no Swift counterpart
 // exists for Plan A) and silently break call setup.
-if (isAndroid) {
+//
+// `isNativeWebRTCEngineEnabled()` is the runtime escape hatch: a user (or
+// support) can switch a device to the WebView engine from settings when the
+// native path misbehaves, without waiting for a release. It gates the media
+// proxy only — native call UI, foreground service and audio routing stay in
+// place either way, so the two modes differ purely in which stack carries
+// the media. See webrtc-engine-preference.ts.
+if (isAndroid && isNativeWebRTCEngineEnabled()) {
   installNativeWebRTCProxy();
-  // D-11: Listen for native audio errors
+
+  // D-11: Listen for native audio errors. Stays inside the engine gate:
+  // every emitter of this event (WebRTCPlugin.startLocalMedia and
+  // NativeWebRTCManager's AudioSource/AudioTrack failures) sits on the native
+  // media path, so with the proxy dormant nothing can raise it.
   NativeWebRTC.addListener("onAudioError", (data) => {
     console.warn(`[call-service] Native audio error: ${data.type} — ${data.message}`);
     const callStore = useCallStore();
@@ -97,7 +118,15 @@ if (isAndroid) {
       callStore.scheduleClearCall(1500);
     }
   });
+}
 
+// Outside the engine gate on purpose: this acts on `matrixCall.peerConn`, the
+// SDK's own RTCPeerConnection, which exists in both modes — the native engine
+// only supplies its media. Folding it into the engine condition meant that
+// switching to the WebView engine — which support does precisely when a device
+// has audio trouble — also silently disabled WiFi↔cellular recovery on exactly
+// the devices that needed it most.
+if (isAndroid) {
   // Session 03: WiFi↔cellular handover does not reliably fire
   // window.online/offline on Android WebView. We subscribe to
   // @capacitor/network instead so transport flips during a live call
@@ -240,6 +269,10 @@ function updateFeeds(call: MatrixCall) {
 
 let trackedRemoteFeed: CallFeed | null = null;
 let remoteFeedMuteHandler: ((audioMuted: boolean, videoMuted: boolean) => void) | null = null;
+let remoteFeedStreamHandler: (() => void) | null = null;
+
+/** The feed's track-change event; the SDK enum is imported as a type only. */
+const FEED_NEW_STREAM = "new_stream" as CallFeedEvent.NewStream;
 
 function cleanupRemoteFeedListener() {
   if (trackedRemoteFeed && remoteFeedMuteHandler) {
@@ -247,8 +280,14 @@ function cleanupRemoteFeedListener() {
       trackedRemoteFeed.off("mute_state_changed" as any, remoteFeedMuteHandler);
     } catch { /* ignore */ }
   }
+  if (trackedRemoteFeed && remoteFeedStreamHandler) {
+    try {
+      trackedRemoteFeed.off(FEED_NEW_STREAM, remoteFeedStreamHandler);
+    } catch { /* ignore */ }
+  }
   trackedRemoteFeed = null;
   remoteFeedMuteHandler = null;
+  remoteFeedStreamHandler = null;
 }
 
 function syncRemoteVideoMuted(call: MatrixCall) {
@@ -259,6 +298,23 @@ function syncRemoteVideoMuted(call: MatrixCall) {
   const maybeUpgradeToVideo = (videoMuted: boolean) => {
     if (!videoMuted && callStore.activeCall?.type === "voice") {
       callStore.setActiveCall({ ...callStore.activeCall, type: "video" });
+    }
+  };
+
+  /**
+   * Re-reads the feed after its tracks may have changed and tells the native
+   * call screen only when the answer did. isVideoMuted() counts tracks, and
+   * with the native engine each remote track arrives as its own event: the
+   * feed starts with the audio track alone and reads muted until the video
+   * track joins it.
+   */
+  const resyncFromFeed = (feed: CallFeed) => {
+    const videoMuted = feed.isVideoMuted();
+    const changed = videoMuted !== callStore.remoteVideoMuted;
+    callStore.remoteVideoMuted = videoMuted;
+    maybeUpgradeToVideo(videoMuted);
+    if (isNative && changed) {
+      NativeWebRTC.updateRemoteVideoState({ muted: videoMuted }).catch(() => {});
     }
   };
 
@@ -282,14 +338,16 @@ function syncRemoteVideoMuted(call: MatrixCall) {
       };
       trackedRemoteFeed = remoteFeed;
       remoteFeed.on("mute_state_changed" as any, remoteFeedMuteHandler);
+      const onNewStream = () => resyncFromFeed(remoteFeed);
+      remoteFeedStreamHandler = onNewStream;
+      remoteFeed.on(FEED_NEW_STREAM, onNewStream);
     } else {
       // No remote feed yet → treat as muted
       callStore.remoteVideoMuted = true;
     }
   } else if (remoteFeed) {
-    // Same feed, just re-check state
-    callStore.remoteVideoMuted = remoteFeed.isVideoMuted();
-    maybeUpgradeToVideo(remoteFeed.isVideoMuted());
+    // Same feed: its tracks may have changed since it was wired
+    resyncFromFeed(remoteFeed);
   }
 }
 
@@ -299,6 +357,14 @@ function syncRemoteVideoMuted(call: MatrixCall) {
 
 /** Stored handler refs so we can remove them with call.off() */
 let boundHandlers: {
+  /** Call these handlers belong to, so teardown releases the right dedup slot. */
+  callId: string;
+  /**
+   * The very object the handlers were attached to. Listener state on
+   * MatrixCall is per instance, so detaching has to target this and not
+   * whatever call the teardown happens to be called with.
+   */
+  call: MatrixCall;
   onState: CallEventHandlerMap[CallEvent.State];
   onFeeds: CallEventHandlerMap[CallEvent.FeedsChanged];
   onHangup: CallEventHandlerMap[CallEvent.Hangup];
@@ -310,7 +376,14 @@ let boundHandlers: {
 // reference inside boundHandlers (we only get a PC from the SDK).
 let diagnosticsWarningListener: EventListener | null = null;
 
-function unwireCallEvents(call: MatrixCall) {
+/**
+ * Detach the handlers wired by {@link wireCallEvents}.
+ *
+ * Takes no call on purpose: the handlers are always removed from the call they
+ * were attached to, which `boundHandlers` remembers. Passing one in used to
+ * imply a choice, and taking that choice detached from the wrong object.
+ */
+function unwireCallEvents() {
   webrtcDiagnostics.detach();
   if (diagnosticsWarningListener) {
     webrtcDiagnostics.removeEventListener(
@@ -320,16 +393,31 @@ function unwireCallEvents(call: MatrixCall) {
     diagnosticsWarningListener = null;
   }
   cleanupRemoteFeedListener();
+  if (!boundHandlers) return;
   // Session 31: release the dedup slot so a future invite with the same
   // callId (e.g. caller re-invited after the original was rejected) is
   // routed normally instead of being silently dropped.
-  if (call.callId) clearIncomingCallSeen(call.callId);
-  if (!boundHandlers) return;
+  //
+  // Keyed on the call whose handlers are actually being removed, and placed
+  // after the guard above. Both matter: wireCallEvents opens by calling this
+  // function on the call it is about to wire, so clearing `call.callId`
+  // unconditionally wiped the mark handleIncomingCall had set moments before —
+  // the 60 s dedup window never survived past the same tick, and a second
+  // delivery of the same invite rang again.
+  if (boundHandlers.callId) clearIncomingCallSeen(boundHandlers.callId);
+  // Detach from the call the handlers were attached to, not from whichever
+  // call was passed in. MatrixCall extends TypedEventEmitter, so listener
+  // state is per instance: calling `off` on a different object is a silent
+  // no-op that leaves the original call's handlers alive. Those handlers
+  // then act on the store and on native teardown — which is not callId
+  // scoped — so an old call reaching its timeout would tear down the live
+  // one's audio and UI.
+  const wired = boundHandlers.call;
   try {
-    call.off(CallEvent.State, boundHandlers.onState);
-    call.off(CallEvent.FeedsChanged, boundHandlers.onFeeds);
-    call.off(CallEvent.Hangup, boundHandlers.onHangup);
-    call.off(CallEvent.Error, boundHandlers.onError);
+    wired.off(CallEvent.State, boundHandlers.onState);
+    wired.off(CallEvent.FeedsChanged, boundHandlers.onFeeds);
+    wired.off(CallEvent.Hangup, boundHandlers.onHangup);
+    wired.off(CallEvent.Error, boundHandlers.onError);
   } catch { /* ignore */ }
   boundHandlers = null;
 }
@@ -362,7 +450,11 @@ function releaseLocalMedia(call: MatrixCall): void {
 
 function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
   // Defensive: remove any prior handlers first
-  unwireCallEvents(call);
+  unwireCallEvents();
+
+  // A restart offer or candidates that fail to send during a network change
+  // are retried instead of ending the call (voip-send-retry.ts).
+  installVoipSendRetry(call as unknown as Parameters<typeof installVoipSendRetry>[0]);
 
   const callStore = useCallStore();
 
@@ -378,6 +470,10 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
   const onState = ((newState: SDKCallState, _oldState: SDKCallState) => {
     const status = mapSDKState(newState, direction);
     callStore.updateStatus(status);
+    // The SDK mutates `state` on the call object in place, which no ref sees.
+    // `hasLiveCall` reads that field, so without this nudge it would answer
+    // from cache and keep reporting a live call after this one ended.
+    callStore.touchMatrixCall();
 
     // WEE-54 / forta-bugs#866: start the outgoing ringback only once the
     // invite has actually been sent to the homeserver (InviteSent), not
@@ -432,7 +528,7 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
       clearIncomingTimeout();
       playEndTone();
       callStore.stopTimer();
-      unwireCallEvents(call);
+      unwireCallEvents();
       // WEE-89: stop local camera/mic tracks on every platform. The SDK
       // doesn't reliably release getUserMedia on web, leaving the tab's
       // recording indicator lit after the call. Native finalizeCall below
@@ -444,7 +540,7 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
       // → closeAllPeerConnections) run in order with isolated error
       // handling so a leaked AudioRecord is always disposed.
       if (isNative) {
-        void finalizeCall("sdk-ended", call.callId);
+        void finalizeCall("sdk-ended", call.callId, call.roomId);
       }
       const activeCall = callStore.activeCall;
       if (activeCall) {
@@ -486,7 +582,7 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
     // for rejected-while-ringing cases. finalizeCall is idempotent per
     // callId so a follow-up onState→ended will be a no-op.
     if (isNative) {
-      void finalizeCall("sdk-ended", call.callId);
+      void finalizeCall("sdk-ended", call.callId, call.roomId);
     }
   }) as CallEventHandlerMap[CallEvent.Hangup];
 
@@ -502,12 +598,12 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
     stopAllSounds();
     clearIncomingTimeout();
     clearConnectingWatchdog();
-    unwireCallEvents(call);
+    unwireCallEvents();
     // WEE-89: a failed call may have already acquired local media; release
     // it so the camera/mic don't stay captured after the error.
     releaseLocalMedia(call);
     if (isNative) {
-      void finalizeCall("error", call.callId);
+      void finalizeCall("error", call.callId, call.roomId);
     }
     callStore.updateStatus(CallStatus.failed);
     const activeCall = callStore.activeCall;
@@ -527,7 +623,7 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
     callStore.scheduleClearCall(2000);
   }) as CallEventHandlerMap[CallEvent.Error];
 
-  boundHandlers = { onState, onFeeds, onHangup, onError };
+  boundHandlers = { callId: call.callId, call, onState, onFeeds, onHangup, onError };
   call.on(CallEvent.State, onState);
   call.on(CallEvent.FeedsChanged, onFeeds);
   call.on(CallEvent.Hangup, onHangup);
@@ -542,6 +638,10 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
   const onPeerConnectionCreated = (pc: RTCPeerConnection) => {
     if ((pc as unknown as Record<string, unknown>).__callServiceDiagAttached) return;
     (pc as unknown as Record<string, unknown>).__callServiceDiagAttached = true;
+    // Before the diagnostics wrapper: the SDK adds the candidates it buffered
+    // during ringing *before* it sets the answer, and both engines reject
+    // them without a remote description (see ice-candidate-buffer.ts).
+    attachIceCandidateBuffer(pc);
     webrtcDiagnostics.attach(pc);
 
     // Session 03: the proxy fires "connectiondead" when ICE has been
@@ -572,10 +672,7 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
     diagnosticsWarningListener = ((ev: Event) => {
       const detail = (ev as CustomEvent<DiagnosticsWarningDetail>).detail;
       if (!detail) return;
-      const key =
-        detail.type === "no_inbound_audio"
-          ? "call.warning.noInboundAudio"
-          : "call.warning.noOutboundAudio";
+      const key = DIAGNOSTICS_WARNING_KEYS[detail.type];
       try {
         useToast().toast(tRaw(key), "info", 5000);
       } catch (e) {
@@ -628,6 +725,15 @@ function clearIncomingTimeout() {
  */
 const CONNECTING_WATCHDOG_MS = 30_000;
 let connectingWatchdogId: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * How long a dial waits for Matrix after a cold start. The chat list is up
+ * (Dexie-first) seconds before `matrixReady` flips, and a tap in that window
+ * used to find no client and drop the call without a word. Ten seconds
+ * covers the usual connect; a degraded re-login (26 s seen once on the test
+ * phone) gets a "try again in a moment" instead of a half-minute of nothing.
+ */
+export const MATRIX_READY_WAIT_MS = 10_000;
 
 function clearConnectingWatchdog() {
   if (connectingWatchdogId !== null) {
@@ -823,6 +929,20 @@ let toggleCameraLock = false;
 // `finally` guarantees we never leak the lock across calls.
 let answerInProgress = false;
 
+/**
+ * True when the SDK has already terminated this call.
+ *
+ * `CallState.Ended` is the state the SDK moves an expired invite into: its
+ * lifetime timer is armed with `lifetime - localAge`, which is negative for
+ * an invite the homeserver retained, so it fires on the tick right after
+ * `Call.incoming`. Read defensively — `state` is not in every SDK version's
+ * public surface and a missing one must not stop a legitimate call ringing.
+ */
+function isSdkCallEnded(call: MatrixCall): boolean {
+  const state = (call as unknown as { state?: string }).state;
+  return state === "ended";
+}
+
 // ---------------------------------------------------------------------------
 // Outgoing-call re-entry lock (WEE-49 / forta-bugs#460)
 // ---------------------------------------------------------------------------
@@ -844,11 +964,112 @@ let outgoingCallInProgress = false;
 // Public API
 // ---------------------------------------------------------------------------
 
+const DIAGNOSTICS_WARNING_KEYS: Record<DiagnosticsWarningType, Parameters<typeof tRaw>[0]> = {
+  no_inbound_audio: "call.warning.noInboundAudio",
+  no_outbound_audio: "call.warning.noOutboundAudio",
+  ice_failed_no_relay: "call.warning.noRelay",
+};
+
+/**
+ * Tor state for the bug report and the call-start hint. Lazy import: the
+ * Tor store drags the transport graph in, and this module is loaded on
+ * every platform. Null when the store is unavailable (no Pinia yet).
+ */
+async function torFacts(): Promise<CallTorDiagnostics | null> {
+  try {
+    const { useTorStore } = await import("@/entities/tor");
+    const tor = useTorStore();
+    return { enabled: tor.isEnabled, connected: tor.isConnected };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * O14: WebRTC media goes straight to the peer (UDP, no proxy), so a user
+ * who turned Tor on is not covered by it during a call. Say so once per
+ * call, at the moment the call is placed or answered.
+ */
+async function warnIfCallBypassesTor(): Promise<void> {
+  const tor = await torFacts();
+  if (!tor?.enabled) return;
+  try {
+    useToast().toast(tRaw("call.warning.torBypassed"), "info", 6000);
+  } catch (e) {
+    console.warn("[call-service] tor hint toast failed:", e);
+  }
+}
+
+/**
+ * Every native call screen goes up through here. The screen covers the page,
+ * and Chromium freezes a hidden page that stays silent for a minute; a frozen
+ * page never hears the peer hang up (see page-awake-tone.ts). finalizeCall
+ * releases the hold. Android only: the freeze is Chromium's, and iOS has no
+ * NativeWebRTC call screen to cover the page.
+ */
+function launchNativeCallScreen(options: Parameters<typeof NativeWebRTC.launchCallUI>[0]): Promise<void> {
+  if (isAndroid) holdPageAwake(options.callId);
+  return NativeWebRTC.launchCallUI(options);
+}
+
+/**
+ * True once Matrix is ready to place a call, waiting up to
+ * MATRIX_READY_WAIT_MS for it. Tells the user both that it is waiting and
+ * when it gave up — a dial that vanishes silently is the bug this closes.
+ *
+ * The auth store is imported lazily: `entities/auth` imports this module
+ * for the native call bridge, and a static import back would pull the
+ * whole store graph into every consumer of call-service.
+ */
+async function waitForMatrixReady(): Promise<boolean> {
+  const { message, toast, close } = useToast();
+  try {
+    const { useAuthStore } = await import("@/entities/auth");
+    const auth = useAuthStore();
+    if (auth.matrixReady) return true;
+
+    console.warn("[call-service] Matrix not ready — waiting up to", MATRIX_READY_WAIT_MS, "ms");
+    const waitingText = tRaw("call.info.waitingForServer");
+    toast(waitingText, "info", MATRIX_READY_WAIT_MS);
+    const ready = await waitUntil(() => auth.matrixReady, MATRIX_READY_WAIT_MS);
+    if (ready) {
+      // The toast is one global slot: close only our own text, not whatever
+      // another feature may have shown during the wait.
+      if (message.value === waitingText) close();
+      return true;
+    }
+    console.error("[call-service] Matrix not ready after wait — call dropped");
+  } catch (e) {
+    // Every caller fires startCall without awaiting it, so an exception
+    // here would be an unhandled rejection and the dial would vanish
+    // silently — the very bug this wait exists to close.
+    console.error("[call-service] readiness wait failed — call dropped:", e);
+  }
+  toast(tRaw("call.error.matrixNotReady"), "error", 5000);
+  return false;
+}
+
+// O05/O14: the bug report's call section gets the last connection's ICE
+// facts and the Tor state from here; shared/ cannot import this feature.
+registerCallDiagnosticsExtras(async () => ({
+  ice: webrtcDiagnostics.getIceSummary(),
+  tor: await torFacts(),
+}));
+
 export function useCallService() {
   const callStore = useCallStore();
 
   async function startCall(roomId: string, type: CallType) {
-    if (callStore.isInCall) {
+    // Before the call reaches native code: the swipe hangup is read from the
+    // page while the call is dialled (call-hangup-context.ts).
+    ensureCallHangupContextProvider();
+    // `hasLiveCall`, not `isInCall`: on Android an incoming call rings
+    // through Telecom with no CallInfo written yet, so `isInCall` is false
+    // for the whole ring and the call buttons stay live. Dialling from that
+    // screen used to overwrite the single MatrixCall slot, orphaning the
+    // call that was ringing — the user answered a call nothing was
+    // listening to any more (#1183).
+    if (callStore.hasLiveCall) {
       console.warn("[call-service] Already in a call");
       return;
     }
@@ -868,6 +1089,22 @@ export function useCallService() {
     outgoingCallInProgress = true;
 
     try {
+      // Right after a cold start the buttons are live before Matrix is.
+      // Wait under the lock so a second tap does not queue a second dial,
+      // and before the mic preflight so nothing is captured for a call
+      // that may not happen.
+      if (!(await waitForMatrixReady())) return;
+      // `hasLiveCall` drops the moment the previous call ends, while its
+      // finalize is still walking the native steps — the service stop, the
+      // audio reset, closeAllPeerConnections — all of them process-wide. Let
+      // it finish, or they land on the call being dialled.
+      if (!(await waitForFinalizeSettled(FINALIZE_SETTLE_WAIT_MS))) {
+        console.warn("[call-service] previous call still finalizing after", FINALIZE_SETTLE_WAIT_MS, "ms — dialling anyway");
+      }
+      if (callStore.hasLiveCall) {
+        console.warn("[call-service] a call arrived while waiting for Matrix — not dialling");
+        return;
+      }
       await startCallInner(roomId, type);
     } finally {
       outgoingCallInProgress = false;
@@ -897,6 +1134,18 @@ export function useCallService() {
     // guard + native exclusion live inside maybeWarnLegacyWebView.
     maybeWarnLegacyWebView();
 
+    // `matrixReady` was true a moment ago; the client can still be gone
+    // (logout or account switch racing the dial). Check before the mic
+    // preflight so no stream is captured for a call that cannot be placed,
+    // and say so — this branch used to return without a word.
+    const matrixService = getMatrixClientService();
+    const client = matrixService.client;
+    if (!client) {
+      console.error("[call-service] No Matrix client");
+      useToast().toast(tRaw("call.error.matrixNotReady"), "error", 5000);
+      return;
+    }
+
     // Preflight: mic (+ camera for video). Throws PermissionDeniedError
     // if the OS denied access, or if getUserMedia returns a stream with
     // empty tracks. If we skip this and let the SDK's getUserMedia fail
@@ -924,13 +1173,6 @@ export function useCallService() {
       return;
     }
 
-    const matrixService = getMatrixClientService();
-    const client = matrixService.client;
-    if (!client) {
-      console.error("[call-service] No Matrix client");
-      return;
-    }
-
     // SDK may expose supportsVoip() or canSupportVoip; prefer method call
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const supportsVoip = typeof (client as any).supportsVoip === "function"
@@ -942,6 +1184,7 @@ export function useCallService() {
       console.error("[call-service] createNewMatrixCall returned null — WebRTC not available (secure context + RTCPeerConnection required)");
       return;
     }
+    void warnIfCallBypassesTor();
     if (!supportsVoip) {
       console.warn("[call-service] VoIP not supported by client but call created — attempting anyway");
     }
@@ -1002,7 +1245,7 @@ export function useCallService() {
           hasVideo: type === 'video',
         });
       }).catch(() => {});
-      NativeWebRTC.launchCallUI({
+      launchNativeCallScreen({
         callerName: peerName,
         callType: type,
         callId: call.callId,
@@ -1034,7 +1277,7 @@ export function useCallService() {
       console.error("[call-service] Failed to place call:", e);
       useBugReport().open({ context: tRaw("bugReport.ctx.placeCall"), error: e });
       stopAllSounds();
-      unwireCallEvents(call);
+      unwireCallEvents();
       // WEE-89: placeCall may have run getUserMedia before throwing — release
       // any acquired camera/mic tracks so they aren't left captured.
       releaseLocalMedia(call);
@@ -1047,12 +1290,13 @@ export function useCallService() {
       // each step is idempotent on the native side, so calling it when
       // startAudioRouting never ran is just a no-op + one warn log.
       if (isNative) {
-        void finalizeCall("error", call.callId);
+        void finalizeCall("error", call.callId, call.roomId);
       }
     }
   }
 
   async function handleIncomingCall(matrixCall: MatrixCall) {
+    ensureCallHangupContextProvider();
     console.log(
       "[call-service] handleIncomingCall: callId=" + matrixCall.callId +
       ", roomId=" + matrixCall.roomId +
@@ -1117,8 +1361,21 @@ export function useCallService() {
       }
     }
 
-    if (callStore.isInCall) {
+    if (callStore.hasLiveCall) {
       console.log("[call-service] handleIncomingCall: already in call, rejecting");
+      // Deliberately NOT finalizeCall() here, unlike the expired-invite
+      // ("sdk-ended") bail-out later in this function. Skipping it also skips
+      // the pending-marker retire, which is fine only because Telecom answers
+      // a second incoming call with BUSY while one is established — no
+      // CallConnection is constructed, so no marker is ever written for it.
+      // Revisit this if busy-handling ever starts creating a connection:
+      // finalize is global teardown (audio mode -> NORMAL, dismissCallUI,
+      // closeAllPeerConnections), so running it for the *incoming* call would
+      // hang up the conversation the user is currently having. While a call is
+      // established FCM puts no native ringer up for this second caller: it
+      // reads the Telecom slot first and only forwards the push here. A call
+      // that still rings is SecondRingPolicy's case — see
+      // docs/call-bugs-needing-you.md, "Второй входящий во время разговора".
       matrixCall.reject();
       // Release the dedup slot: when the current call ends the user is
       // available again, and a legitimate re-invite from the same caller
@@ -1203,7 +1460,7 @@ export function useCallService() {
       // CallActivity covers the Vue UI, so the user doesn't see the
       // incoming-ring screen flash through before answerCall() sets
       // status=connecting a moment later.
-      NativeWebRTC.launchCallUI({
+      launchNativeCallScreen({
         callerName: peerName,
         callType: callInfo.type,
         callId: matrixCall.callId,
@@ -1235,6 +1492,33 @@ export function useCallService() {
     // don't get a duplicate Vue ringer on top of the native one.
     //
     // On web: render the Vue incoming ringer and play our ringtone.
+    //
+    // Last check before any ringer: the SDK ends a call whose invite is
+    // already past its lifetime, and a homeserver that retained the invite
+    // while FCM was degraded delivers exactly that on the next /sync — the
+    // SDK's expiry timer runs a tick after Call.incoming, so by the time the
+    // awaits above have resolved it has usually already fired. Ringing for a
+    // call the SDK has ended is what "a call came in from that account seven
+    // minutes later, and there was no call" looks like from the outside
+    // (#958, #928).
+    if (isSdkCallEnded(matrixCall)) {
+      console.warn(
+        "[call-service] incoming call already ended by the SDK (expired invite) — not ringing:",
+        matrixCall.callId,
+      );
+      if (matrixCall.callId) clearIncomingCallSeen(matrixCall.callId);
+      // Through finalizeCall like every other termination path: the native
+      // side may already be ringing (FCM usually wins this race, which is how
+      // a retained invite gets here in the first place), and only finalizeCall
+      // releases the Telecom connection and dismisses that ringer. Nulling the
+      // Pinia slot alone is invisible to native — the phone would keep ringing
+      // for a call that is already over.
+      unwireCallEvents();
+      if (isNative) void finalizeCall("sdk-ended", matrixCall.callId, matrixCall.roomId);
+      callStore.setMatrixCall(null);
+      return;
+    }
+
     if (isNative) {
       // activeCall stays cleared so no Vue ringer. matrixCall is set
       // above so rejectCall()/answerCall() can find it.
@@ -1303,6 +1587,7 @@ export function useCallService() {
     }
 
     answerInProgress = true;
+    void warnIfCallBypassesTor();
 
     // forta-bugs#497 / WEE-53: same proactive legacy-WebView hint on the
     // answer path — an outdated callee should be told why the call may drop
@@ -1389,7 +1674,7 @@ export function useCallService() {
       // would fire our onState/onHangup handlers, double-triggering
       // scheduleClearCall + duplicate history entry + redundant
       // dismissCallUI. Mirrors rejectCall()'s ordering.
-      unwireCallEvents(call);
+      unwireCallEvents();
       try {
         call.reject();
       } catch (rejectErr) {
@@ -1401,7 +1686,7 @@ export function useCallService() {
       // startAudioRouting, but a previous accept attempt in this session
       // might have. finalizeCall is a no-op when nothing is set up yet.
       if (isNative) {
-        void finalizeCall("permission-denied", call.callId);
+        void finalizeCall("permission-denied", call.callId, call.roomId);
       }
       // Release the re-entry lock — the user may legitimately retry the
       // same call after granting the previously-denied permission, and
@@ -1431,7 +1716,7 @@ export function useCallService() {
       connectingWatchdogId = null;
       if (callStore.activeCall?.status !== CallStatus.connecting) return;
       console.warn("[call-service] answerCall: stuck in connecting for 30s, forcing failed");
-      unwireCallEvents(call);
+      unwireCallEvents();
       try {
         call.hangup(CallErrorCode.UserHangup, false);
       } catch { /* ignore */ }
@@ -1442,7 +1727,7 @@ export function useCallService() {
       callStore.updateStatus(CallStatus.failed);
       callStore.scheduleClearCall(2000);
       if (isNative) {
-        void finalizeCall("watchdog-timeout", call.callId);
+        void finalizeCall("watchdog-timeout", call.callId, call.roomId);
       }
     }, CONNECTING_WATCHDOG_MS);
 
@@ -1458,7 +1743,7 @@ export function useCallService() {
 
       // Non-blocking native UX transitions.
       if (isNative && callStore.activeCall) {
-        NativeWebRTC.launchCallUI({
+        launchNativeCallScreen({
           callerName: callStore.activeCall.peerName,
           callType: callStore.activeCall.type,
           callId: call.callId,
@@ -1478,7 +1763,7 @@ export function useCallService() {
       console.error("[call-service] Failed to answer call:", e);
       useBugReport().open({ context: tRaw("bugReport.ctx.answerCall"), error: e });
       clearConnectingWatchdog();
-      unwireCallEvents(call);
+      unwireCallEvents();
       // WEE-89: call.answer may have run getUserMedia before throwing —
       // release any acquired camera/mic tracks so they aren't left captured.
       releaseLocalMedia(call);
@@ -1492,7 +1777,7 @@ export function useCallService() {
       // also dismisses the native UI and disposes peer-connection media
       // so a leaked AudioRecord cannot lock the mic device-wide.
       if (isNative) {
-        void finalizeCall("error", call.callId);
+        void finalizeCall("error", call.callId, call.roomId);
       }
     }
     } finally {
@@ -1550,7 +1835,7 @@ export function useCallService() {
     // attempt. Idempotent on native side; safe even if the router never
     // started for an incoming call that began from ringing.
     if (isNative) {
-      void finalizeCall("reject", call.callId);
+      void finalizeCall("reject", call.callId, call.roomId);
     }
 
     // WEE-89: a call rejected after it acquired media (e.g. answered then
@@ -1558,7 +1843,7 @@ export function useCallService() {
     // while still ringing (no local stream acquired yet).
     releaseLocalMedia(call);
 
-    unwireCallEvents(call);
+    unwireCallEvents();
 
     if (callStore.activeCall) {
       callStore.addHistoryEntry({
@@ -1597,7 +1882,7 @@ export function useCallService() {
     // delayed by 200-500ms while the SDK negotiates. Idempotent per
     // callId, so the follow-up Ended is a no-op.
     if (isNative) {
-      void finalizeCall("hangup", call.callId);
+      void finalizeCall("hangup", call.callId, call.roomId);
     }
 
     // WEE-89: stop local tracks immediately on user hangup so the browser's
@@ -1817,12 +2102,27 @@ export function useCallService() {
     }
   }
 
+  /**
+   * The call `hangup`/`rejectCall` would act on right now.
+   *
+   * Read by the native bridge to scope `callEnded`/`callDeclined` to the call
+   * they name: both commands below act on `callStore.matrixCall`, so the
+   * bridge must be able to see the same value they will. The room travels with
+   * the id because a push-created connection's id can never be compared with a
+   * Matrix one.
+   */
+  function currentCall(): { callId: string | undefined; roomId?: string } {
+    const call = callStore.matrixCall as MatrixCall | null;
+    return { callId: call?.callId, roomId: call?.roomId };
+  }
+
   return {
     startCall,
     handleIncomingCall,
     answerCall,
     rejectCall,
     hangup,
+    currentCall,
     toggleMute,
     toggleCamera,
     toggleScreenShare,

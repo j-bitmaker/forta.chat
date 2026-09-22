@@ -1,4 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
+import { reactive, ref } from 'vue';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
+import { tRaw } from '@/shared/lib/i18n';
 
 // ---------------------------------------------------------------------------
 // Mocks — must be set up before importing call-service
@@ -38,6 +42,7 @@ const mockNativeWebRTCMethods: Record<string, Mock> = {
 
 vi.mock('@/shared/lib/native-webrtc', () => ({
   installNativeWebRTCProxy: vi.fn(),
+  isNativeWebRTCEngineEnabled: () => true,
   NativeWebRTC: new Proxy({}, {
     get: (_target, prop) => {
       if (typeof prop === 'string' && prop in mockNativeWebRTCMethods) {
@@ -53,21 +58,24 @@ const mockRequestAudioPermission = vi.fn();
 const mockRequestCameraPermission = vi.fn();
 const mockStartAudioRouting = vi.fn().mockResolvedValue(undefined);
 const mockStopAudioRouting = vi.fn().mockResolvedValue(undefined);
+const mockEnsureIncomingCallVisible = vi.fn().mockResolvedValue(undefined);
+const mockReportCallEnded = vi.fn().mockResolvedValue(undefined);
 vi.mock('@/shared/lib/native-calls', () => ({
   nativeCallBridge: {
     requestAudioPermission: mockRequestAudioPermission,
     requestCameraPermission: mockRequestCameraPermission,
     reportOutgoingCall: vi.fn().mockResolvedValue(undefined),
     reportCallConnected: vi.fn().mockResolvedValue(undefined),
-    reportCallEnded: vi.fn().mockResolvedValue(undefined),
+    reportCallEnded: mockReportCallEnded,
     reportIncomingCall: vi.fn().mockResolvedValue(undefined),
     wire: vi.fn().mockResolvedValue(undefined),
     startAudioRouting: mockStartAudioRouting,
     stopAudioRouting: mockStopAudioRouting,
-    ensureIncomingCallVisible: vi.fn().mockResolvedValue(undefined),
+    ensureIncomingCallVisible: mockEnsureIncomingCallVisible,
   },
   consumePendingAnswerCallId: vi.fn().mockResolvedValue(false),
   consumePendingRejectCallId: vi.fn().mockResolvedValue(false),
+  retirePendingMarkers: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Mock permissions — by default resolves ok; individual tests override via
@@ -101,6 +109,7 @@ const mockAddHistoryEntry = vi.fn();
 
 const mockCallStore: Record<string, unknown> = {
   isInCall: false,
+  hasLiveCall: false,
   activeCall: null,
   matrixCall: null,
   videoMuted: false,
@@ -114,6 +123,7 @@ const mockCallStore: Record<string, unknown> = {
   cancelScheduledClear: mockCancelScheduledClear,
   setActiveCall: mockSetActiveCall,
   setMatrixCall: mockSetMatrixCall,
+  touchMatrixCall: vi.fn(),
   addHistoryEntry: mockAddHistoryEntry,
   setLocalStream: vi.fn(),
   setLocalScreenStream: vi.fn(),
@@ -187,23 +197,40 @@ vi.mock('matrix-js-sdk-bastyon/lib/webrtc/call', () => ({
   },
 }));
 
-// Mock matrix client service
+// Mock matrix client service. The client sits in a mutable holder so a test
+// can take it away (`matrixState.client = null`) — the state a dial finds
+// right after a cold start, before Matrix has connected.
+function makeMockClient() {
+  return {
+    getRoom: vi.fn(() => ({
+      getJoinedMembers: () => [
+        { userId: '@me:matrix.org' },
+        { userId: '@peer:matrix.org' },
+      ],
+    })),
+    supportsVoip: vi.fn(() => true),
+    getMediaHandler: vi.fn(() => ({
+      restoreMediaSettings: vi.fn(),
+    })),
+  };
+}
+const matrixState: { client: ReturnType<typeof makeMockClient> | null } = {
+  client: makeMockClient(),
+};
 vi.mock('@/entities/matrix', () => ({
   getMatrixClientService: vi.fn(() => ({
-    client: {
-      getRoom: vi.fn(() => ({
-        getJoinedMembers: () => [
-          { userId: '@me:matrix.org' },
-          { userId: '@peer:matrix.org' },
-        ],
-      })),
-      supportsVoip: vi.fn(() => true),
-      getMediaHandler: vi.fn(() => ({
-        restoreMediaSettings: vi.fn(),
-      })),
+    get client() {
+      return matrixState.client;
     },
     getUserId: vi.fn(() => '@me:matrix.org'),
   })),
+}));
+
+// The auth store is read lazily by the dial path for `matrixReady`; a reactive
+// holder lets a test flip readiness mid-wait the way the real store does.
+const authState = reactive({ matrixReady: true });
+vi.mock('@/entities/auth', () => ({
+  useAuthStore: () => authState,
 }));
 
 // Hoisted user-store mock so individual tests can stage cold-cache and
@@ -231,6 +258,24 @@ vi.mock('@/entities/chat/lib/chat-helpers', () => ({
   matrixIdToAddress: vi.fn((id: string) => id),
 }));
 
+// O14: the Tor store is imported lazily by call-service; the mock is
+// mutable so a test can turn Tor on. The toast is spied so the Tor hint and
+// the diagnostics warnings can be asserted.
+const torState = { isEnabled: false, isConnected: false };
+vi.mock('@/entities/tor', () => ({
+  useTorStore: () => torState,
+}));
+// One global toast slot, like the real composable: `message` holds whatever
+// was shown last, so a test can stage an unrelated toast during a wait.
+const toastMessage = ref('');
+const toastSpy = vi.fn((msg: string, _type?: string, _duration?: number) => {
+  toastMessage.value = msg;
+});
+const toastCloseSpy = vi.fn();
+vi.mock('@/shared/lib/use-toast', () => ({
+  useToast: () => ({ message: toastMessage, toast: toastSpy, close: toastCloseSpy }),
+}));
+
 vi.mock('./call-sounds', () => ({
   playRingtone: vi.fn(),
   playDialtone: vi.fn(),
@@ -240,6 +285,14 @@ vi.mock('./call-sounds', () => ({
 
 vi.mock('./call-tab-lock', () => ({
   checkOtherTabHasCall: vi.fn().mockResolvedValue(false),
+}));
+
+// The page-awake tone keeps Chromium from freezing the page while the native
+// call screen hides it; these tests only check which call holds it, and when.
+const mockHoldPageAwake = vi.fn();
+vi.mock('./page-awake-tone', () => ({
+  holdPageAwake: mockHoldPageAwake,
+  releasePageAwake: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -252,9 +305,12 @@ describe('call-service permission flow', () => {
     vi.clearAllMocks();
     // Reset shared mock store state
     mockCallStore.isInCall = false;
+    mockCallStore.hasLiveCall = false;
     mockCallStore.activeCall = null;
     mockCallStore.matrixCall = null;
     mockCallStore.videoMuted = false;
+    authState.matrixReady = true;
+    matrixState.client = makeMockClient();
     // Default: permissions resolve successfully. Individual tests override
     // with mockRejectedValueOnce(new MockPermissionDeniedError(...)).
     mockEnsureCallPermissions.mockResolvedValue(undefined);
@@ -330,6 +386,22 @@ describe('call-service permission flow', () => {
       expect(mockStartAudioRouting).not.toHaveBeenCalled();
     });
 
+    it('keeps the page audible for an outgoing call before the native call screen hides it', async () => {
+      // Chromium freezes a hidden, silent page after a minute. A frozen page
+      // never hears the peer hang up, so the call screen stays open.
+      const { useCallService } = await import('./call-service');
+      const service = useCallService();
+      await service.startCall('!room:matrix.org', 'voice');
+
+      expect(mockNativeWebRTCMethods.launchCallUI).toHaveBeenCalledWith(
+        expect.objectContaining({ callId: 'test-call-id', direction: 'outgoing' }),
+      );
+      expect(mockHoldPageAwake).toHaveBeenCalledWith('test-call-id');
+      expect(mockHoldPageAwake.mock.invocationCallOrder[0]).toBeLessThan(
+        mockNativeWebRTCMethods.launchCallUI.mock.invocationCallOrder[0],
+      );
+    });
+
     // WEE-49 / forta-bugs#460: a fast double-tap on the dial button (or a
     // JS-event re-emit from CallEventCard's call-back handler) used to slip
     // past the `isInCall` check while the first invocation was still awaiting
@@ -348,9 +420,10 @@ describe('call-service permission flow', () => {
       const service = useCallService();
       const first = service.startCall('!room:matrix.org', 'voice');
 
-      // Yield to the microtask queue so the first call actually awaits
-      // ensureCallPermissions before we fire the second one.
-      await Promise.resolve();
+      // Let the first call actually reach ensureCallPermissions before we
+      // fire the second one — the readiness wait in front of it takes a few
+      // microtasks, so a single yield is not enough.
+      await vi.waitFor(() => expect(mockEnsureCallPermissions).toHaveBeenCalledTimes(1));
 
       const second = service.startCall('!room:matrix.org', 'voice');
       await second;
@@ -381,6 +454,192 @@ describe('call-service permission flow', () => {
     });
   });
 
+  // Right after a cold start the chat list is up while Matrix is still
+  // connecting. A dial in that window used to find no client and return
+  // without a word — the button did nothing. Now it waits for `matrixReady`
+  // for a bounded time, and says so when the wait runs out.
+  // The previous call's finalize is still walking the native steps when
+  // `hasLiveCall` already reads false; each step is process-wide, so a dial
+  // placed in that window would have them land on the new call.
+  describe('startCall while the previous call finalizes', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('waits for the in-flight finalize before dialling', async () => {
+      vi.useFakeTimers();
+      let releaseDismiss!: () => void;
+      mockNativeWebRTCMethods.dismissCallUI.mockReturnValueOnce(
+        new Promise<void>((resolve) => { releaseDismiss = resolve; }),
+      );
+      const { finalizeCall } = await import('./finalize-call');
+      const { useCallService } = await import('./call-service');
+
+      const previous = finalizeCall('hangup', 'previous-call-id');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mockNativeWebRTCMethods.dismissCallUI).toHaveBeenCalledWith({ callId: 'previous-call-id' });
+
+      const pending = useCallService().startCall('!room:matrix.org', 'voice');
+      await vi.advanceTimersByTimeAsync(200);
+      expect(mockPlaceVoiceCall).not.toHaveBeenCalled();
+
+      releaseDismiss();
+      await previous;
+      await vi.advanceTimersByTimeAsync(0);
+      await pending;
+      expect(mockPlaceVoiceCall).toHaveBeenCalledTimes(1);
+    });
+
+    it('dials anyway once FINALIZE_SETTLE_WAIT_MS has passed', async () => {
+      vi.useFakeTimers();
+      mockNativeWebRTCMethods.dismissCallUI.mockReturnValueOnce(new Promise<void>(() => {}));
+      const { finalizeCall, FINALIZE_SETTLE_WAIT_MS } = await import('./finalize-call');
+      const { useCallService } = await import('./call-service');
+
+      void finalizeCall('hangup', 'stuck-call-id');
+      await vi.advanceTimersByTimeAsync(0);
+
+      const pending = useCallService().startCall('!room:matrix.org', 'voice');
+      await vi.advanceTimersByTimeAsync(FINALIZE_SETTLE_WAIT_MS - 1);
+      expect(mockPlaceVoiceCall).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(mockPlaceVoiceCall).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('startCall before Matrix is ready', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('waits for matrixReady, then dials — once, without asking for the mic meanwhile', async () => {
+      vi.useFakeTimers();
+      authState.matrixReady = false;
+      const { useCallService, MATRIX_READY_WAIT_MS } = await import('./call-service');
+      const service = useCallService();
+
+      const pending = service.startCall('!room:matrix.org', 'voice');
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(toastSpy).toHaveBeenCalledWith(
+        tRaw('call.info.waitingForServer'),
+        'info',
+        MATRIX_READY_WAIT_MS,
+      );
+      expect(mockEnsureCallPermissions).not.toHaveBeenCalled();
+
+      // A second tap during the wait is the double-tap the outgoing lock
+      // already guards against — it must not queue a second dial.
+      await service.startCall('!room:matrix.org', 'voice');
+
+      await vi.advanceTimersByTimeAsync(2000);
+      authState.matrixReady = true;
+      await vi.advanceTimersByTimeAsync(0);
+      await pending;
+
+      expect(mockEnsureCallPermissions).toHaveBeenCalledTimes(1);
+      expect(mockEnsureCallPermissions).toHaveBeenCalledWith(false);
+      expect(mockPlaceVoiceCall).toHaveBeenCalledTimes(1);
+      // The "connecting…" toast must not sit over the call screen.
+      expect(toastCloseSpy).toHaveBeenCalled();
+      expect(toastSpy).not.toHaveBeenCalledWith(
+        tRaw('call.error.matrixNotReady'),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it('gives up after MATRIX_READY_WAIT_MS with an error toast and releases the lock', async () => {
+      vi.useFakeTimers();
+      authState.matrixReady = false;
+      const { useCallService, MATRIX_READY_WAIT_MS } = await import('./call-service');
+      const service = useCallService();
+
+      const pending = service.startCall('!room:matrix.org', 'voice');
+      await vi.advanceTimersByTimeAsync(MATRIX_READY_WAIT_MS - 1);
+      expect(toastSpy).not.toHaveBeenCalledWith(
+        tRaw('call.error.matrixNotReady'),
+        expect.anything(),
+        expect.anything(),
+      );
+
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+
+      expect(toastSpy).toHaveBeenCalledWith(
+        tRaw('call.error.matrixNotReady'),
+        'error',
+        expect.any(Number),
+      );
+      expect(mockEnsureCallPermissions).not.toHaveBeenCalled();
+      expect(mockPlaceVoiceCall).not.toHaveBeenCalled();
+      // No CallInfo was ever written, so there is no call to mark failed.
+      expect(mockUpdateStatus).not.toHaveBeenCalledWith('failed');
+
+      // The dropped dial must not lock the button: once Matrix is up, the
+      // next tap dials.
+      authState.matrixReady = true;
+      await service.startCall('!room:matrix.org', 'voice');
+      expect(mockPlaceVoiceCall).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not dial when a call arrived while it was waiting', async () => {
+      vi.useFakeTimers();
+      authState.matrixReady = false;
+      const { useCallService } = await import('./call-service');
+      const service = useCallService();
+
+      const pending = service.startCall('!room:matrix.org', 'voice');
+      await vi.advanceTimersByTimeAsync(1000);
+
+      // An incoming call rings (Telecom, no CallInfo yet) during the wait:
+      // dialling now would overwrite the single MatrixCall slot (#1183).
+      mockCallStore.hasLiveCall = true;
+      authState.matrixReady = true;
+      await vi.advanceTimersByTimeAsync(0);
+      await pending;
+
+      expect(mockEnsureCallPermissions).not.toHaveBeenCalled();
+      expect(mockPlaceVoiceCall).not.toHaveBeenCalled();
+    });
+
+    it('leaves an unrelated toast alone when the wait ends', async () => {
+      vi.useFakeTimers();
+      authState.matrixReady = false;
+      const { useCallService } = await import('./call-service');
+      const service = useCallService();
+
+      const pending = service.startCall('!room:matrix.org', 'voice');
+      await vi.advanceTimersByTimeAsync(1000);
+
+      // Another feature replaced the "connecting…" toast meanwhile.
+      toastMessage.value = 'link copied';
+      authState.matrixReady = true;
+      await vi.advanceTimersByTimeAsync(0);
+      await pending;
+
+      expect(mockPlaceVoiceCall).toHaveBeenCalledTimes(1);
+      expect(toastCloseSpy).not.toHaveBeenCalled();
+    });
+
+    it('tells the user when the client is gone although matrixReady says otherwise', async () => {
+      matrixState.client = null;
+      const { useCallService } = await import('./call-service');
+      const service = useCallService();
+
+      await service.startCall('!room:matrix.org', 'voice');
+
+      expect(toastSpy).toHaveBeenCalledWith(
+        tRaw('call.error.matrixNotReady'),
+        'error',
+        expect.any(Number),
+      );
+      expect(mockEnsureCallPermissions).not.toHaveBeenCalled();
+      expect(mockPlaceVoiceCall).not.toHaveBeenCalled();
+    });
+  });
+
   // -------------------------------------------------------------------------
   // WEE-54 / forta-bugs#866 — phantom ringback tone.
   //
@@ -391,6 +650,92 @@ describe('call-service permission flow', () => {
   // off". The fix gates the ringback on the SDK's InviteSent state (invite
   // actually delivered to the server) inside wireCallEvents.
   // -------------------------------------------------------------------------
+  describe('single call slot during a native ring (#1183)', () => {
+    // On Android an incoming call rings through Telecom and the CallInfo is
+    // only written once the user answers, so `isInCall` is false for the
+    // whole ring while `matrixCall` already holds the SDK object. Guards
+    // keyed on `isInCall` let a second call overwrite that single slot, and
+    // the call the user then answered had already been unwired.
+
+    it('refuses to dial while a call is ringing but not yet answered', async () => {
+      mockCallStore.isInCall = false; // no CallInfo yet — the native ring window
+      mockCallStore.hasLiveCall = true;
+
+      const { useCallService } = await import('./call-service');
+      await useCallService().startCall('!room:matrix.org', 'voice');
+
+      expect(mockEnsureCallPermissions).not.toHaveBeenCalled();
+      expect(mockPlaceVoiceCall).not.toHaveBeenCalled();
+    });
+
+    it('rejects a second incoming call that arrives during that same window', async () => {
+      mockCallStore.isInCall = false;
+      mockCallStore.hasLiveCall = true;
+
+      const { useCallService } = await import('./call-service');
+      const second = {
+        callId: 'second-invite',
+        roomId: '!room:matrix.org',
+        type: 'voice',
+        on: mockOn,
+        off: mockOff,
+        answer: mockAnswer,
+        reject: mockReject,
+        getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+      };
+      await useCallService().handleIncomingCall(second as never);
+
+      expect(mockReject).toHaveBeenCalled();
+      expect(mockSetMatrixCall).not.toHaveBeenCalled();
+    });
+
+    it('still dials when nothing holds the slot', async () => {
+      const { useCallService } = await import('./call-service');
+      await useCallService().startCall('!room:matrix.org', 'voice');
+
+      expect(mockEnsureCallPermissions).toHaveBeenCalledWith(false);
+    });
+  });
+
+  describe('currentCall()', () => {
+    // Read by the native bridge to decide whether a callEnded/callDeclined is
+    // about the call JS is holding. It only means anything while it reports the
+    // same call `hangup`/`rejectCall` would act on — both read
+    // `callStore.matrixCall` fresh on every invocation, so this must too. A
+    // cached ref here would put the guard back to comparing against a stale id,
+    // which is the state that let the wrong call be torn down.
+    it('reports the call hangup and rejectCall would act on', async () => {
+      mockCallStore.matrixCall = { callId: 'call-a', roomId: '!a:matrix.org' };
+
+      const { useCallService } = await import('./call-service');
+
+      expect(useCallService().currentCall()).toEqual({
+        callId: 'call-a',
+        roomId: '!a:matrix.org',
+      });
+    });
+
+    it('follows the store rather than caching what it saw first', async () => {
+      mockCallStore.matrixCall = { callId: 'call-a', roomId: '!a:matrix.org' };
+
+      const { useCallService } = await import('./call-service');
+      const service = useCallService();
+      expect(service.currentCall().callId).toBe('call-a');
+
+      mockCallStore.matrixCall = { callId: 'call-b', roomId: '!b:matrix.org' };
+
+      expect(service.currentCall().callId).toBe('call-b');
+    });
+
+    it('reports an undefined callId when JS holds no call', async () => {
+      mockCallStore.matrixCall = null;
+
+      const { useCallService } = await import('./call-service');
+
+      expect(useCallService().currentCall().callId).toBeUndefined();
+    });
+  });
+
   describe('outgoing ringback gating (#866 / WEE-54)', () => {
     function captureOnState() {
       const stateCall = mockOn.mock.calls.find((c: unknown[]) => c[0] === 'State');
@@ -477,6 +822,189 @@ describe('call-service permission flow', () => {
       const onState = captureOnState();
       onState?.('invite_sent', 'create_offer');
       expect(vi.mocked(playDialtone)).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('incoming-call dedup window (#644)', () => {
+    function incoming(callId: string) {
+      return {
+        callId,
+        roomId: '!room:matrix.org',
+        type: 'voice',
+        on: mockOn,
+        off: mockOff,
+        answer: mockAnswer,
+        reject: mockReject,
+        localUsermediaStream: null,
+        localScreensharingStream: null,
+        remoteUsermediaStream: null,
+        remoteScreensharingStream: null,
+        remoteUsermediaFeed: null,
+        getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+      };
+    }
+
+    it('keeps the call marked as seen once its handlers are wired', async () => {
+      const { isIncomingCallSeen, __resetIncomingCallDedupForTests } =
+        await import('./incoming-call-dedup');
+      const { useCallService } = await import('./call-service');
+      __resetIncomingCallDedupForTests();
+      const service = useCallService();
+
+      const call = incoming('dedup-call-a');
+      mockCallStore.matrixCall = call;
+      await service.handleIncomingCall(call as never);
+
+      // wireCallEvents opens by unwiring the very call it is about to wire.
+      // That teardown used to clear the mark set moments earlier, so the
+      // window never survived the same tick and a repeat invite rang twice.
+      expect(isIncomingCallSeen('dedup-call-a')).toBe(true);
+    });
+
+    it('releases the slot of the call it unwires, not of the new one', async () => {
+      const { isIncomingCallSeen, __resetIncomingCallDedupForTests } =
+        await import('./incoming-call-dedup');
+      const { useCallService } = await import('./call-service');
+      __resetIncomingCallDedupForTests();
+      const service = useCallService();
+
+      const first = incoming('dedup-call-a');
+      mockCallStore.matrixCall = first;
+      await service.handleIncomingCall(first as never);
+
+      const second = incoming('dedup-call-b');
+      mockCallStore.matrixCall = second;
+      await service.handleIncomingCall(second as never);
+
+      // Wiring the second call tears down the first: the first call's slot is
+      // the one that must be freed, so a genuine re-invite for it later still
+      // rings, while the call now on screen stays deduped.
+      expect(isIncomingCallSeen('dedup-call-a')).toBe(false);
+      expect(isIncomingCallSeen('dedup-call-b')).toBe(true);
+    });
+  });
+
+  describe('detaching handlers from the right call object', () => {
+    // MatrixCall extends TypedEventEmitter, so listener state lives on the
+    // instance. Teardown used to call `off` on whatever call it was handed,
+    // with the handlers of whichever call was wired last — a silent no-op
+    // when those differ, leaving the first call's handlers alive. Those
+    // handlers are not callId-scoped on the native side: when the abandoned
+    // call finally timed out, its onState ran finalizeCall and tore down the
+    // audio, UI and peer connections of the call actually in progress.
+
+    function callWithOwnSpies(callId: string) {
+      const on = vi.fn();
+      const off = vi.fn();
+      return {
+        spy: { on, off },
+        call: {
+          callId,
+          roomId: '!room:matrix.org',
+          type: 'voice',
+          state: 'ringing',
+          on,
+          off,
+          answer: mockAnswer,
+          reject: mockReject,
+          getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+        },
+      };
+    }
+
+    it('detaches from the call the handlers were attached to', async () => {
+      const { useCallService } = await import('./call-service');
+      const { __resetIncomingCallDedupForTests } = await import('./incoming-call-dedup');
+      __resetIncomingCallDedupForTests();
+      const service = useCallService();
+
+      const a = callWithOwnSpies('detach-a');
+      const b = callWithOwnSpies('detach-b');
+
+      mockCallStore.matrixCall = a.call;
+      await service.handleIncomingCall(a.call as never);
+      const offCountAfterFirst = a.spy.off.mock.calls.length;
+
+      // Wiring b tears down a. Every off() must land on a — b has nothing
+      // attached yet, so an off() there would be the silent no-op that leaves
+      // a's handlers alive.
+      mockCallStore.matrixCall = b.call;
+      await service.handleIncomingCall(b.call as never);
+
+      expect(a.spy.off.mock.calls.length).toBeGreaterThan(offCountAfterFirst);
+      expect(b.spy.off).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('expired invite delivered late (#958 / #928)', () => {
+    // When FCM delivery degrades the homeserver retains the invite and
+    // flushes it on the next /sync, minutes later. The SDK arms its expiry
+    // timer with `lifetime - localAge` — negative for a retained invite — so
+    // it ends the call on the tick right after Call.incoming, while our
+    // handler is still awaiting profile lookups. Ringing after that point is
+    // the "a call came in seven minutes later and there was no call" report.
+
+    // Distinct callId per test: the module-scope dedup window survives between
+    // tests, so a shared id makes one test's outcome depend on whether the
+    // previous one released the slot.
+    function staleIncoming(state: string, callId: string) {
+      return {
+        callId,
+        roomId: '!room:matrix.org',
+        type: 'voice',
+        state,
+        on: mockOn,
+        off: mockOff,
+        answer: mockAnswer,
+        reject: mockReject,
+        getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+      };
+    }
+
+    it('does not ring for a call the SDK already ended', async () => {
+      const { useCallService } = await import('./call-service');
+      await useCallService().handleIncomingCall(
+        staleIncoming('ended', 'stale-invite-a') as never,
+      );
+
+      expect(mockEnsureIncomingCallVisible).not.toHaveBeenCalled();
+      expect(mockSetActiveCall).not.toHaveBeenCalled();
+    });
+
+    it('tells native the call is over so the ringer stops', async () => {
+      // FCM usually wins the race that delivers a retained invite, so the
+      // native ringer is already up by the time this handler runs. Only
+      // finalizeCall releases the Telecom connection and dismisses it —
+      // nulling the Pinia slot is invisible to native.
+      const { useCallService } = await import('./call-service');
+
+      await useCallService().handleIncomingCall(
+        staleIncoming('ended', 'stale-invite-d') as never,
+      );
+      await vi.waitFor(() =>
+        expect(mockReportCallEnded).toHaveBeenCalledWith('stale-invite-d'),
+      );
+    });
+
+    it('vacates the call slot it had already taken', async () => {
+      // setMatrixCall runs before this check (rejectCall/answerCall need the
+      // object), so bailing out has to hand the slot back or `hasLiveCall`
+      // would report a live call that nothing can ever end.
+      const { useCallService } = await import('./call-service');
+      await useCallService().handleIncomingCall(
+        staleIncoming('ended', 'stale-invite-b') as never,
+      );
+
+      expect(mockSetMatrixCall).toHaveBeenLastCalledWith(null);
+    });
+
+    it('still rings a call the SDK is holding in ringing state', async () => {
+      const { useCallService } = await import('./call-service');
+      await useCallService().handleIncomingCall(
+        staleIncoming('ringing', 'stale-invite-c') as never,
+      );
+
+      expect(mockEnsureIncomingCallVisible).toHaveBeenCalled();
     });
   });
 
@@ -707,6 +1235,73 @@ describe('call-service permission flow', () => {
       const routingOrder = mockStartAudioRouting.mock.invocationCallOrder[0];
       expect(answerOrder).toBeLessThan(routingOrder);
     });
+
+    it('keeps the page audible for the answered call before the native call screen hides it', async () => {
+      seedIncomingCall('voice');
+
+      const { useCallService } = await import('./call-service');
+      const service = useCallService();
+      await service.answerCall();
+
+      expect(mockHoldPageAwake).toHaveBeenCalledWith('incoming-call-id');
+      expect(mockHoldPageAwake.mock.invocationCallOrder[0]).toBeLessThan(
+        mockNativeWebRTCMethods.launchCallUI.mock.invocationCallOrder[0],
+      );
+    });
+  });
+
+  describe('pre-accepted incoming call', () => {
+    it('keeps the page audible before the fast path launches the call screen', async () => {
+      const { consumePendingAnswerCallId } = await import('@/shared/lib/native-calls');
+      vi.mocked(consumePendingAnswerCallId).mockResolvedValueOnce(true);
+      const call = {
+        callId: 'pre-accepted-call-id',
+        roomId: '!room:matrix.org',
+        type: 'voice',
+        on: mockOn,
+        off: mockOff,
+        answer: mockAnswer,
+        reject: mockReject,
+        localUsermediaStream: null,
+        localScreensharingStream: null,
+        remoteUsermediaStream: null,
+        remoteScreensharingStream: null,
+        remoteUsermediaFeed: null,
+        getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+      };
+      mockCallStore.matrixCall = call;
+
+      const { useCallService } = await import('./call-service');
+      await useCallService().handleIncomingCall(call as never);
+
+      expect(mockNativeWebRTCMethods.launchCallUI).toHaveBeenCalledWith(
+        expect.objectContaining({ callId: 'pre-accepted-call-id', direction: 'incoming' }),
+      );
+      expect(mockHoldPageAwake).toHaveBeenCalledWith('pre-accepted-call-id');
+      expect(mockHoldPageAwake.mock.invocationCallOrder[0]).toBeLessThan(
+        mockNativeWebRTCMethods.launchCallUI.mock.invocationCallOrder[0],
+      );
+      // Let the fast path's own answerCall finish inside this test.
+      await vi.waitFor(() => expect(mockAnswer).toHaveBeenCalled());
+    });
+  });
+
+  describe('native call screen launch site', () => {
+    it('launches the native call screen only through the helper that keeps the page audible', () => {
+      // The tests above cover today's three launches. A fourth one calling
+      // NativeWebRTC.launchCallUI directly would bring the frozen page back
+      // for its calls, so every launch has to go through one place.
+      const code = readFileSync(resolve(__dirname, 'call-service.ts'), 'utf-8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '');
+
+      expect(code.match(/NativeWebRTC\.launchCallUI\(/g)).toHaveLength(1);
+      // Android only: the freeze is Chromium's. The iOS WKWebView has no such
+      // freeze, and a tone there would share the audio session with the call.
+      expect(code).toMatch(
+        /if \(isAndroid\) holdPageAwake\(options\.callId\);\s*return NativeWebRTC\.launchCallUI\(options\);/,
+      );
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -898,7 +1493,7 @@ describe('call-service permission flow', () => {
       service.hangup();
 
       expect(mockHangup).toHaveBeenCalledOnce();
-      expect(mockStopAudioRouting).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(mockStopAudioRouting).toHaveBeenCalledOnce());
     });
 
     it('calls stopAudioRouting on rejectCall', async () => {
@@ -922,7 +1517,7 @@ describe('call-service permission flow', () => {
       service.rejectCall();
 
       expect(mockReject).toHaveBeenCalledOnce();
-      expect(mockStopAudioRouting).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(mockStopAudioRouting).toHaveBeenCalledOnce());
     });
 
     it('does not throw when stopAudioRouting fails', async () => {
@@ -991,7 +1586,7 @@ describe('call-service permission flow', () => {
       const service = useCallService();
       await service.answerCall();
 
-      expect(mockStopAudioRouting).toHaveBeenCalled();
+      await vi.waitFor(() => expect(mockStopAudioRouting).toHaveBeenCalled());
     });
 
     it('calls stopAudioRouting in catch when placeVoiceCall throws', async () => {
@@ -1186,6 +1781,7 @@ describe('call-service permission flow', () => {
       const freshAddListener = vi.fn().mockResolvedValue({ remove: vi.fn() });
       vi.doMock('@/shared/lib/native-webrtc', () => ({
         installNativeWebRTCProxy: vi.fn(),
+        isNativeWebRTCEngineEnabled: () => true,
         NativeWebRTC: new Proxy({}, {
           get: (_target, prop) => {
             if (prop === 'addListener') return freshAddListener;
@@ -1503,5 +2099,383 @@ describe('local media release on call teardown (WEE-89)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('ICE candidates held until the remote description (O15)', () => {
+  /**
+   * The SDK adds the candidates it buffered while ringing before it sets the
+   * answer; the buffer attached in onPeerConnectionCreated is what keeps
+   * them. The mocked SDK never emits PeerConnectionCreated, so this goes
+   * through the 300 ms fallback that watches `call.peerConn`.
+   */
+  it('attaches the candidate buffer to the peer connection the SDK creates', async () => {
+    const pc = {
+      remoteDescription: null as RTCSessionDescriptionInit | null,
+      signalingState: 'have-local-offer',
+      iceConnectionState: 'new',
+      iceGatheringState: 'new',
+      connectionState: 'new',
+      oniceconnectionstatechange: null,
+      onsignalingstatechange: null,
+      onconnectionstatechange: null,
+      onicecandidate: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      getStats: vi.fn(async () => new Map()),
+      restartIce: vi.fn(),
+      close: vi.fn(),
+      addIceCandidate: vi.fn(async (_candidate?: RTCIceCandidateInit) => {}),
+      setRemoteDescription: vi.fn(async (d: RTCSessionDescriptionInit) => {
+        pc.remoteDescription = d;
+      }),
+    };
+    const originalAdd = pc.addIceCandidate;
+    const fakeCall = {
+      callId: 'ice-call-id',
+      roomId: 'test-room-id',
+      type: 'voice',
+      on: mockOn,
+      off: mockOff,
+      placeVoiceCall: mockPlaceVoiceCall,
+      placeVideoCall: mockPlaceVideoCall,
+      answer: mockAnswer,
+      reject: mockReject,
+      hangup: mockHangup,
+      isMicrophoneMuted: vi.fn(() => false),
+      localUsermediaStream: null,
+      localScreensharingStream: null,
+      remoteUsermediaStream: null,
+      remoteScreensharingStream: null,
+      remoteUsermediaFeed: null,
+      getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+      peerConn: pc,
+    };
+    const { createNewMatrixCall } = await import('matrix-js-sdk-bastyon/lib/webrtc/call');
+    vi.mocked(createNewMatrixCall).mockReturnValueOnce(fakeCall as never);
+
+    vi.useFakeTimers();
+    try {
+      const { useCallService } = await import('./call-service');
+      void useCallService().startCall('!room:matrix.org', 'voice');
+      await vi.advanceTimersByTimeAsync(0);
+      // The fallback poll runs every 300 ms.
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect((pc as unknown as Record<string, unknown>).__iceCandidateBufferAttached).toBe(true);
+      await pc.addIceCandidate({ candidate: 'candidate:1', sdpMid: '0', sdpMLineIndex: 0 });
+      expect(originalAdd).not.toHaveBeenCalled();
+      await pc.setRemoteDescription({ type: 'answer', sdp: 'v=0' });
+      expect(originalAdd).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('call events retried through a short network outage', () => {
+  /**
+   * The SDK ends the call when one send of the restart offer fails; the retry
+   * wrapper keeps it going (voip-send-retry.ts). It has to be installed on
+   * every call call-service wires, or a restart during a network change still
+   * ends the call (Samsung `wifioff-vpn2`).
+   */
+  it('retries a restart offer that failed for lack of a connection on a placed call', async () => {
+    class ConnectionError extends Error {
+      get name(): string { return 'ConnectionError'; }
+    }
+    const send = vi.fn(async (_type: string, _content: Record<string, unknown>) => {});
+    send.mockRejectedValueOnce(new ConnectionError('fetch failed'));
+    const fakeCall = {
+      callId: 'retry-call-id',
+      roomId: 'test-room-id',
+      type: 'voice',
+      on: mockOn,
+      off: mockOff,
+      placeVoiceCall: mockPlaceVoiceCall,
+      placeVideoCall: mockPlaceVideoCall,
+      answer: mockAnswer,
+      reject: mockReject,
+      hangup: mockHangup,
+      isMicrophoneMuted: vi.fn(() => false),
+      localUsermediaStream: null,
+      localScreensharingStream: null,
+      remoteUsermediaStream: null,
+      remoteScreensharingStream: null,
+      remoteUsermediaFeed: null,
+      getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+      sendVoipEvent: send,
+      callHasEnded: () => false,
+    };
+    const { createNewMatrixCall } = await import('matrix-js-sdk-bastyon/lib/webrtc/call');
+    vi.mocked(createNewMatrixCall).mockReturnValueOnce(fakeCall as never);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    vi.useFakeTimers();
+    try {
+      const { useCallService } = await import('./call-service');
+      void useCallService().startCall('!room:matrix.org', 'voice');
+      await vi.advanceTimersByTimeAsync(0);
+
+      const sent = fakeCall.sendVoipEvent('m.call.negotiate', { description: {} });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(sent).resolves.toBeUndefined();
+      expect(send).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('Tor hint and the no-relay warning (O05/O14)', () => {
+  beforeEach(() => {
+    torState.isEnabled = false;
+    torState.isConnected = false;
+    toastSpy.mockClear();
+  });
+
+  it('says that the call bypasses Tor when Tor is enabled, once per placed call', async () => {
+    torState.isEnabled = true;
+    const { useCallService } = await import('./call-service');
+    await useCallService().startCall('!room:matrix.org', 'voice');
+    await new Promise((r) => setTimeout(r, 0));
+
+    const torHints = toastSpy.mock.calls.filter((c) => /Tor/.test(String(c[0])));
+    expect(torHints).toHaveLength(1);
+    expect(torHints[0][1]).toBe('info');
+  });
+
+  it('stays quiet about Tor when it is off', async () => {
+    const { useCallService } = await import('./call-service');
+    await useCallService().startCall('!room:matrix.org', 'voice');
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(toastSpy.mock.calls.filter((c) => /Tor/.test(String(c[0])))).toHaveLength(0);
+  });
+
+  it('turns the diagnostics no-relay warning into a toast', async () => {
+    const pc = {
+      remoteDescription: null as RTCSessionDescriptionInit | null,
+      signalingState: 'have-local-offer',
+      iceConnectionState: 'new',
+      iceGatheringState: 'new',
+      connectionState: 'new',
+      oniceconnectionstatechange: null,
+      onsignalingstatechange: null,
+      onconnectionstatechange: null,
+      onicecandidate: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      getStats: vi.fn(async () => new Map()),
+      restartIce: vi.fn(),
+      close: vi.fn(),
+      addIceCandidate: vi.fn(async (_candidate?: RTCIceCandidateInit) => {}),
+      setRemoteDescription: vi.fn(async (d: RTCSessionDescriptionInit) => {
+        pc.remoteDescription = d;
+      }),
+    };
+    const fakeCall = {
+      callId: 'relay-call-id',
+      roomId: 'test-room-id',
+      type: 'voice',
+      on: mockOn,
+      off: mockOff,
+      placeVoiceCall: mockPlaceVoiceCall,
+      placeVideoCall: mockPlaceVideoCall,
+      answer: mockAnswer,
+      reject: mockReject,
+      hangup: mockHangup,
+      isMicrophoneMuted: vi.fn(() => false),
+      localUsermediaStream: null,
+      localScreensharingStream: null,
+      remoteUsermediaStream: null,
+      remoteScreensharingStream: null,
+      remoteUsermediaFeed: null,
+      getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+      peerConn: pc,
+    };
+    const { createNewMatrixCall } = await import('matrix-js-sdk-bastyon/lib/webrtc/call');
+    vi.mocked(createNewMatrixCall).mockReturnValueOnce(fakeCall as never);
+    const { webrtcDiagnostics } = await import('./webrtc-diagnostics');
+
+    vi.useFakeTimers();
+    try {
+      const { useCallService } = await import('./call-service');
+      void useCallService().startCall('!room:matrix.org', 'voice');
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(300);
+
+      webrtcDiagnostics.dispatchEvent(
+        new CustomEvent('warning', { detail: { type: 'ice_failed_no_relay' } }),
+      );
+      const relayToasts = toastSpy.mock.calls.filter((c) => /relay/i.test(String(c[0])));
+      expect(relayToasts).toHaveLength(1);
+    } finally {
+      webrtcDiagnostics.detach();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('remote video state reaches the native call screen', () => {
+  // The native call screen hides the remote picture while JS reports the
+  // remote camera muted, and has no other source for that state. With the
+  // native engine every remote track arrives as its own event: the SDK builds
+  // the feed from the audio track alone, so isVideoMuted() reads true at that
+  // moment, and the video track joins the same stream a moment later. The
+  // screen only ever heard the first answer and kept the avatar over live
+  // frames for the whole call.
+  beforeEach(async () => {
+    // 'onAudioError listener' above re-mocks the bridge with untracked spies
+    // and resets the module cache; point call-service back at the tracked
+    // methods so the screen updates below are observable.
+    vi.doMock('@/shared/lib/native-webrtc', () => ({
+      installNativeWebRTCProxy: vi.fn(),
+      isNativeWebRTCEngineEnabled: () => true,
+      NativeWebRTC: new Proxy({}, {
+        get: (_target, prop) =>
+          typeof prop === 'string' && prop in mockNativeWebRTCMethods
+            ? mockNativeWebRTCMethods[prop]
+            : vi.fn().mockResolvedValue({}),
+      }),
+    }));
+    vi.resetModules();
+    vi.useRealTimers();
+    vi.clearAllMocks();
+    mockCallStore.isInCall = false;
+    mockCallStore.activeCall = null;
+    mockCallStore.matrixCall = null;
+    mockCallStore.remoteVideoMuted = false;
+    mockEnsureCallPermissions.mockResolvedValue(undefined);
+    mockGetUser.mockReset();
+    mockGetUser.mockReturnValue({ name: 'Peer' });
+    mockLoadUsersBatch.mockReset();
+    mockLoadUsersBatch.mockResolvedValue(undefined);
+    const { __resetFinalizeCallStateForTests } = await import('./finalize-call');
+    __resetFinalizeCallStateForTests();
+  });
+
+  type Listener = (...args: unknown[]) => void;
+
+  /** CallFeed stub: as in the SDK, isVideoMuted() is true while the stream has no video track. */
+  function makeRemoteFeed() {
+    const listeners = new Map<string, Set<Listener>>();
+    const kinds = ['audio'];
+    return {
+      isVideoMuted: () => !kinds.includes('video'),
+      on: (event: string, fn: Listener) => {
+        if (!listeners.has(event)) listeners.set(event, new Set());
+        listeners.get(event)?.add(fn);
+      },
+      off: (event: string, fn: Listener) => {
+        listeners.get(event)?.delete(fn);
+      },
+      emit: (event: string, ...args: unknown[]) => {
+        listeners.get(event)?.forEach((fn) => fn(...args));
+      },
+      listenerCount: (event: string) => listeners.get(event)?.size ?? 0,
+      addVideoTrack: () => {
+        kinds.push('video');
+      },
+    };
+  }
+
+  let seq = 0;
+
+  /**
+   * Rings an incoming video call. The call carries its own on/off spies, so
+   * its handlers are read from it and a missing one fails the test instead of
+   * turning the step into a silent no-op.
+   */
+  async function ringIncomingVideoCall() {
+    const on = vi.fn();
+    const off = vi.fn();
+    const call: Record<string, unknown> = {
+      callId: `remote-video-${++seq}`,
+      roomId: '!room:matrix.org',
+      type: 'video',
+      state: 'ringing',
+      on,
+      off,
+      answer: mockAnswer,
+      reject: mockReject,
+      hangup: mockHangup,
+      isMicrophoneMuted: vi.fn(() => false),
+      localUsermediaStream: null,
+      localScreensharingStream: null,
+      remoteUsermediaStream: null,
+      remoteScreensharingStream: null,
+      remoteUsermediaFeed: null,
+      getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+    };
+    const { useCallService } = await import('./call-service');
+    const { __resetIncomingCallDedupForTests } = await import('./incoming-call-dedup');
+    __resetIncomingCallDedupForTests();
+    mockCallStore.matrixCall = call;
+    await useCallService().handleIncomingCall(call as never);
+    const handler = (event: string) => {
+      const entry = on.mock.calls.find((c: unknown[]) => c[0] === event);
+      if (!entry) throw new Error(`no ${event} handler wired`);
+      return entry[1] as (...args: unknown[]) => void;
+    };
+    return { call, handler };
+  }
+
+  /** The muted values the native screen received, in order. */
+  function screenStates(): boolean[] {
+    return mockNativeWebRTCMethods.updateRemoteVideoState.mock.calls.map(
+      (c: unknown[]) => (c[0] as { muted: boolean }).muted,
+    );
+  }
+
+  it('shows the remote picture once the video track joins the feed', async () => {
+    const { call, handler } = await ringIncomingVideoCall();
+    const feed = makeRemoteFeed();
+    call.remoteUsermediaFeed = feed;
+    handler('FeedsChanged')();
+    expect(screenStates()).toEqual([true]);
+
+    feed.addVideoTrack();
+    feed.emit('new_stream');
+
+    expect(screenStates()).toEqual([true, false]);
+    expect(mockCallStore.remoteVideoMuted).toBe(false);
+  });
+
+  it('tells the screen when a later refresh of the same feed finds the video track', async () => {
+    const { call, handler } = await ringIncomingVideoCall();
+    const feed = makeRemoteFeed();
+    call.remoteUsermediaFeed = feed;
+    handler('FeedsChanged')();
+
+    feed.addVideoTrack();
+    handler('FeedsChanged')();
+
+    expect(screenStates()).toEqual([true, false]);
+  });
+
+  it('does not repeat an unchanged state to the screen', async () => {
+    const { call, handler } = await ringIncomingVideoCall();
+    const feed = makeRemoteFeed();
+    call.remoteUsermediaFeed = feed;
+    handler('FeedsChanged')();
+
+    feed.emit('new_stream');
+    handler('FeedsChanged')();
+
+    expect(screenStates()).toEqual([true]);
+  });
+
+  it('stops listening to the feed when the call ends', async () => {
+    const { call, handler } = await ringIncomingVideoCall();
+    const feed = makeRemoteFeed();
+    call.remoteUsermediaFeed = feed;
+    handler('FeedsChanged')();
+    expect(feed.listenerCount('new_stream')).toBe(1);
+
+    handler('State')('ended', 'connected');
+
+    expect(feed.listenerCount('new_stream')).toBe(0);
+    expect(feed.listenerCount('mute_state_changed')).toBe(0);
   });
 });

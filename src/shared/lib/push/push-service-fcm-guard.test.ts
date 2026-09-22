@@ -12,14 +12,6 @@ vi.mock('@capacitor/push-notifications', () => ({
   },
 }));
 
-vi.mock('@capacitor/local-notifications', () => ({
-  LocalNotifications: {
-    requestPermissions: vi.fn().mockResolvedValue({ display: 'granted' }),
-    createChannel: vi.fn().mockResolvedValue(undefined),
-    addListener: vi.fn().mockResolvedValue({ remove: vi.fn() }),
-  },
-}));
-
 vi.mock('@/shared/lib/platform', () => ({
   isNative: true,
   isIOS: false,

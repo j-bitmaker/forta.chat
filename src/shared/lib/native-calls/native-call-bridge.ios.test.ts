@@ -194,7 +194,140 @@ describe('createIOSNativeCallAdapter — getPendingAnswer / getPendingReject', (
     });
     const adapter = await loadAdapter();
     const rej = await adapter.getPendingReject();
-    expect(rej).toEqual({ callId: 'r2', roomId: '!b:m' });
+    expect(rej).toEqual({
+      callId: 'r2',
+      roomId: '!b:m',
+      // Stamped so the roomId fallback can age out; see the marker-age block.
+      atMs: expect.any(Number),
+    });
+  });
+});
+
+describe('createIOSNativeCallAdapter — marker age', () => {
+  /**
+   * A pending marker matched by roomId alone ages out after one invite
+   * lifetime — that rule is what stopped a stale reject on Android from
+   * declining a later call from the same room unheard (e67f3863). It is
+   * driven by `atMs`, and iOS used to report none: `matchesPendingCallMarker`
+   * reads a missing stamp as "this platform cannot tell" and keeps the room
+   * fallback open for ever.
+   *
+   * CallKit records carry no timestamp, so the adapter stamps the first moment
+   * it saw a call in the state that makes it a marker. That is later than the
+   * user's tap by however long the app took to reach this code, which on the
+   * cold-start path it exists for is seconds.
+   */
+  const accepted = (callId: string) => ({
+    callId,
+    callerName: 'Ada',
+    handle: '!room:matrix.org',
+    hasVideo: false,
+    state: 'accepted' as const,
+    platform: 'ios' as const,
+    extra: { roomId: '!room:matrix.org' },
+  });
+
+  it('stamps the answer marker so it can age out', async () => {
+    getActiveCallsSpy.mockResolvedValue({ calls: [accepted('c1')] });
+    const adapter = await loadAdapter();
+
+    const pending = await adapter.getPendingAnswer();
+
+    expect(typeof pending.atMs).toBe('number');
+    expect(pending.atMs).toBeGreaterThan(0);
+  });
+
+  it('keeps the same stamp on every later read, so the marker really ages', async () => {
+    // Re-stamping on each read would peg the age at zero and restore exactly
+    // the unbounded room match this is meant to bound. iOS reads live CallKit
+    // state rather than a stored marker, so the same call comes back again
+    // and again.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      getActiveCallsSpy.mockResolvedValue({ calls: [accepted('c1')] });
+      const adapter = await loadAdapter();
+
+      const first = await adapter.getPendingAnswer();
+      vi.advanceTimersByTime(90_000);
+      const later = await adapter.getPendingAnswer();
+
+      expect(typeof first.atMs).toBe('number');
+      expect(later.atMs).toBe(first.atMs);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('gives a different call its own stamp', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      getActiveCallsSpy.mockResolvedValue({ calls: [accepted('c1')] });
+      const adapter = await loadAdapter();
+      const first = await adapter.getPendingAnswer();
+
+      vi.advanceTimersByTime(30_000);
+      getActiveCallsSpy.mockResolvedValue({ calls: [accepted('c2')] });
+      const second = await adapter.getPendingAnswer();
+
+      expect(second.callId).toBe('c2');
+      expect(second.atMs).toBeGreaterThan(first.atMs as number);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stamps the reject marker when a call reaches "ended", not when it was accepted', async () => {
+    // The two markers are separate decisions: an accepted call that the user
+    // later ends must not carry the accept moment into its reject marker.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      getActiveCallsSpy.mockResolvedValue({ calls: [accepted('c1')] });
+      const adapter = await loadAdapter();
+      const answer = await adapter.getPendingAnswer();
+
+      vi.advanceTimersByTime(40_000);
+      getActiveCallsSpy.mockResolvedValue({
+        calls: [{ ...accepted('c1'), state: 'ended' as const }],
+      });
+      const reject = await adapter.getPendingReject();
+
+      expect(reject.callId).toBe('c1');
+      expect(reject.atMs).toBeGreaterThan(answer.atMs as number);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('forgets a call once CallKit stops reporting it', async () => {
+    // Otherwise every call the app ever saw stays in the map for the life of
+    // the process, and a callId reused after a gap would look ancient.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      getActiveCallsSpy.mockResolvedValue({ calls: [accepted('c1')] });
+      const adapter = await loadAdapter();
+      const first = await adapter.getPendingAnswer();
+
+      vi.advanceTimersByTime(30_000);
+      getActiveCallsSpy.mockResolvedValue({ calls: [] });
+      await adapter.getPendingAnswer();
+
+      vi.advanceTimersByTime(30_000);
+      getActiveCallsSpy.mockResolvedValue({ calls: [accepted('c1')] });
+      const again = await adapter.getPendingAnswer();
+
+      expect(again.atMs).toBeGreaterThan(first.atMs as number);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports no stamp when there is no marker at all', async () => {
+    getActiveCallsSpy.mockResolvedValue({ calls: [] });
+    const adapter = await loadAdapter();
+
+    const pending = await adapter.getPendingAnswer();
+
+    expect(pending.callId).toBeNull();
   });
 });
 

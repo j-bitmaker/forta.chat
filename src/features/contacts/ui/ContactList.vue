@@ -27,6 +27,7 @@ import { getDraft } from "@/shared/lib/drafts";
 import { useSelectionStore } from "@/features/selection";
 import RenameContactDialog from "@/features/chat-info/ui/RenameContactDialog.vue";
 import { hapticImpact } from "@/shared/lib/haptics";
+import { lastMessageRowKey } from "@/features/contacts/lib/last-message-row-key";
 
 interface Props {
   filter?: "all" | "personal" | "groups" | "invites" | "channels";
@@ -451,7 +452,7 @@ type UnifiedItem = (ChatRoom | Channel) & { _key: string; _title?: DisplayResult
 // IMPORTANT: resolvedName is included in the cache key so that background profile
 // loading (triggerRef on userStore.users → roomNameMap recompute) invalidates
 // stale titles that were computed before profiles arrived.
-const _unifiedItemCache = new Map<string, { ts: number; unread: number; name: string; membership: string; msgStatus: string; preview: string; resolvedName: string; decryptionStatus: string; senderId: string; avatar: string; item: UnifiedItem }>();
+const _unifiedItemCache = new Map<string, { ts: number; unread: number; name: string; membership: string; msgStatus: string; preview: string; resolvedName: string; decryptionStatus: string; senderId: string; avatar: string; lastMessageKey: string; item: UnifiedItem }>();
 
 const allFilteredRooms = computed<UnifiedItem[]>(() => {
   const rooms = chatStore.sortedRooms;
@@ -466,6 +467,7 @@ const allFilteredRooms = computed<UnifiedItem[]>(() => {
     const decryptionStatus = r.lastMessage?.decryptionStatus ?? "";
     const senderId = r.lastMessage?.senderId ?? "";
     const avatar = r.avatar ?? "";
+    const lastMessageKey = lastMessageRowKey(r);
     const cached = _unifiedItemCache.get(r.id);
     if (cached && cached.ts === ts && cached.unread === r.unreadCount
         && cached.name === r.name && cached.membership === (r.membership ?? "join")
@@ -473,11 +475,12 @@ const allFilteredRooms = computed<UnifiedItem[]>(() => {
         && cached.resolvedName === resolvedName
         && cached.decryptionStatus === decryptionStatus
         && cached.senderId === senderId
-        && cached.avatar === avatar) {
+        && cached.avatar === avatar
+        && cached.lastMessageKey === lastMessageKey) {
       return cached.item;
     }
     const item: UnifiedItem = { ...r, _key: r.id, _title: getRoomTitle(r) };
-    _unifiedItemCache.set(r.id, { ts, unread: r.unreadCount, name: r.name, membership: r.membership ?? "join", msgStatus, preview, resolvedName, decryptionStatus, senderId, avatar, item });
+    _unifiedItemCache.set(r.id, { ts, unread: r.unreadCount, name: r.name, membership: r.membership ?? "join", msgStatus, preview, resolvedName, decryptionStatus, senderId, avatar, lastMessageKey, item });
     return item;
   };
 

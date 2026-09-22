@@ -1,5 +1,28 @@
+import Dexie from "dexie";
 import type { ChatDatabase, LocalRoom, LocalMessageStatus } from "./schema";
-import type { MessageType } from "@/entities/chat/model/types";
+import { MessageType } from "@/entities/chat/model/types";
+
+/**
+ * The row an `updating` hook is about to store. Dexie reports a nested object's
+ * changes as key paths ("lastMessageCallInfo.missed"), not as the whole object, so
+ * a spread kept the stored call info and added a dotted key beside it: a call
+ * record that followed a call record showed the earlier call in the chat list.
+ * Only the top-level objects a path reaches are copied; the stored row is not touched.
+ */
+function applyRoomModifications(obj: LocalRoom, mods: object): LocalRoom {
+  const updated = { ...obj } as Record<string, unknown>;
+  const copied = new Set<string>();
+  for (const [keyPath, value] of Object.entries(mods)) {
+    const head = keyPath.split(".", 1)[0];
+    if (head !== keyPath && !copied.has(head)) {
+      updated[head] = Dexie.deepClone(updated[head]);
+      copied.add(head);
+    }
+    if (value === undefined) Dexie.delByKeyPath(updated, keyPath);
+    else Dexie.setByKeyPath(updated, keyPath, value);
+  }
+  return updated as unknown as LocalRoom;
+}
 
 /** Delta change reported by observeRoomChanges */
 export type RoomChange =
@@ -316,14 +339,17 @@ export class RoomRepository {
       lastMessageSenderId: senderId,
       lastMessageType: type,
       updatedAt: Math.max(timestamp, existing?.updatedAt ?? 0),
-      // New last message = clear old reaction (no double DB write)
-      lastMessageReaction: null,
       lastMessageDecryptionStatus: undefined,
       lastMessageCallInfo: callInfo ?? undefined,
       lastMessageSystemMeta: systemMeta ?? undefined,
     };
     if (eventId !== undefined) {
       changes.lastMessageEventId = eventId;
+    }
+    // A new last message clears the old reaction (no double DB write). The same
+    // event written again — opening the chat re-writes it from history — keeps it.
+    if (eventId === undefined || existing?.lastMessageEventId !== eventId) {
+      changes.lastMessageReaction = null;
     }
     const updated = await this.db.rooms.update(roomId, changes);
     if (updated === 0 && existing) {
@@ -567,8 +593,15 @@ export class RoomRepository {
       unreadCount: (existing.unreadCount ?? 0) + 1,
     };
 
+    // The placeholder replaces the previous last message: drop what belonged to
+    // it, or the row reads as that message (its call preview, its reaction)
+    // until /sync delivers the real event.
+    changes.lastMessageReaction = null;
+    changes.lastMessageCallInfo = undefined;
+    changes.lastMessageSystemMeta = undefined;
+    changes.lastMessageDecryptionStatus = undefined;
+    changes.lastMessageType = messageType ?? MessageType.text;
     if (senderId) changes.lastMessageSenderId = senderId;
-    if (messageType) changes.lastMessageType = messageType;
     // WEE-44 / forta-bugs#785 follow-up: stamp the pushed event_id so that
     // when /sync later delivers the real event, updateLastMessage() can
     // recognize "same event — replace my optimistic placeholder" and bypass
@@ -704,8 +737,7 @@ export class RoomRepository {
     };
 
     const onUpdating = function (this: any, mods: object, primKey: string, obj: LocalRoom) {
-      const updated = { ...obj, ...mods } as LocalRoom;
-      buffer.push({ type: "upsert", room: updated });
+      buffer.push({ type: "upsert", room: applyRoomModifications(obj, mods) });
       scheduleFlush();
     };
 

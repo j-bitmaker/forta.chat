@@ -17,6 +17,7 @@ const showKey = ref(false);
   <div class="flex flex-col gap-1.5">
     <div class="relative">
       <textarea
+        data-testid="private-key-input"
         :value="modelValue"
         :placeholder="t('auth.privateKeyPlaceholder')"
         rows="3"

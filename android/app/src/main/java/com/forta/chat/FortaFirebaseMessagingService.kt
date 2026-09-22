@@ -13,10 +13,16 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.forta.chat.plugins.calls.CallConnectionService
 import com.forta.chat.plugins.calls.CallNotificationConfig
+import com.forta.chat.plugins.calls.CallSlotPolicy
 import com.forta.chat.plugins.calls.CancelledCallStore
+import com.forta.chat.plugins.calls.DisplacedConnectionPolicy
 import com.forta.chat.plugins.calls.IncomingCallActivity
+import com.forta.chat.plugins.calls.IncomingRinger
 import com.forta.chat.plugins.calls.InviteThrottleGuard
 import com.forta.chat.plugins.calls.InviteThrottleTracker
+import com.forta.chat.plugins.calls.RemoteHangupPolicy
+import com.forta.chat.plugins.calls.SecondRingPolicy
+import com.forta.chat.plugins.calls.SelectAnswerPolicy
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
@@ -145,6 +151,22 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
             cacheSenderName(this, sender, senderName)
         }
 
+        // The caller's select_answer is pushed to the device that answered as
+        // well. Nothing below may run for it: the teardown would disconnect the
+        // conversation, and a ringer screen still up would retire the
+        // pending-answer marker a cold-started JS has yet to read. See
+        // SelectAnswerPolicy.
+        if (msgType == "m.call.select_answer") {
+            val connection = CallConnectionService.currentConnection
+            val selectedCallId = data["call_id"] ?: data["event_id"]
+            if (SelectAnswerPolicy.answeredHere(connection?.callId, connection?.state, selectedCallId)) {
+                Log.i(TAG, "select_answer for $selectedCallId: answered on this device, leaving it")
+                forwardToJs(data)
+                return
+            }
+            Log.i(TAG, "select_answer for $selectedCallId: answered on another device")
+        }
+
         // Handle call cancel paths — full cleanup of incoming-call UI state.
         //
         // Three ways an incoming call can end before we answer:
@@ -164,24 +186,67 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
         if (msgType == "m.call.hangup" || msgType == "m.call.reject" ||
             msgType == "m.call.select_answer") {
             Log.d(TAG, "Call ended remotely (type=$msgType), tearing down incoming UI")
-            IncomingCallActivity.dismissIfShowing()
-            com.forta.chat.plugins.calls.CallConnectionService.dismissIncomingCallNotification(this)
+            // Resolved before anything is touched: every surface below and the
+            // slot teardown are keyed on the call that ended. With a push rule
+            // for these events a late hangup for an earlier call can land while
+            // the next one rings; RemoteHangupPolicy leaves that call's surfaces
+            // up. A push without call_id names only its own event and takes
+            // down whatever shows, as before.
+            val endedCallId = data["call_id"] ?: data["event_id"]
+            IncomingCallActivity.dismissIfShowing(endedCallId)
+            if (RemoteHangupPolicy.endsSurface(CallConnectionService.currentConnection?.callId, endedCallId)) {
+                CallConnectionService.dismissIncomingCallNotification(this)
+            }
             // Session 41: Telecom helper above only cancels its own id 9999;
             // the FSI ringer notification posted by showSimpleCallNotification
             // lives at ("call_$roomId".hashCode()) and would keep ringing
             // (setOngoing=true blocks swipe-dismiss) until process death
-            // without an explicit cancel.
-            dismissPushCallNotification(this, roomId)
+            // without an explicit cancel. A redial that already rings in this
+            // room owns that notification now.
+            val ringingInRoom = IncomingRinger.ringingCallId?.takeIf { ringingRoomFor(it) == roomId }
+            if (RemoteHangupPolicy.endsSurface(ringingInRoom, endedCallId)) {
+                dismissPushCallNotification(this, roomId)
+            }
+            var disconnectedConnection = false
             try {
-                com.forta.chat.plugins.calls.CallConnectionService.currentConnection
-                    ?.onDisconnect()
-                com.forta.chat.plugins.calls.CallConnectionService.currentConnection = null
+                // No unconditional `currentConnection = null` after this:
+                // onDisconnect clears the slot itself, identity-guarded, and
+                // this runs on Firebase's thread while Telecom assigns the next
+                // connection on the main one — blanking the slot here can
+                // orphan a call that is only just starting to ring.
+                val connection = com.forta.chat.plugins.calls.CallConnectionService.currentConnection
+                if (connection != null &&
+                    com.forta.chat.plugins.calls.CallSlotPolicy.owns(connection.callId, endedCallId)
+                ) {
+                    connection.onDisconnect()
+                    disconnectedConnection = true
+                } else if (connection != null) {
+                    Log.w(TAG, "hangup for $endedCallId: slot holds ${connection.callId}, leaving it")
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to disconnect currentConnection", e)
             }
+            // onDisconnect already ran the teardown for the connection it ended.
+            // With no connection to end, nothing else on this path releases the
+            // audio session and the foreground service when the WebView is
+            // frozen in the background and never sees the hangup itself.
+            if (!disconnectedConnection) {
+                runCatching {
+                    com.forta.chat.plugins.calls.CallTeardown.endCall(
+                        this,
+                        com.forta.chat.plugins.calls.CallTeardownPolicy.Reason.REMOTE_HANGUP,
+                        endedCallId,
+                    )
+                }.onFailure { Log.w(TAG, "teardown after remote hangup threw", it) }
+            }
+            // JS closes the call screen when it hears the end; a page frozen
+            // behind the screen never does. Hangup only: a select_answer push
+            // names a call this device may just have answered.
+            if (msgType == "m.call.hangup") {
+                com.forta.chat.plugins.calls.CallActivity.scheduleRemoteHangupClose(endedCallId)
+            }
             // End-of-call signal also clears the dedup marker so a
             // genuinely new invite (new call_id) can ring again.
-            val endedCallId = data["call_id"] ?: data["event_id"]
             if (endedCallId != null && lastRingingCallId == endedCallId) {
                 lastRingingCallId = null
             }
@@ -201,6 +266,9 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
 
         // Handle calls
         if (msgType == "m.call.invite") {
+            // Telecom creates this call's connection only after the push is
+            // handled; until then the idle check must not end the process.
+            com.forta.chat.plugins.calls.IdleProcessExit.noteCallPush()
             // Suppress invite retries for a call we're already ringing
             // or answering. Caller clients resend m.call.invite every
             // few seconds until they see our answer/hangup; each retry
@@ -271,6 +339,28 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
                 return
             }
 
+            // A conversation in progress keeps the Telecom slot, and
+            // onCreateIncomingConnection answers this call BUSY: a ringer put up
+            // for it could never be answered and would ring for 30 s over the
+            // live call. JS still gets the push and turns the caller away.
+            val established = CallConnectionService.currentConnection
+                ?.takeUnless { DisplacedConnectionPolicy.mayRelease(it.state) }
+            if (established != null) {
+                Log.i(TAG, "Call $callId while ${established.callId} is established — not ringing")
+                forwardToJs(data)
+                return
+            }
+
+            // Another call still rings on the incoming screen: a caller from
+            // another room must not take it over — see SecondRingPolicy. JS
+            // gets the push and turns the call away, as it already does.
+            val ringingCallId = IncomingRinger.ringingCallId
+            if (!SecondRingPolicy.mayTakeOverRinger(callId, roomId, ringingCallId, ringingRoomFor(ringingCallId))) {
+                Log.i(TAG, "Second call $callId from $roomId while $ringingCallId rings — leaving the screen to that call")
+                forwardToJs(data)
+                return
+            }
+
             lastRingingCallId = callId.takeIf { it.isNotEmpty() }
 
             // Cancel any existing message notification for this room
@@ -301,6 +391,13 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
 
         // Forward to JS for decryption
         forwardToJs(data)
+    }
+
+    /** Room of the call [ringingCallId] rings for, when the Telecom slot holds it; null when unknown. */
+    private fun ringingRoomFor(ringingCallId: String?): String? {
+        if (ringingCallId == null) return null
+        val slot = CallConnectionService.currentConnection ?: return null
+        return slot.roomId.takeIf { CallSlotPolicy.owns(slot.callId, ringingCallId) }
     }
 
     override fun onNewToken(token: String) {

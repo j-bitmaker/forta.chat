@@ -9,7 +9,7 @@ import java.util.regex.Pattern
 class ProcessRunner(
     private val tag: String = "ProcessRunner"
 ) {
-    private var process: Process? = null
+    @Volatile private var process: Process? = null
     private var monitorThread: Thread? = null
 
     interface OutputListener {
@@ -17,13 +17,17 @@ class ProcessRunner(
         fun onErrOutput(line: String)
     }
 
-    fun start(
+    /**
+     * Starts the binary and returns without waiting. The process is in place when this
+     * returns, so a [stop] called right after reaches it.
+     */
+    fun launch(
         binaryPath: String,
         args: List<String>,
         env: Map<String, String> = emptyMap(),
         workDir: File? = null,
         listener: OutputListener? = null
-    ): Int {
+    ): Process {
         val cmd = mutableListOf(binaryPath) + args
         val pb = ProcessBuilder(cmd)
 
@@ -39,9 +43,8 @@ class ProcessRunner(
         pb.redirectErrorStream(false)
 
         Log.d(tag, "Starting: ${cmd.joinToString(" ")}")
-        process = pb.start()
-
-        val proc = process!!
+        val proc = pb.start()
+        process = proc
 
         monitorThread = Thread({
             try {
@@ -71,7 +74,7 @@ class ProcessRunner(
             }
         }, "$tag-stderr").also { it.isDaemon = true; it.start() }
 
-        return proc.waitFor()
+        return proc
     }
 
     fun stop() {

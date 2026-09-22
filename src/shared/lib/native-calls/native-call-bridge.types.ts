@@ -33,6 +33,17 @@ export interface InviteThrottleRecord {
   callId: string;
 }
 
+/**
+ * One audio-stack event recorded during a call, as produced by
+ * CallAudioTimeline.kt. `atMs` is relative to the first entry, so a report
+ * reads as an elapsed-time sequence rather than wall clock.
+ */
+export interface AudioTimelineEntry {
+  atMs: number;
+  event: string;
+  detail: string;
+}
+
 export interface InviteThrottleSnapshot {
   records: InviteThrottleRecord[];
 }
@@ -71,13 +82,41 @@ export interface NativeCallNativePlugin {
    * payload's call_id is often the event_id (not Matrix's content.
    * call_id), so room is the reliable correlation key.
    */
-  getPendingAnswer(): Promise<{ callId: string | null; roomId: string | null }>;
+  getPendingAnswer(): Promise<{
+    callId: string | null;
+    roomId: string | null;
+    /**
+     * Wall-clock ms when native wrote the marker, 0 when there is none.
+     * Absent on iOS, whose adapter reads live CallKit state instead of a
+     * stored marker. See `matchesPendingCallMarker`.
+     */
+    atMs?: number | null;
+  }>;
   /**
    * Check if user tapped Decline before JS was ready. Symmetric to
    * getPendingAnswer — JS consumer calls matrixCall.reject() when the
    * SDK later delivers the invite so the caller stops ringing.
    */
-  getPendingReject(): Promise<{ callId: string | null; roomId: string | null }>;
+  getPendingReject(): Promise<{
+    callId: string | null;
+    roomId: string | null;
+    /** See `getPendingAnswer`. */
+    atMs?: number | null;
+  }>;
+  /**
+   * Retire both markers for a call JS has finished with, so neither can
+   * reach the next invite from that room. Matched on callId OR roomId — a
+   * connection created from a push is keyed by an event_id that never equals
+   * the Matrix callId, so the room is the only key both paths share.
+   */
+  retirePendingMarkers(options: {
+    callId: string;
+    /**
+     * Omitted when another call JS knows about is still live in that room, so
+     * native never widens a retire past what JS can vouch for.
+     */
+    roomId?: string;
+  }): Promise<void>;
   reportOutgoingCall(options: {
     callId: string;
     callerName: string;
@@ -111,6 +150,12 @@ export interface NativeCallNativePlugin {
    */
   forceStopAudio(): Promise<void>;
   /**
+   * Release a self-managed Telecom connection left ringing past its
+   * deadline. Android only — see
+   * {@link NativeCallBridge.releaseStaleRingingCall}.
+   */
+  releaseStaleRingingCall(): Promise<{ released: boolean }>;
+  /**
    * Snapshot of the current AudioManager state. Used by the app-resume
    * watchdog to detect a stuck VoIP audio mode.
    */
@@ -120,6 +165,11 @@ export interface NativeCallNativePlugin {
     isBtScoOn: boolean;
   }>;
   /**
+   * Ordered audio-stack events for the current call — see
+   * {@link NativeCallBridge.getAudioTimeline}.
+   */
+  getAudioTimeline(): Promise<{ entries: AudioTimelineEntry[] }>;
+  /**
    * Session 25 / S3-S4: snapshot of the last N FCM `m.call.invite`
    * records. Surfaced by {@link NativeCallBridge.getInviteThrottleSnapshot}.
    */
@@ -128,13 +178,20 @@ export interface NativeCallNativePlugin {
     event: 'callAnswered',
     cb: (data: { callId: string; roomId?: string }) => void,
   ): Promise<PluginListenerHandle>;
+  /**
+   * `roomId` for the same reason `callAnswered` carries one: a connection
+   * created from a push is keyed by the push payload's `call_id`, which this
+   * homeserver fills with the event_id, so its `callId` can never equal the
+   * SDK's. The room is then the only way to tell an event about the call on
+   * screen from one about a call that already ended.
+   */
   addListener(
     event: 'callDeclined',
-    cb: (data: { callId: string }) => void,
+    cb: (data: { callId: string; roomId?: string }) => void,
   ): Promise<PluginListenerHandle>;
   addListener(
     event: 'callEnded',
-    cb: (data: { callId: string }) => void,
+    cb: (data: { callId: string; roomId?: string }) => void,
   ): Promise<PluginListenerHandle>;
   addListener(
     event: 'audioDevicesChanged',

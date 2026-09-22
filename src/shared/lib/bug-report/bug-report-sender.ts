@@ -200,12 +200,34 @@ async function formatBody(
       '## Call diagnostics',
       '| Field | Value |',
       '|-------|-------|',
+      `| WebRTC engine | ${diag.webrtcEngine} |`,
       `| Audio mode | ${diag.audioMode} |`,
       `| Speaker on | ${diag.isSpeakerOn ? 'yes' : 'no'} |`,
       `| BT SCO on | ${diag.isBtScoOn ? 'yes' : 'no'} |`,
       `| Recent invites | ${diag.inviteHistory.length} |`,
       `| Expired invites | ${diag.expiredInviteCount} |`,
     );
+    // O10: a revoked full-screen intent is the usual reason an incoming
+    // call "did not ring" on Android 14+ sideloads.
+    if (diag.fullScreenIntentAllowed != null) {
+      lines.push(`| Full-screen intent | ${diag.fullScreenIntentAllowed ? 'allowed' : 'REVOKED' } |`);
+    }
+    // O05/O14: relay=0 with a failed ICE state is the "no TURN reachable"
+    // signature; the Tor row explains a peer that saw the reporter's IP.
+    if (diag.ice) {
+      lines.push(
+        `| ICE candidates | relay=${diag.ice.relay} host=${diag.ice.host} srflx=${diag.ice.srflx} (TURN servers: ${diag.ice.turnServers ?? '?'}) |`,
+        `| ICE result | ${diag.ice.lastIceState ?? '?'} via ${diag.ice.selectedPairType ?? 'no pair'} |`,
+      );
+    }
+    if (diag.tor) {
+      const torState = !diag.tor.enabled
+        ? 'off'
+        : diag.tor.connected
+          ? 'on — calls bypass Tor'
+          : 'enabled, not connected';
+      lines.push(`| Tor during calls | ${torState} |`);
+    }
     if (diag.inviteHistory.length > 0) {
       lines.push(
         '',
@@ -219,6 +241,22 @@ async function formatBody(
         lines.push(
           `| ${i + 1} | \`${callIdShort}\` | ${r.deliveryLatencyMs} | ${r.expired ? 'yes' : 'no'} |`,
         );
+      });
+      lines.push('</details>');
+    }
+    // The ordered event list is what distinguishes "never left MODE_RINGTONE"
+    // from "fell back into it after hangup". Collapsed so the report stays
+    // scannable; times are relative to the first event.
+    if (diag.audioTimeline.length > 0) {
+      lines.push(
+        '',
+        '<details><summary>Audio timeline</summary>',
+        '',
+        '| t (ms) | event | detail |',
+        '|--------|-------|--------|',
+      );
+      diag.audioTimeline.forEach((e) => {
+        lines.push(`| ${e.atMs} | ${e.event} | ${e.detail || '—'} |`);
       });
       lines.push('</details>');
     }

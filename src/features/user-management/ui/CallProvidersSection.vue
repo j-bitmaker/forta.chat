@@ -3,11 +3,27 @@ import { computed, ref } from "vue";
 import { Toggle } from "@/shared/ui/toggle";
 import { getChatDb, isChatDbReady, useLiveQuery, type CallProvider } from "@/shared/lib/local-db";
 import { useCallProviderSettings } from "@/features/video-calls";
+import { getWebRTCEngine, setWebRTCEngine } from "@/shared/lib/native-webrtc";
+import { isAndroid } from "@/shared/lib/platform";
 import CallLinkIcon from "@/features/video-calls/ui/CallLinkIcon.vue";
 import CallProviderDialog from "./CallProviderDialog.vue";
 
 const { t } = useI18n();
 const { autoOpenAfterSend, setAutoOpenAfterSend } = useCallProviderSettings();
+
+// Call engine (Android only). The proxy installs once at app start, so a
+// change here only lands on the next launch — surface that instead of
+// letting the user think the switch took effect mid-session.
+const engineAtLoad = getWebRTCEngine();
+const useNativeEngine = ref(engineAtLoad === "native");
+const engineChanged = computed(
+  () => (useNativeEngine.value ? "native" : "webview") !== engineAtLoad,
+);
+
+function onEngineToggle(next: boolean): void {
+  useNativeEngine.value = next;
+  setWebRTCEngine(next ? "native" : "webview");
+}
 
 // Reactive provider list straight from Dexie (local-only).
 const { data: providers } = useLiveQuery<CallProvider[]>(
@@ -87,6 +103,24 @@ const steps = computed(() => [
           <span class="mt-0.5 block text-xs leading-relaxed text-text-on-main-bg-color">{{ t("settings.callProviders.autoOpenHint") }}</span>
         </span>
         <Toggle :model-value="autoOpenAfterSend" @update:model-value="setAutoOpenAfterSend" />
+      </label>
+    </section>
+
+    <!-- Call engine switch. Android only: it gates the native media proxy,
+         which is the layer that exists solely to work around Android OEM
+         WebRTC problems. -->
+    <section v-if="isAndroid" class="space-y-2">
+      <h3 class="text-sm font-medium text-text-color">{{ t("settings.callEngine.title") }}</h3>
+      <label class="flex items-start justify-between gap-4 rounded-xl border border-neutral-grad-0 p-3">
+        <span class="min-w-0">
+          <span class="block text-sm text-text-color">{{ t("settings.callEngine.useNative") }}</span>
+          <span class="mt-0.5 block text-xs leading-relaxed text-text-on-main-bg-color">{{ t("settings.callEngine.hint") }}</span>
+          <span
+            v-if="engineChanged"
+            class="mt-1 block text-xs font-medium text-color-bg-ac"
+          >{{ t("settings.callEngine.restartRequired") }}</span>
+        </span>
+        <Toggle :model-value="useNativeEngine" @update:model-value="onEngineToggle" />
       </label>
     </section>
 

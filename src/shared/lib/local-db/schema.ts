@@ -113,7 +113,9 @@ export interface LocalMessage {
   reactions?: Record<string, { count: number; users: string[]; myEventId?: string }>;
   edited?: boolean;
   forwardedFrom?: { senderId: string; senderName?: string };
-  callInfo?: { callType: "voice" | "video"; missed: boolean; duration?: number };
+  /** `callId` lets the timeline collapse the pair of hangup events a call
+   *  produces when both sides end it at once — see `dedupe-call-events.ts`. */
+  callInfo?: { callType: "voice" | "video"; missed: boolean; duration?: number; callId?: string };
   pollInfo?: PollInfo;
   transferInfo?: TransferInfo;
   callLinkInfo?: CallLinkInfo;   // External call-link card (WEE-57)

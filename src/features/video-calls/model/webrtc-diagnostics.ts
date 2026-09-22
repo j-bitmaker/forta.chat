@@ -37,10 +37,43 @@ const ZERO_AUDIO_ALERT_THRESHOLD = 3; // 3 consecutive polls = 9s
  */
 export type DiagnosticsWarningType =
   | "no_inbound_audio"
-  | "no_outbound_audio";
+  | "no_outbound_audio"
+  /** ICE reached "failed" and not one relay candidate was gathered (O05). */
+  | "ice_failed_no_relay";
 
 export interface DiagnosticsWarningDetail {
   type: DiagnosticsWarningType;
+}
+
+/**
+ * The connectivity facts a bug report needs: whether a TURN relay was ever
+ * offered and used. Counts come from the local candidates this side
+ * gathered, the pair type from the last getStats sample.
+ */
+export interface IceSummary {
+  total: number;
+  relay: number;
+  host: number;
+  srflx: number;
+  /** "local/remote" candidate types of the selected pair, e.g. "relay/srflx". */
+  selectedPairType: string | null;
+  lastIceState: string | null;
+  /** turn:/turns: entries in the connection's configuration; null when unreadable. */
+  turnServers: number | null;
+}
+
+/** turn:/turns: URLs in the configuration; null when the engine does not expose it. */
+function countTurnServers(pc: RTCPeerConnection): number | null {
+  try {
+    const cfg = (pc as { getConfiguration?: () => RTCConfiguration }).getConfiguration?.();
+    if (!cfg) return null;
+    return (cfg.iceServers ?? []).reduce((n, server) => {
+      const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+      return n + urls.filter((u) => typeof u === "string" && /^turns?:/i.test(u)).length;
+    }, 0);
+  } catch {
+    return null;
+  }
 }
 
 class WebRTCDiagnostics extends EventTarget {
@@ -52,6 +85,7 @@ class WebRTCDiagnostics extends EventTarget {
   private zeroSentStreak = 0;
   private zeroRecvStreak = 0;
   private iceCandidatesLog: string[] = [];
+  private turnServers: number | null = null;
   private emittedWarnings: Set<DiagnosticsWarningType> = new Set();
 
   // Marker placed on a PC we've already wrapped, so a second attach on
@@ -78,6 +112,7 @@ class WebRTCDiagnostics extends EventTarget {
     this.zeroSentStreak = 0;
     this.zeroRecvStreak = 0;
     this.iceCandidatesLog = [];
+    this.turnServers = countTurnServers(pc);
     // New attach == new call; allow each warning type to fire again.
     this.emittedWarnings.clear();
 
@@ -89,6 +124,11 @@ class WebRTCDiagnostics extends EventTarget {
     const origIce = pc.oniceconnectionstatechange;
     pc.oniceconnectionstatechange = (ev: Event) => {
       console.warn(`[WebRTC-Diag] ICE connection: ${pc.iceConnectionState}`);
+      // A failure with no relay candidate at all is the "no TURN" signature:
+      // either the homeserver offered none or the network blocked it.
+      if (pc.iceConnectionState === "failed" && this.countCandidates("relay") === 0) {
+        this.emitWarning("ice_failed_no_relay");
+      }
       origIce?.call(pc, ev);
     };
 
@@ -171,14 +211,35 @@ class WebRTCDiagnostics extends EventTarget {
       }
     }
 
-    lines.push(`ICE candidates: ${this.iceCandidatesLog.length}`);
-    if (this.iceCandidatesLog.length > 0) {
-      const relay = this.iceCandidatesLog.filter(c => c.startsWith("relay")).length;
-      const host = this.iceCandidatesLog.filter(c => c.startsWith("host")).length;
-      lines.push(`  relay=${relay} host=${host} srflx=${this.iceCandidatesLog.length - relay - host}`);
+    const ice = this.getIceSummary();
+    lines.push(`ICE candidates: ${ice.total}`);
+    if (ice.total > 0) {
+      lines.push(`  relay=${ice.relay} host=${ice.host} srflx=${ice.srflx}`);
     }
 
     return { entries: [...this.entries], summary: lines.join("\n") };
+  }
+
+  /** Structured counterpart of the summary's ICE lines, for the bug report. */
+  getIceSummary(): IceSummary {
+    const last = this.entries[this.entries.length - 1];
+    const relay = this.countCandidates("relay");
+    const host = this.countCandidates("host");
+    const total = this.iceCandidatesLog.length;
+    const hasPair = last != null && (last.localCandidateType != null || last.remoteCandidateType != null);
+    return {
+      total,
+      relay,
+      host,
+      srflx: total - relay - host,
+      selectedPairType: hasPair ? `${last.localCandidateType ?? "?"}/${last.remoteCandidateType ?? "?"}` : null,
+      lastIceState: last?.iceConnectionState ?? null,
+      turnServers: this.turnServers,
+    };
+  }
+
+  private countCandidates(type: "relay" | "host"): number {
+    return this.iceCandidatesLog.filter((c) => c.startsWith(type)).length;
   }
 
   private async poll(): Promise<void> {

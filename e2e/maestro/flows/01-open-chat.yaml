@@ -1,0 +1,22 @@
+appId: com.forta.chat
+name: Open a chat from the list
+tags:
+  - auth
+---
+- clearState
+- launchApp
+- runFlow: ../subflows/dismiss-permissions.yaml
+- runFlow: ../subflows/login.yaml
+
+# The chat list is populated by the first Matrix sync, which on a cleared
+# account takes minutes — longer than login itself.
+- extendedWaitUntil:
+    visible: ".*${MAESTRO_E2E_TARGET_ROOM}.*"
+    timeout: 300000
+- tapOn: ".*${MAESTRO_E2E_TARGET_ROOM}.*"
+
+# The back button is the one landmark every opened room has: a channel is
+# read-only and shows no composer, and a fresh chat shows no messages.
+- extendedWaitUntil:
+    visible: "Go back"
+    timeout: 30000

@@ -2,17 +2,24 @@ package com.forta.chat
 
 import android.app.KeyguardManager
 import android.content.Context
+import android.content.Intent
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
+import android.util.Log
 import android.view.View
 import android.view.WindowManager
+import android.webkit.RenderProcessGoneDetail
+import android.webkit.WebView
+import android.view.ViewGroup
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import android.view.View.LAYOUT_DIRECTION_LTR
 import com.getcapacitor.BridgeActivity
+import com.getcapacitor.WebViewListener
 import com.forta.chat.plugins.tor.TorPlugin
 import com.forta.chat.plugins.calls.CallPlugin
 import com.forta.chat.plugins.filetransfer.TorFilePlugin
@@ -32,7 +39,87 @@ import kotlinx.coroutines.launch
 
 class MainActivity : BridgeActivity() {
 
+    companion object {
+        private const val TAG = "MainActivity"
+
+        /**
+         * Monotonic stamp of the last renderer-death recovery, shared by every
+         * activity instance in this process: an instance field would be reset by
+         * the very [recreate] it is meant to rate-limit.
+         */
+        @Volatile
+        private var lastRecoveryAtMs: Long? = null
+    }
+
     private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    /**
+     * Keeps a dead render process from taking the whole app down with it.
+     *
+     * Capacitor asks its `WebViewListener`s and, with none registered, answers
+     * Android's `onRenderProcessGone` with `false` — "not handled", i.e. kill the
+     * process. See [WebViewRecoveryPolicy] for why that is the wrong answer after
+     * a call-time swipe-away, and what each decision means.
+     */
+    private val renderProcessRecovery = object : WebViewListener() {
+        override fun onRenderProcessGone(
+            webView: WebView?,
+            detail: RenderProcessGoneDetail?,
+        ): Boolean {
+            val decision = WebViewRecoveryPolicy.decide(
+                isCurrentWebView = webView != null && webView === bridge?.webView,
+                activityAlive = !isFinishing && !isDestroyed,
+                msSinceLastRecovery = lastRecoveryAtMs?.let { SystemClock.elapsedRealtime() - it },
+            )
+            Log.w(
+                TAG,
+                "WebView render process gone (didCrash=" +
+                    "${runCatching { detail?.didCrash() }.getOrNull()}) -> $decision",
+            )
+            // Android forbids *using* a WebView whose renderer is gone. Who
+            // destroys it depends on whether anyone else still will.
+            return when (decision) {
+                RenderProcessRecovery.RECREATE_ACTIVITY -> {
+                    lastRecoveryAtMs = SystemClock.elapsedRealtime()
+                    // Deliberately not destroyed here. recreate() tears this
+                    // activity down through onDetachedFromWindow, and Capacitor's
+                    // Bridge destroys the WebView there with no guard of its own —
+                    // destroying it first would make that a second destroy. It
+                    // would also leave every plugin's notifyListeners posting into
+                    // a destroyed view for the rest of the teardown, and
+                    // Capacitor's legacy reply path does that outside any
+                    // try/catch. A live WebView with a dead renderer merely
+                    // swallows those; a destroyed one throws.
+                    webView?.removeCallbacks(reinjectAll)
+                    runCatching { recreate() }
+                        .onFailure { Log.w(TAG, "recreate() after renderer death threw", it) }
+                    true
+                }
+                RenderProcessRecovery.DISCARD_STALE -> {
+                    // The activity that owned this one is already gone, so nothing
+                    // else is coming to clean it up.
+                    discardDeadWebView(webView)
+                    true
+                }
+                RenderProcessRecovery.LET_SYSTEM_KILL -> {
+                    discardDeadWebView(webView)
+                    false
+                }
+            }
+        }
+    }
+
+    private fun discardDeadWebView(webView: WebView?) {
+        if (webView == null) return
+        runCatching {
+            // Drop our own pending work first. injectAllCssVars leaves a 500 ms
+            // re-inject queued on this very view, and letting it land on a
+            // destroyed WebView would turn a recovered crash into a fresh one.
+            webView.removeCallbacks(reinjectAll)
+            (webView.parent as? ViewGroup)?.removeView(webView)
+            webView.destroy()
+        }.onFailure { Log.w(TAG, "discarding the dead WebView threw", it) }
+    }
 
     // Cached inset values (dp) for re-injection after page loads
     private var insetTop = 0
@@ -49,6 +136,49 @@ class MainActivity : BridgeActivity() {
     // WebView internal resets.
     private val reinjectAll: Runnable = Runnable { injectAllCssVars() }
 
+    /**
+     * A launch (or re-launch: this activity is singleTask, so a warm process
+     * gets onNewIntent instead of onCreate) from the ringer's Accept tap may
+     * find the device locked. Without these flags the WebView host sits
+     * behind the keyguard, Android marks it stopped, the WebView throttles
+     * its JS — and the Matrix answer never completes until the user unlocks
+     * by hand ("Connecting…" forever after a lock-screen accept).
+     */
+    private fun liftKeyguardForCallAccept(launchIntent: Intent?) {
+        val cameFromCallAccept = launchIntent?.getBooleanExtra("push_call_accept", false) == true
+        if (!cameFromCallAccept) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                    WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD,
+            )
+        }
+        // Ask keyguard to dismiss if device is locked without a PIN
+        // (or to prompt the user otherwise). Without this the WebView
+        // is often kept in the onStop state when the OS deems the
+        // lock overlay opaque — JS frozen, call hangs in
+        // "Connecting…" forever.
+        try {
+            val km = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+            if (km?.isKeyguardLocked == true && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                km.requestDismissKeyguard(this, null)
+            }
+        } catch (_: Throwable) {
+            // Best-effort — keyguard dismissal is not critical if the
+            // user is willing to unlock manually.
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        liftKeyguardForCallAccept(intent)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         registerPlugin(TorPlugin::class.java)
         registerPlugin(CallPlugin::class.java)
@@ -63,45 +193,13 @@ class MainActivity : BridgeActivity() {
         registerPlugin(SaveMediaPlugin::class.java)
         registerPlugin(ModelDownloadPlugin::class.java)
         registerPlugin(AiInferencePlugin::class.java)
+        // Must precede super.onCreate: that is where the Bridge — and with it
+        // the WebViewClient that consults these listeners — is built.
+        bridgeBuilder.addWebViewListener(renderProcessRecovery)
         super.onCreate(savedInstanceState)
 
-        // When this activity is launched from the push-call ringer's
-        // Accept tap (IncomingCallActivity → push_call_accept=true), the
-        // device may still be locked. Without the next few flags the
-        // WebView host activity would sit BEHIND the keyguard, Android
-        // would immediately mark it stopped, and the WebView would
-        // throttle its JS — so our Matrix `answerCall()` flow never
-        // completes until the user manually unlocks. Lifting the
-        // keyguard for this specific launch lets the call actually
-        // answer from the lock screen.
-        val cameFromCallAccept = intent?.getBooleanExtra("push_call_accept", false) == true
-        if (cameFromCallAccept) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-                setShowWhenLocked(true)
-                setTurnScreenOn(true)
-            } else {
-                @Suppress("DEPRECATION")
-                window.addFlags(
-                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-                        WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD,
-                )
-            }
-            // Ask keyguard to dismiss if device is locked without a PIN
-            // (or to prompt the user otherwise). Without this the WebView
-            // is often kept in the onStop state when the OS deems the
-            // lock overlay opaque — JS frozen, call hangs in
-            // "Connecting…" forever.
-            try {
-                val km = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
-                if (km?.isKeyguardLocked == true && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-                    km.requestDismissKeyguard(this, null)
-                }
-            } catch (_: Throwable) {
-                // Best-effort — keyguard dismissal is not critical if the
-                // user is willing to unlock manually.
-            }
-        }
+        // Lock-screen accept: see liftKeyguardForCallAccept.
+        liftKeyguardForCallAccept(intent)
 
         // BUG-03: Force LTR layout direction on the root view.
         // Prevents Android WebView from inheriting system RTL direction
@@ -227,6 +325,8 @@ class MainActivity : BridgeActivity() {
         val js = """
             (function() {
                 var d = document.documentElement;
+                // Cold start: insets can arrive before the page has a document.
+                if (!d) return;
                 var s = d.style;
                 s.setProperty('--safe-area-inset-top',    '${insetTop}px');
                 s.setProperty('--safe-area-inset-bottom', '${effectiveBottom}px');
@@ -238,7 +338,12 @@ class MainActivity : BridgeActivity() {
             })();
         """.trimIndent()
 
-        webView.post { if (!isFinishing && !isDestroyed) webView.evaluateJavascript(js, null) }
+        webView.post {
+            if (isFinishing || isDestroyed) return@post
+            // The WebView may have been destroyed by the renderer-death
+            // recovery between this post and its delivery.
+            runCatching { webView.evaluateJavascript(js, null) }
+        }
         // 500ms safety-net re-inject: some OEM WebViews (Xiaomi/MIUI,
         // Infinix, MOBI) do not reliably re-dispatch window insets after
         // IME toggles or internal WebView resets. This backup re-inject
