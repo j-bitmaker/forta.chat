@@ -40,12 +40,19 @@
 браузера, в котором выполнен вход. В новой сессии их придётся создать заново; их устройство описано в
 `forta-chat-samsung-bench.md` и в записях `manual-verification.md` («Скрипт …»).
 
-- **Samsung SM-A528B**, serial `R5CT316HB2T`, Android 14. Forta — аккаунт `Testtest11223344`. На нём же стоит
-  Bastyon 1.8.124 тем же аккаунтом (микрофон ему разрешён) — для жалоб группы E.
+- **Samsung SM-A528B**, serial `R5CT316HB2T`, Android 14. Forta — с 2026-09-23 аккаунт **TEST2** (`test3232883282`,
+  адрес `P8dNk3RL…`): сессию `Testtest11223344` стёр прогон E2E (`clearState` на первом попавшемся устройстве). Комната
+  с TEST1 — `!KchsUDqhsdPwFUXfwd:matrix.pocketnet.app`, оба правила пушей на TEST2 встали, первый звонок TEST1 → TEST2
+  прошёл (`bench-test2-1`: ответ, `select_answer … answered on this device`, отбой). Bastyon 1.8.124 на нём по-прежнему
+  под `Testtest11223344` — для сценариев группы E Forta надо вернуть в тот же аккаунт (вход — владелец).
 - **Pixel 9**, serial `57150DLAQ001B6`, Android 17. Forta — аккаунт `test1122334455667788`. Сейчас отключён.
 - **Веб**: headless Chrome через Playwright (`channel: 'chrome'`) с постоянным профилем. Звонящий — TEST1
-  (`test3823818`); третий аккаунт — `test23438111`. **Вход в веб делает владелец**: скрипт открывает видимое окно
-  forta.chat и ждёт `matrixReady`, ключ вводит человек.
+  (`test3823818`); третий аккаунт — `test23438111`. **Вход в веб делает владелец**: `web/open-login.mjs` открывает
+  видимое окно forta.chat и ждёт `matrixReady`, ключ вводит человек. Профиль и `node_modules` живут в scratchpad
+  **старой** сессии (`c0c9244b…/scratchpad/web/`); ночная очистка стирает файлы старше ~3 дней — 2026-09-23 она
+  выбила и сессию, и Playwright (переустановлен `npm install playwright@1`), профиль восстановлен входом владельца.
+- Звонящий ищет собеседника по имени в списке: для Samsung в TEST2 это `PEER_NAME=test3232883282`
+  (`web/call-peer.mjs`); настройки стенда — `scratchpad/bench.env`.
 - Общие комнаты: Samsung ↔ TEST1 `!XfcsFwyJkEXLRTnPzc:matrix.pocketnet.app`; Samsung ↔ Pixel
   `!YJTutyRoEKqcowPZRk:matrix.pocketnet.app`. Комнату открывать через `chatStore.setActiveRoom(id)` по CDP, а не
   кликом по имени: список Samsung имя Pixel не показывает.
