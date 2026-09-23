@@ -3667,9 +3667,9 @@ lines-and-columns@^1.1.6:
   resolved "https://registry.npmjs.org/lines-and-columns/-/lines-and-columns-1.2.4.tgz"
   integrity sha512-7ylylesZQ/PV29jhEDl3Ufjo6ZX7gCqJr5F7PKrqc93v7fzSymt1BpwEU8nAUXs8qzzvqhbjhK5QZg6Mt/HkBg==
 
-llama-cpp-pro@>=0.2.4, "llama-cpp-pro@github:maxgithubprofile/llama-cpp-pro#v0.2.4-local-ai.1":
+llama-cpp-pro@>=0.2.4, "llama-cpp-pro@github:j-bitmaker/llama-cpp-pro#v0.2.4-local-ai.2":
   version "0.2.4"
-  resolved "git+ssh://git@github.com/maxgithubprofile/llama-cpp-pro.git#fa59c356cdf7fd9a2601387a3c072ec474daeeb4"
+  resolved "git+ssh://git@github.com/j-bitmaker/llama-cpp-pro.git#0bebed37aae78aa39c2f7ccbc5926939dae0d7ca"
 
 "local-ai@github:maxgithubprofile/local-ai#76697733968f19298143115fe9e247ca348ed269":
   version "0.0.0"
