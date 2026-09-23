@@ -338,6 +338,50 @@
     этого значения отчёт строит строку `| Full-screen intent | REVOKED |` (`collect-call-diagnostics.ts`, формат строки —
     `bug-report-sender.test.ts`).
 - Статус: ☐ Pixel: шаги 1–3 прошли 2026-09-17; Samsung: шаги 1 и 3 прошли 2026-09-14, шаг 2 не проверен
+### iOS: нативные плагины приложения зарегистрированы в Capacitor 8
+- Коммит: см. `git log -1 -- ios/App/App/MainViewController.swift`
+- Почему нужен человек: регистрация плагинов происходит только в живом
+  `CAPBridgeViewController` на устройстве или в симуляторе; тестов на Swift в
+  проекте нет. До правки все четыре плагина из таргета App (`IOSCallAudio`,
+  `IOSVoIPPush`, `PushData`, `TorFile`) отвечали JS `UNIMPLEMENTED`: Capacitor 8
+  регистрирует только классы из `packageClassList` (npm-плагины), а макрос
+  `CAP_PLUGIN` сам ничего не регистрирует. Следствия: микрофон ни разу не
+  запрашивался у iOS и принятый на CallKit звонок тут же отклонялся с
+  «доступ к микрофону не разрешён»; VoIP-токен не доходил до JS.
+- На чём: iPhone XR, iOS 17.3.1, сборка из Xcode 16.4.
+- Шаги:
+  1. Запустить с консолью: `xcrun devicectl device process launch --console
+     --terminate-existing --device <id> com.forta.chat`. В консоли не должно быть
+     `{"code":"UNIMPLEMENTED"}` для `IOSCallAudio`, `PushData`, `IOSVoIPPush`.
+  2. Входящий звонок с веба → принять на CallKit. Ожидается: системный запрос
+     микрофона (первый раз), затем `answerCall: SDK call.answer resolved`,
+     `ICE connection: connected`; звук с веба слышен на iPhone.
+  3. В Настройки → Forta Chat появился пункт «Микрофон».
+- Проверено 2026-09-23: шаги 1–3 прошли (8 звонков; `requestRecordPermission`
+  → `{"granted":true}`, ICE connected, звук с веба на iPhone). **Открыто и не
+  относится к этой правке:** микрофон iPhone молчит — WebKit переводит захват в
+  `muted` через 0,4 с после старта (`captureStateChanged 2048 → 8192`), 0 байт
+  исходящего аудио; не зависит от активации нашей `AVAudioSession`. Разбор —
+  в `docs/plans/2026-09-18-calls-handoff.md`, раздел «iPhone».
+- Статус: ☑ проверено 2026-09-23 (кроме VoIP-токена — ждёт записи про VoIP-push)
+
+### iOS: категория аудиосессии выставлена до ответа CallKit и совместима с WebKit
+- Коммит: см. `git log -1 -- ios/App/App/IOSCallAudioPlugin.swift`
+- Почему нужен человек: поведение `audiomxd` при активации сессии CallKit видно
+  только в системном логе устройства. До правки активация сессии приложения
+  (CallKit по нажатию «Принять» — с категорией по умолчанию, или наша
+  `start()` без `.mixWithOthers`) прерывала сессию процесса WebKit GPU
+  (`cmsInterruptSession … INTERRUPTING … com.apple.WebKit`, 19:35:26 в логе
+  2026-09-23), и та оставалась неактивной до конца звонка.
+- На чём: iPhone XR, `idevicesyslog` во время звонка.
+- Шаги: принять звонок на CallKit; в логе `audiomxd(MediaExperience)` для
+  `App(<pid>)` активация должна быть `[Mixable]`, а для `com.apple.WebKit(<pid>)`
+  — `Skipping begin interruption … insufficient priority`, без `INTERRUPTING`
+  сессии WebKit.
+- Проверено 2026-09-23: так и есть (звонки 6 и 8). Само исходящее аудио это не
+  вернуло — см. открытый вопрос выше.
+- Статус: ☑ проверено 2026-09-23
+
 ### iOS: VoIP-push сообщает CallKit о звонке до `completion()`
 - Коммит: см. `git log -1 -- ios/App/App/IOSVoIPPushPlugin.swift`
 - Почему нужен человек: PushKit-пуш нельзя отправить ни в симулятор (`simctl push`
