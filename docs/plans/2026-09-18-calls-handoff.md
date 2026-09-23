@@ -88,8 +88,14 @@ TEST3 (`test23438111`). `libimobiledevice` на Mac стоит (`ideviceinfo`, `
 звук в обе стороны, владелец слышал. Особенность: спящая вкладка Safari (≈3 мин без экрана) звонки не принимает.
 Подробности — `docs/call-bugs-needing-you.md`, раздел «iPhone, веб-версия в Safari».
 
-**Trek Б (нативная запись «iOS: метка получает возраст…») — не начат, сборка на устройство не доходит.** Что уже
-сделано и что осталось, по порядку стен:
+**Trek Б (нативная запись «iOS: метка получает возраст…») — не начат, до устройства не хватает только подписи.**
+Днём 2026-09-23: стена 4 закрыта (plist на месте), сборка под **симулятор iPhone 16 проходит целиком** (`xcodebuild
+-project ios/App/App.xcodeproj -scheme App -destination 'platform=iOS Simulator,name=iPhone 16' build`, подписи не
+надо), приложение стартует в симуляторе, Firebase Messaging поднимается. Попутно найден и исправлен дефект, который
+ломал шаг «убить приложение → звонок → принять на CallKit» (`6f79bccc`): нативный VoIP-обработчик не сообщал CallKit о
+звонке до `completion()` — запись «iOS: VoIP-push сообщает CallKit о звонке до `completion()`» в
+`manual-verification.md`, проверяется только на XR. `xcrun simctl` / `devicectl` из песочницы Bash не работают
+(CoreSimulator/CoreDevice XPC) — запускать вне её. Что сделано и что осталось, по порядку стен:
 1. Xcode 16.4 стоит в `/Applications/Xcode.app` (15.4 → `/Applications/Xcode-15.4.app`), `xcode-select` на нём,
    лицензия принята, iOS 18.5 SDK скачан. Xcode 15.4 проект не собирает (SQLCipher.swift 4.14+ требует Swift 6).
 2. Разрешение пакетов починено в репо (`74993ced`): `scripts/fix-ios-spm-products.mjs` после `cap sync ios`
@@ -99,17 +105,18 @@ TEST3 (`test23438111`). `libimobiledevice` на Mac стоит (`ideviceinfo`, `
 3. **Форк не компилируется:** `node_modules/llama-cpp-pro/ios/Sources/LlamaCppCapacitor/LlamaCpp.swift:459` —
    `queryGpuInfo(nativeContextId)` вместо `queryGpuInfo(contextId:)`. В этой сессии поправлено **локально в
    node_modules** (не в git; оригинал в scratchpad сессии, `npm install` откатит). Настоящая починка — в форке
-   `maxgithubprofile/llama-cpp-pro` (v0.2.4-local-ai.1), решение владельца.
-4. **Не хватает `ios/App/App/GoogleService-Info.plist`** — конфиг Firebase iOS, в git его нет намеренно
-   (`docs/plans/ios/SECRETS-MANIFEST.md` §D): взять из 1Password «Forta» → `Forta iOS Firebase Config`. Заглушку не
-   класть: `FirebaseApp.configure()` в `AppDelegate` без условий, приложение упадёт на старте. Владелец обещал
-   положить.
-5. **Нет сертификата подписи**: `security find-identity -v -p codesigning` → 0, в Xcode 16.4 0 команд. Проект —
+   `maxgithubprofile/llama-cpp-pro`: проверено 2026-09-23, `main` = тег `v0.2.4-local-ai.1` = `fa59c356`, строка там
+   всё ещё без метки — одна строка `queryGpuInfo(contextId: nativeContextId)` + новый тег + `package.json`. Права
+   владельца на пуш в форк не проверены (`gh api` из песочницы режется TLS-прокси).
+4. ~~`GoogleService-Info.plist`~~ — **положен 2026-09-23** (`BUNDLE_ID` = `com.forta.chat`, `PROJECT_ID` =
+   `forta-chat`, git игнорирует). Источник на будущее: 1Password «Forta» → `Forta iOS Firebase Config`; заглушку не
+   класть — `FirebaseApp.configure()` в `AppDelegate` без условий.
+5. **Нет сертификата подписи** (проверено 14:10 2026-09-23): `security find-identity -v -p codesigning` → 0. Проект —
    автоподпись, Team `Y5JW9JU787`. Владельцу: Xcode → Settings → Accounts → «+» Apple ID → Manage Certificates →
    «+» Apple Development. Профили для App и двух расширений (NotificationService, ShareExtension) Xcode создаст при
    первой сборке на устройство.
 
-Когда 4 и 5 будут: `npm run cap:build:ios`, затем сборка на XR
+Когда 5 будет: `npm run cap:build:ios`, затем сборка на XR
 `xcodebuild -project ios/App/App.xcodeproj -scheme App -destination 'id=00008020-001104C43A88003A' -allowProvisioningUpdates build`
 и установка `xcrun devicectl device install app --device <coredevice id> <путь .app>`. Вход в аккаунт на iPhone —
 владелец (TEST3 свободен, если выйти из него в Safari; TEST1 — веб на Mac, TEST2 — Samsung). Шаги записи: звонок с
