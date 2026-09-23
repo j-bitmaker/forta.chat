@@ -74,6 +74,53 @@
 - #809 п. 1 (уведомление Forta поверх карточки звонка Bastyon) — оставить как есть (2026-09-18).
 - Три записи о push-путях с несравнимыми id закрыты как недостижимые на этом homeserver.
 
+## iPhone — с чего продолжать (2026-09-23)
+
+Состояние на конец сессии, чтобы не проверять заново. Читать вместе с памятью `forta-chat-ios-bench.md`.
+
+**Аппарат.** iPhone XR (iPhone11,8), iOS 17.3.1, coredevice `8C0187A2-3F6F-5733-93F7-DF8B044FE947`, udid
+`00008020-001104C43A88003A`, спарен, Developer Mode **включён** (проверять `xcrun devicectl device info details
+--device <id>` — поле `developerModeStatus`; отвечает устройство, не память). Forta на нём не стоит. В Safari вошёл
+TEST3 (`test23438111`). `libimobiledevice` на Mac стоит (`ideviceinfo`, `idevicesyslog` — фильтр `-m` без
+альтернатив, писать сырой лог и grep'ать).
+
+**Trek А (Safari, отчёты #538/#1276) — закрыт.** Звонок веб TEST1 → Safari: входящий показан, «Принять», микрофон,
+звук в обе стороны, владелец слышал. Особенность: спящая вкладка Safari (≈3 мин без экрана) звонки не принимает.
+Подробности — `docs/call-bugs-needing-you.md`, раздел «iPhone, веб-версия в Safari».
+
+**Trek Б (нативная запись «iOS: метка получает возраст…») — не начат, сборка на устройство не доходит.** Что уже
+сделано и что осталось, по порядку стен:
+1. Xcode 16.4 стоит в `/Applications/Xcode.app` (15.4 → `/Applications/Xcode-15.4.app`), `xcode-select` на нём,
+   лицензия принята, iOS 18.5 SDK скачан. Xcode 15.4 проект не собирает (SQLCipher.swift 4.14+ требует Swift 6).
+2. Разрешение пакетов починено в репо (`74993ced`): `scripts/fix-ios-spm-products.mjs` после `cap sync ios`
+   подставляет реальное имя продукта форка `llama-cpp-pro` (`LlamaCppCapacitor` вместо `LlamaCppPro`). Lock-файл
+   пересобран Xcode 16.4 и закоммичен. Реальную ошибку SPM xcodebuild прячет — смотреть `swift package resolve` в
+   `ios/App/CapApp-SPM` или `-verbose`.
+3. **Форк не компилируется:** `node_modules/llama-cpp-pro/ios/Sources/LlamaCppCapacitor/LlamaCpp.swift:459` —
+   `queryGpuInfo(nativeContextId)` вместо `queryGpuInfo(contextId:)`. В этой сессии поправлено **локально в
+   node_modules** (не в git; оригинал в scratchpad сессии, `npm install` откатит). Настоящая починка — в форке
+   `maxgithubprofile/llama-cpp-pro` (v0.2.4-local-ai.1), решение владельца.
+4. **Не хватает `ios/App/App/GoogleService-Info.plist`** — конфиг Firebase iOS, в git его нет намеренно
+   (`docs/plans/ios/SECRETS-MANIFEST.md` §D): взять из 1Password «Forta» → `Forta iOS Firebase Config`. Заглушку не
+   класть: `FirebaseApp.configure()` в `AppDelegate` без условий, приложение упадёт на старте. Владелец обещал
+   положить.
+5. **Нет сертификата подписи**: `security find-identity -v -p codesigning` → 0, в Xcode 16.4 0 команд. Проект —
+   автоподпись, Team `Y5JW9JU787`. Владельцу: Xcode → Settings → Accounts → «+» Apple ID → Manage Certificates →
+   «+» Apple Development. Профили для App и двух расширений (NotificationService, ShareExtension) Xcode создаст при
+   первой сборке на устройство.
+
+Когда 4 и 5 будут: `npm run cap:build:ios`, затем сборка на XR
+`xcodebuild -project ios/App/App.xcodeproj -scheme App -destination 'id=00008020-001104C43A88003A' -allowProvisioningUpdates build`
+и установка `xcrun devicectl device install app --device <coredevice id> <путь .app>`. Вход в аккаунт на iPhone —
+владелец (TEST3 свободен, если выйти из него в Safari; TEST1 — веб на Mac, TEST2 — Samsung). Шаги записи: звонок с
+Samsung → отклонить на CallKit → через >60 с позвонить из той же комнаты → должен зазвонить; убить приложение → звонок →
+принять на CallKit. Логи — `idevicesyslog`.
+
+**Прочее.** На Pixel остался вход в TEST3 — выйти, иначе два клиента делят аккаунт. Стенд звонков: Samsung = TEST2
+(`test3232883282`), веб-профиль TEST1 в scratchpad старой сессии `c0c9244b…/scratchpad/web/` (ночная очистка
+убивает его раз в ~3 дня; вход через `open-login.mjs`, ключ вводит владелец; там же `call-peer.mjs`,
+`reject-probe.mjs`, `probe-login.mjs`).
+
 ## Открытые задачи
 
 ### Нужно решение владельца
