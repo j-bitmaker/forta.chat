@@ -147,6 +147,23 @@ HasActiveAudioCaptureDevice, 8192 = HasMutedAudioCaptureDevice), обратно 
 3. Настройки WKWebView через `MainViewController.webViewConfiguration(for:)` / `WKPreferences` — искать флаги про
    capture/visibility/interruption (перечисление `_experimentalFeatures`/`_internalDebugFeatures` на Mac).
 4. Сравнить с Safari: там захват в том же WebKit GPU-процессе не мьютится.
+**Ночь 24.09, что дал шаг 1:** исходящий звонок с iPhone (Forta открыта, CallKit не участвует) — **микрофон работает**,
+веб получил 39 КБ за 27 с (`runs-ios10-answer.jsonl`). Значит захват WKWebView исправен, мьют — только на пути
+ответа через CallKit. Попробован возврат захвата из нативного кода: `bridge?.webView?.setMicrophoneCaptureState(.active)`
+из `IOSCallAudio.start()` с повторами 0/0,5/1,5/3/6 с — `microphoneCaptureState` был `.muted`, вызов прошёл и
+дальше состояние читалось как активное, **но RTP по-прежнему 0 байт** (звонок 12, консоль `xr-console-6.log`). Код не
+закоммичен (не помогает). Попутно: один звонок сорвался на `PUT m.call.answer` → `fetch failed: Load failed`
+(сетевой процесс WebKit в момент переключения на экран вызова; SDK ответ не повторяет — отдельная задача);
+`voipTokenReceived` в консоли ни разу не появился — VoIP-пуш и пробуждение свёрнутого приложения не проверены;
+без открытого приложения входящий вызов до iPhone не доходит. Что дальше по микрофону, по порядку: (а) после
+«Принять» на CallKit сразу открыть Forta (иконка на экране вызова) — если байты пойдут, WebKit ждёт активности
+приложения, и лечить надо тем, чтобы CallKit-ответ выводил приложение на передний план; (б) в JS после
+`pushLocalFeed` логировать `track.muted/enabled/readyState` и `onmute/onunmute`, и по `appStateChange → active`
+делать `getUserMedia` заново + `sender.replaceTrack` — обходной путь, если (а) подтвердится; (в) сравнить
+`WKPreferences` (`_experimentalFeatures`/`_internalDebugFeatures`, ключи про capture/visibility) — перечисление на Mac
+через `swiftc` не собралось, доделать. `idevicesyslog` умирает вместе с обрывом соединения `devicectl` — проверять
+`tail -1` файла перед каждым звонком и перезапускать.
+
 Инструменты: консоль JS — `xcrun devicectl device process launch --console --terminate-existing --device <id>
 com.forta.chat > файл &` (Capacitor выводит `⚡️ [log]`), системный лог — `idevicesyslog -u <udid> > файл &` (очень
 шумный, grep по `App(WebKit)`, `audiomxd(MediaExperience)`, `callservicesd`). Режим «Не беспокоить» на XR должен
