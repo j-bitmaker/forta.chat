@@ -130,6 +130,11 @@
       собирает**: `@capacitor-community/sqlite` 8.1.1 тянет `SQLCipher.swift` 4.14+, а все его теги 4.14.0–4.19.0
       требуют `swift-tools-version: 6.0` (Swift 5.10 в 15.4 их не читает); пин не поможет. Нужен **Xcode 16+**, как и
       сказано в `docs/ios-local-build.md`. `libimobiledevice` на Mac поставлен (`idevicesyslog`).
+      **Дальше 2026-09-23:** владелец поставил Xcode 16.4 (`/Applications/Xcode.app`, 15.4 → `Xcode-15.4.app`,
+      `xcode-select` переключён), iOS 18.5 SDK скачан (`xcodebuild -downloadPlatform iOS`, Apple ID не нужен). Вторая
+      стена — форк `llama-cpp-pro` объявляет продукт `LlamaCppCapacitor`, а `cap sync ios` просит `LlamaCppPro`;
+      починено `74993ced` (`scripts/fix-ios-spm-products.mjs` после sync). Разрешение пакетов проходит. Для сборки на
+      XR не хватает только сертификата подписи (Apple ID → Manage Certificates); Developer Mode на XR включён.
 16. **Не-Samsung телефон со старой установкой:** «В „Аккаунтах вызовов“ значится Forta Chat» (Samsung такие
     аккаунты скрывает; нужно обновление поверх старой версии — после релиза).
 
