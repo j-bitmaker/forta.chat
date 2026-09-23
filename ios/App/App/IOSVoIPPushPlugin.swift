@@ -27,10 +27,10 @@ import UIKit
 ///      a. extract the call payload fields (call_id, sender_display_name,
 ///         room_id, msg_type),
 ///      b. report a CallKit incoming call via the
-///         `@capgo/capacitor-incoming-call-kit` plugin's CXProvider — we
-///         do this through a NotificationCenter post so we don't need a
-///         direct Swift import of the plugin (its target is a separate
-///         SPM module),
+///         `@capgo/capacitor-incoming-call-kit` plugin's CXProvider — by
+///         invoking the plugin instance's own `showIncomingCall` method
+///         with the options JS would send, because the plugin's request
+///         types are internal to its SPM module,
 ///      c. emit `voipPushReceived` to JS for telemetry / handoff.
 ///   4. JS-side: the IncomingCallKit plugin's listener fires `callAccepted`
 ///      / `callDeclined` once the user interacts; the iOS adapter in
@@ -39,7 +39,7 @@ import UIKit
 ///
 /// Thread safety:
 /// PushKit callbacks come back on the queue we registered with — `.main`
-/// here. We post NotificationCenter messages and resolve `notifyListeners`
+/// here. We call into the CallKit plugin and resolve `notifyListeners`
 /// on the main thread, which is what Capacitor's bridge expects.
 ///
 /// Apple compliance:
@@ -48,12 +48,9 @@ import UIKit
 /// through the regular APNs pipeline (FCM / IOSPushIntentPlugin) instead.
 @objc(IOSVoIPPushPlugin)
 public class IOSVoIPPushPlugin: CAPPlugin {
-    /// Notification name used to hand a VoIP-push payload to whichever
-    /// component owns the CallKit `CXProvider`. The
-    /// `@capgo/capacitor-incoming-call-kit` plugin observes this and
-    /// reports the call to CallKit on its own provider.
-    public static let incomingCallNotification =
-        Notification.Name("forta.voip.incoming")
+    /// `jsName` of `@capgo/capacitor-incoming-call-kit`'s plugin, the owner
+    /// of the CallKit `CXProvider` this app reports calls on.
+    private static let callKitPluginName = "IncomingCallKit"
 
     private var registry: PKPushRegistry?
 
@@ -79,6 +76,50 @@ public class IOSVoIPPushPlugin: CAPPlugin {
 
     private static func hexString(from data: Data) -> String {
         return data.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Report the call on the CallKit plugin's provider from native code.
+    ///
+    /// The plugin's `IncomingCallRequest` and `showIncomingCall(_:completion:)`
+    /// are internal to its module, so the only cross-module entry is its
+    /// Capacitor method, fed a `CAPPluginCall` with the same options JS sends
+    /// from `native-call-bridge.ios.ts` (`handle` and `extra.roomId` carry the
+    /// room, which the accept/decline events hand back to JS). The plugin
+    /// keys calls by `callId`, so the JS report that follows once the bridge
+    /// is up resolves to the same entry instead of ringing twice.
+    ///
+    /// Returns `false` when the plugin is not loaded, which leaves CallKit
+    /// untold — the caller logs it; there is no provider to fall back to.
+    private func reportToCallKit(
+        callId: String,
+        callerName: String,
+        roomId: String,
+        hasVideo: Bool
+    ) -> Bool {
+        let selector = NSSelectorFromString("showIncomingCall:")
+        guard let plugin = bridge?.plugin(withName: Self.callKitPluginName),
+              plugin.responds(to: selector) else {
+            return false
+        }
+        let options: [String: Any] = [
+            "callId": callId,
+            "callerName": callerName,
+            "handle": roomId,
+            "hasVideo": hasVideo,
+            "extra": ["roomId": roomId],
+            "ios": ["handleType": "generic"],
+        ]
+        let call = CAPPluginCall(
+            callbackId: "voip-push-\(callId)",
+            methodName: "showIncomingCall",
+            options: options,
+            success: { _, _ in },
+            error: { error in
+                CAPLog.print("[IOSVoIPPush] showIncomingCall failed: \(error?.message ?? "unknown")")
+            }
+        )
+        _ = plugin.perform(selector, with: call)
+        return true
     }
 }
 
@@ -133,20 +174,15 @@ extension IOSVoIPPushPlugin: PKPushRegistryDelegate {
         // (see Sygnal config request doc).
         let hasVideo = (dict["msg_type"] as? String) == "m.call.invite.video"
 
-        // Hand off to whichever component owns the CallKit CXProvider.
-        // We use NotificationCenter so the @capgo plugin can pick this
-        // up without a hard cross-module Swift import.
-        NotificationCenter.default.post(
-            name: Self.incomingCallNotification,
-            object: nil,
-            userInfo: [
-                "callId": callId,
-                "callerName": callerName,
-                "roomId": roomId,
-                "hasVideo": hasVideo,
-                "rawPayload": dict,
-            ]
-        )
+        // Tell CallKit now, from native code. This used to be a
+        // NotificationCenter post that nothing observed, so the call was
+        // only reported once JS had booted and called `showIncomingCall`
+        // itself — seconds after `completion()` on a cold start, which iOS
+        // counts as "never reported": it kills the app and stops delivering
+        // VoIP pushes to this install.
+        if !reportToCallKit(callId: callId, callerName: callerName, roomId: roomId, hasVideo: hasVideo) {
+            CAPLog.print("[IOSVoIPPush] \(Self.callKitPluginName) plugin not loaded; CallKit not told about \(callId)")
+        }
 
         // Surface to JS for telemetry / bug-report attachment + so the
         // app can warm up the Matrix client / decryption pipeline before
@@ -158,6 +194,12 @@ extension IOSVoIPPushPlugin: PKPushRegistryDelegate {
             "hasVideo": hasVideo,
         ])
 
-        completion()
+        // The plugin calls `reportNewIncomingCall` on the next main-queue
+        // turn (`DispatchQueue.main.async` inside `showIncomingCall`), so the
+        // completion is queued behind it: CallKit hears about the call before
+        // PushKit is told we are done.
+        DispatchQueue.main.async {
+            completion()
+        }
     }
 }
