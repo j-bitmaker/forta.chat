@@ -164,6 +164,19 @@ HasActiveAudioCaptureDevice, 8192 = HasMutedAudioCaptureDevice), обратно 
 через `swiftc` не собралось, доделать. `idevicesyslog` умирает вместе с обрывом соединения `devicectl` — проверять
 `tail -1` файла перед каждым звонком и перезапускать.
 
+**02:00 24.09 — уточнение, меняющее диагноз.** В звонках через CallKit владелец **не слышит и Mac**, хотя RTP с веба
+приходит (91 КБ за 30 с в звонке 16), и Forta при этом была открыта (шаг (а) выше снят: видимость ни при чём). То есть
+под CallKit **не работает ни воспроизведение, ни захват** в WebKit, а RTP и сигналинг живы; в исходящем звонке без
+CallKit микрофон работал. Вывод: аудиосессия приложения, активированная CallKit с приоритетом PhoneCall, не даёт
+работать отдельной сессии процесса WebKit GPU (он и играет, и пишет звук). Эксперимент на следующий раз, без
+правки Swift: в `native-call-bridge.ios.ts` сразу после `answerCall` (или в `startAudioRouting`) вызвать
+`IncomingCallKit.endCall({callId})` — CallKit отпустит сессию, разговор в WebRTC продолжится; если звук появится в
+обе стороны — лечение в том, чтобы CallKit держал только экран вызова, а аудио отдавал WebKit (например,
+`CXProviderConfiguration` без аудио/`reportCall(endedAt:)` после ответа, либо `didActivate` → `setActive(false)`).
+Если не появится — искать в WebKit (`WKWebViewConfiguration`, ключи про audio session / capture). Проверять
+`down`-байты **и** слышимость: RTP-счётчик здесь не показатель звука. На XR сейчас стоит сборка с
+`setMicrophoneCaptureState` (не закоммичена, безвредна) — пересобрать из репо перед следующей серией.
+
 Инструменты: консоль JS — `xcrun devicectl device process launch --console --terminate-existing --device <id>
 com.forta.chat > файл &` (Capacitor выводит `⚡️ [log]`), системный лог — `idevicesyslog -u <udid> > файл &` (очень
 шумный, grep по `App(WebKit)`, `audiomxd(MediaExperience)`, `callservicesd`). Режим «Не беспокоить» на XR должен
