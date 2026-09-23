@@ -129,6 +129,30 @@ TEST3 (`test23438111`). `libimobiledevice` на Mac стоит (`ideviceinfo`, `
    «+» Apple Development. Профили для App и двух расширений (NotificationService, ShareExtension) Xcode создаст при
    первой сборке на устройство.
 
+**Вечер 2026-09-23, звонки на XR (8 входящих с веба TEST1 → TEST3 в Forta).** Найдено и исправлено:
+`af8e3e5d` — четыре плагина таргета App не регистрировались в Capacitor 8 (`UNIMPLEMENTED`; микрофон не
+запрашивался, принятый на CallKit звонок тут же отклонялся); категория аудиосессии теперь выставляется при загрузке и
+`.mixWithOthers` (активация CallKit прерывала сессию WebKit GPU). После этого: CallKit показывает вызов, «Принять»
+→ запрос микрофона → `m.call.answer` → ICE connected, звук с веба на iPhone идёт (70–80 КБ за 25 с).
+**Открыто — микрофон iPhone молчит:** `[WebRTC-Diag] audio:0B/0pkt up` весь звонок, на вебе нет inbound-rtp.
+Доказательство в `idevicesyslog`: `App(WebKit)[pid] … captureStateChanged … state was: 2048, is now: 0` и
+`updateReportedMediaCaptureState: from 2048 to 8192` через 0,4 с после старта захвата (2048 =
+HasActiveAudioCaptureDevice, 8192 = HasMutedAudioCaptureDevice), обратно не переходит до конца звонка. Не зависит от
+нашей `setActive(true)` (проверено без неё, звонок 8), не совпадает с потерей видимости (RunningBoard:
+`running-active-Visible`). В Safari на том же XR микрофон работал (трек А). Что проверять дальше, по порядку:
+1. Исходящий звонок с iPhone (без CallKit): веб-автоответ `answer-loop.mjs` (RUN_S=150), владелец звонит `test3823818`
+   из Forta. Если байты пойдут — виноват путь CallKit; попытка 2026-09-23 не состоялась (владелец не набрал).
+2. В консоли приложения после `pushLocalFeed` вывести `track.muted / enabled / readyState` и повесить `onmute` на
+   локальный трек — точное время и WebKit-причина мьюта (нужен `cap:build:ios`).
+3. Настройки WKWebView через `MainViewController.webViewConfiguration(for:)` / `WKPreferences` — искать флаги про
+   capture/visibility/interruption (перечисление `_experimentalFeatures`/`_internalDebugFeatures` на Mac).
+4. Сравнить с Safari: там захват в том же WebKit GPU-процессе не мьютится.
+Инструменты: консоль JS — `xcrun devicectl device process launch --console --terminate-existing --device <id>
+com.forta.chat > файл &` (Capacitor выводит `⚡️ [log]`), системный лог — `idevicesyslog -u <udid> > файл &` (очень
+шумный, grep по `App(WebKit)`, `audiomxd(MediaExperience)`, `callservicesd`). Режим «Не беспокоить» на XR должен
+быть выключен — иначе `callservicesd` отбрасывает `reportNewIncomingCall` (`CallKit.error.incomingcall Code=3`).
+Pixel всё ещё в TEST3 (party `EMRXW` отклонял пробные звонки) — выйти.
+
 Когда 5 будет: `npm run cap:build:ios`, затем сборка на XR
 `xcodebuild -project ios/App/App.xcodeproj -scheme App -destination 'id=00008020-001104C43A88003A' -allowProvisioningUpdates build`
 и установка `xcrun devicectl device install app --device <coredevice id> <путь .app>`. Вход в аккаунт на iPhone —
