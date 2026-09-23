@@ -102,12 +102,12 @@ TEST3 (`test23438111`). `libimobiledevice` на Mac стоит (`ideviceinfo`, `
    подставляет реальное имя продукта форка `llama-cpp-pro` (`LlamaCppCapacitor` вместо `LlamaCppPro`). Lock-файл
    пересобран Xcode 16.4 и закоммичен. Реальную ошибку SPM xcodebuild прячет — смотреть `swift package resolve` в
    `ios/App/CapApp-SPM` или `-verbose`.
-3. **Форк не компилируется:** `node_modules/llama-cpp-pro/ios/Sources/LlamaCppCapacitor/LlamaCpp.swift:459` —
-   `queryGpuInfo(nativeContextId)` вместо `queryGpuInfo(contextId:)`. В этой сессии поправлено **локально в
-   node_modules** (не в git; оригинал в scratchpad сессии, `npm install` откатит). Настоящая починка — в форке
-   `maxgithubprofile/llama-cpp-pro`: проверено 2026-09-23, `main` = тег `v0.2.4-local-ai.1` = `fa59c356`, строка там
-   всё ещё без метки — одна строка `queryGpuInfo(contextId: nativeContextId)` + новый тег + `package.json`. Права
-   владельца на пуш в форк не проверены (`gh api` из песочницы режется TLS-прокси).
+3. ~~Форк не компилируется~~ — **закрыто 2026-09-23.** `LlamaCpp.swift:459` в `maxgithubprofile/llama-cpp-pro` звал
+   `queryGpuInfo(nativeContextId)` без метки `contextId:` (Xcode 16.4 не собирает). По решению владельца сделан свой
+   форк `j-bitmaker/llama-cpp-pro`: тег `v0.2.4-local-ai.2` = `v0.2.4-local-ai.1` + один коммит `0bebed37` с меткой;
+   `package.json` и оба lock-файла указывают на него (коммит в этом репо — `chore(ios): take llama-cpp-pro…`).
+   `npm install` теперь ставит рабочую копию, локальных правок в `node_modules` больше нет. Второй пакет с того же
+   аккаунта, `local-ai`, не трогали.
 4. ~~`GoogleService-Info.plist`~~ — **положен 2026-09-23** (`BUNDLE_ID` = `com.forta.chat`, `PROJECT_ID` =
    `forta-chat`, git игнорирует). Источник на будущее: 1Password «Forta» → `Forta iOS Firebase Config`; заглушку не
    класть — `FirebaseApp.configure()` в `AppDelegate` без условий.
