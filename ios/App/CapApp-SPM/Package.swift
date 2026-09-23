@@ -56,7 +56,7 @@ let package = Package(
                 .product(name: "CapgoCapacitorIncomingCallKit", package: "CapgoCapacitorIncomingCallKit"),
                 .product(name: "CapgoCapacitorShareTarget", package: "CapgoCapacitorShareTarget"),
                 .product(name: "CapgoCapacitorWebviewVersionChecker", package: "CapgoCapacitorWebviewVersionChecker"),
-                .product(name: "LlamaCppPro", package: "LlamaCppPro")
+                .product(name: "LlamaCppCapacitor", package: "LlamaCppPro")
             ]
         )
     ]
