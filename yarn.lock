@@ -3669,7 +3669,7 @@ lines-and-columns@^1.1.6:
 
 llama-cpp-pro@>=0.2.4, "llama-cpp-pro@github:j-bitmaker/llama-cpp-pro#v0.2.4-local-ai.2":
   version "0.2.4"
-  resolved "git+ssh://git@github.com/j-bitmaker/llama-cpp-pro.git#0bebed37aae78aa39c2f7ccbc5926939dae0d7ca"
+  resolved "git+ssh://git@github.com/j-bitmaker/llama-cpp-pro.git#70c9e217cf500bbf8d5d6c9485a53447e5e8e922"
 
 "local-ai@github:maxgithubprofile/local-ai#76697733968f19298143115fe9e247ca348ed269":
   version "0.0.0"

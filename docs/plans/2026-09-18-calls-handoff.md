@@ -104,7 +104,8 @@ TEST3 (`test23438111`). `libimobiledevice` на Mac стоит (`ideviceinfo`, `
    `ios/App/CapApp-SPM` или `-verbose`.
 3. ~~Форк не компилируется~~ — **закрыто 2026-09-23.** `LlamaCpp.swift:459` в `maxgithubprofile/llama-cpp-pro` звал
    `queryGpuInfo(nativeContextId)` без метки `contextId:` (Xcode 16.4 не собирает). По решению владельца сделан свой
-   форк `j-bitmaker/llama-cpp-pro`: тег `v0.2.4-local-ai.2` = `v0.2.4-local-ai.1` + один коммит `0bebed37` с меткой;
+   форк `j-bitmaker/llama-cpp-pro`: тег `v0.2.4-local-ai.2` = `v0.2.4-local-ai.1` + один коммит `70c9e217` с меткой
+   (автор — `j-bitmaker`, как в forta.chat; ветка для PR в исходный форк — `fix/ios-query-gpu-info-label`);
    `package.json` и оба lock-файла указывают на него (коммит в этом репо — `chore(ios): take llama-cpp-pro…`).
    `npm install` теперь ставит рабочую копию, локальных правок в `node_modules` больше нет. Второй пакет с того же
    аккаунта, `local-ai`, не трогали.
