@@ -112,7 +112,19 @@ TEST3 (`test23438111`). `libimobiledevice` на Mac стоит (`ideviceinfo`, `
 4. ~~`GoogleService-Info.plist`~~ — **положен 2026-09-23** (`BUNDLE_ID` = `com.forta.chat`, `PROJECT_ID` =
    `forta-chat`, git игнорирует). Источник на будущее: 1Password «Forta» → `Forta iOS Firebase Config`; заглушку не
    класть — `FirebaseApp.configure()` в `AppDelegate` без условий.
-5. **Нет сертификата подписи** (проверено 14:10 2026-09-23): `security find-identity -v -p codesigning` → 0. Проект —
+5. ~~Нет сертификата подписи~~ — **закрыто вечером 2026-09-23, Forta 1.13.2 стоит на XR.** Что сработало:
+   сертификат `Apple Development: Max Grishkov (9M84393HW3)` (до 5 авг 2027) экспортирован `.p12` из Keychain Access
+   старого Mac Максима, импортирован в связку login здесь; Максим пригласил Apple ID владельца в команду через
+   App Store Connect → Users and Access (роль Developer); после принятия приглашения
+   `xcodebuild … -destination 'id=00008020-001104C43A88003A' -allowProvisioningUpdates
+   -allowProvisioningDeviceRegistration build` сам зарегистрировал XR и выпустил `iOS Team Provisioning Profile:
+   com.forta.chat` (до 2027-09-23); установка — `xcrun devicectl device install app --device 8C0187A2-… <App.app>`,
+   запуск — `devicectl device process launch … com.forta.chat`. Ловушки: `find-identity -v -p codesigning` пишет
+   «0 valid» из-за просроченного WWDR-корня 2023 г. в System keychain — реальная подпись работает (`codesign` даёт
+   `TeamIdentifier=Y5JW9JU787`); `defaults read com.apple.dt.Xcode IDEProvisioningTeams` пуст, аккаунт Xcode 16 хранит
+   в связке. Соглашение Apple Developer Program должен принять Daniel Satchkov **до 2026-10-02**, иначе выпуск
+   профилей остановится. Ниже — старое описание стены:
+   `security find-identity -v -p codesigning` → 0. Проект —
    автоподпись, Team `Y5JW9JU787`. Владельцу: Xcode → Settings → Accounts → «+» Apple ID → Manage Certificates →
    «+» Apple Development. Профили для App и двух расширений (NotificationService, ShareExtension) Xcode создаст при
    первой сборке на устройство.
