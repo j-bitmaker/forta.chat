@@ -186,6 +186,21 @@ CallKit микрофон работал. Вывод: аудиосессия пр
 шаги 2–4 записи «iOS: звук в обе стороны…» в `manual-verification.md` (блокировка экрана и сворачивание посреди
 разговора, завершение с обеих сторон). Раздел выше (02:00) — история диагноза.
 
+**02:50 24.09 — итог ночи и что осталось по iPhone.** Закрыто: запись «iOS: звук в обе стороны…» целиком (шаги 1–4,
+звонки 19–21), «метка получает возраст» шаги 1–2 (звонки 22–23). Найден и исправлен пятый дефект (`1089e068`):
+`push-service` звал Android-метод `PushData.isFcmAvailable()`, на iOS получал `UNIMPLEMENTED` и не регистрировал ни
+APNs-, ни VoIP-пушер; теперь токен получен, два `POST /pushers/set` → 200. Холодный старт: отпускание CallKit
+добавлено и в `getPendingAnswer` (тот же коммит), не проверено. **Всё оставшееся по iPhone упирается в сервер:** при
+убитом приложении звонок не доставляет на XR ни одного пуша (лог `xr-syslog-3.log`, 02:46–02:50) — шлюз пушей
+homeserver'а не настроен для `fortaios`/`fortaios.voip`. Действие владельца: отправить админам `matrix.pocketnet.app`
+`docs/plans/ios/SYGNAL-CONFIG-REQUEST.md` и APNs-ключ (.p8) команды Dvm Analytics LLC (создаёт Admin на
+developer.apple.com → Keys; хранить по `SECRETS-MANIFEST.md`). После настройки: записи «VoIP-push до `completion()`»,
+«метка» шаг 3, холодный старт — одной серией (убить Forta → звонок → принять на CallKit; лог — `idevicesyslog`,
+консоль после перезапуска пушем недоступна). Мелочь без сервера: `launchCallUI`/`dismissCallUI`/`closeAllPeerConnections`
+зовутся из `call-service`/`finalize-call` напрямую в Android-плагин и на iOS шумят `UNIMPLEMENTED` (перехвачено,
+безвредно) — обернуть в `isAndroid`. Pixel по-прежнему в TEST3 и звонит — отдельная задача владельца «Pixel звонит
+после логаута».
+
 Инструменты: консоль JS — `xcrun devicectl device process launch --console --terminate-existing --device <id>
 com.forta.chat > файл &` (Capacitor выводит `⚡️ [log]`), системный лог — `idevicesyslog -u <udid> > файл &` (очень
 шумный, grep по `App(WebKit)`, `audiomxd(MediaExperience)`, `callservicesd`). Режим «Не беспокоить» на XR должен

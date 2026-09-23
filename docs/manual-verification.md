@@ -440,6 +440,12 @@
   получал `UNIMPLEMENTED` и выходил до регистрации и APNs, и VoIP — исправлено
   (проба только не на iOS; `push-service-ios-register.test.ts`). После правки
   в консоли: `IOSVoIPPush getToken` → токен, два `POST /pushers/set` → 200.
+  **Заблокировано сервером (2026-09-24 02:47):** при убитом приложении и
+  заблокированном XR звонок с веба не дал в системном логе ни одного пуша
+  (ни PushKit, ни APNs; Pixel в том же аккаунте зазвонил через FCM). Шлюз
+  пушей `matrix.pocketnet.app` не настроен для `fortaios` / `fortaios.voip` —
+  нужен запрос админам homeserver'а по `docs/plans/ios/SYGNAL-CONFIG-REQUEST.md`
+  с APNs-ключом команды. До этого шаги ниже выполнить нельзя.
 - Шаги:
   1. Убить Forta (смахнуть из переключателя), заблокировать iPhone.
   2. Позвонить с веба. **Ожидается:** экран CallKit появляется, в `idevicesyslog`
