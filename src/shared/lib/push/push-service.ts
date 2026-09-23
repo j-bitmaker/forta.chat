@@ -693,14 +693,22 @@ class PushService {
       console.warn('[PushService] Failed to check pending intent:', e);
     }
 
-    // 4. Register for FCM (skip when google-services.json was not bundled — crashes otherwise)
+    // 4. Register for FCM (skip when google-services.json was not bundled — crashes otherwise).
+    // The probe is an Android plugin method: on iOS `PushData` is
+    // IOSPushIntentPlugin, which has no `isFcmAvailable`, so the call rejects
+    // with UNIMPLEMENTED and every iOS build used to bail out here — no APNs
+    // registration and no VoIP pusher, ever (iPhone XR, 2026-09-24). Firebase
+    // on iOS is configured from GoogleService-Info.plist and aborts at launch
+    // when it is missing, so an iOS build that got this far has it.
     let fcmAvailable = true;
-    try {
-      const status = await PushData.isFcmAvailable();
-      fcmAvailable = status.available;
-    } catch (e) {
-      console.warn('[PushService] isFcmAvailable check failed, assuming FCM disabled:', e);
-      fcmAvailable = false;
+    if (!isIOS) {
+      try {
+        const status = await PushData.isFcmAvailable();
+        fcmAvailable = status.available;
+      } catch (e) {
+        console.warn('[PushService] isFcmAvailable check failed, assuming FCM disabled:', e);
+        fcmAvailable = false;
+      }
     }
 
     if (!fcmAvailable) {

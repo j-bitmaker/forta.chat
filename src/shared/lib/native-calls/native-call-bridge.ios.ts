@@ -305,11 +305,17 @@ export function createIOSNativeCallAdapter(): NativeCallNativePlugin {
         const roomIdRaw = accepted.extra?.roomId;
         const roomId =
           typeof roomIdRaw === 'string' && roomIdRaw.length > 0 ? roomIdRaw : null;
-        return {
+        const pending = {
           callId: accepted.callId,
           roomId,
           atMs: markerStamp(accepted.callId, accepted.state),
         };
+        // Cold start: the accept happened before this adapter's listeners
+        // existed, so this read is the first chance to release CallKit before
+        // the answer (see releasedToWebKit). The bridge treats this read as
+        // read-and-clear anyway and keeps its own copy of the marker.
+        await releaseCallKitAudio();
+        return pending;
       } catch (e) {
         console.warn('[NativeCallBridge.iOS] getPendingAnswer failed:', e);
         return { callId: null, roomId: null };
