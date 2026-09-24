@@ -1008,7 +1008,10 @@ async function warnIfCallBypassesTor(): Promise<void> {
  * NativeWebRTC call screen to cover the page.
  */
 function launchNativeCallScreen(options: Parameters<typeof NativeWebRTC.launchCallUI>[0]): Promise<void> {
-  if (isAndroid) holdPageAwake(options.callId);
+  // iOS has no NativeWebRTC plugin: the call rejected with UNIMPLEMENTED on
+  // every call. CallKit is its call screen.
+  if (!isAndroid) return Promise.resolve();
+  holdPageAwake(options.callId);
   return NativeWebRTC.launchCallUI(options);
 }
 

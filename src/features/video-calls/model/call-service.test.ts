@@ -1296,10 +1296,11 @@ describe('call-service permission flow', () => {
         .replace(/^\s*\/\/.*$/gm, '');
 
       expect(code.match(/NativeWebRTC\.launchCallUI\(/g)).toHaveLength(1);
-      // Android only: the freeze is Chromium's. The iOS WKWebView has no such
-      // freeze, and a tone there would share the audio session with the call.
+      // Android only: the freeze is Chromium's, and NativeWebRTC is an
+      // Android plugin — on iOS the launch rejected with UNIMPLEMENTED on
+      // every call, and a tone would share the audio session with the call.
       expect(code).toMatch(
-        /if \(isAndroid\) holdPageAwake\(options\.callId\);\s*return NativeWebRTC\.launchCallUI\(options\);/,
+        /if \(!isAndroid\) return Promise\.resolve\(\);\s*holdPageAwake\(options\.callId\);\s*return NativeWebRTC\.launchCallUI\(options\);/,
       );
     });
   });
