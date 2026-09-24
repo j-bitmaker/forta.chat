@@ -201,6 +201,34 @@ developer.apple.com → Keys; хранить по `SECRETS-MANIFEST.md`). Пос
 безвредно) — обернуть в `isAndroid`. Pixel по-прежнему в TEST3 и звонит — отдельная задача владельца «Pixel звонит
 после логаута».
 
+**03:55 24.09 — VoIP-пуш: сервер обойдён, дефект найден, устройство в бане. План следующей сессии.**
+Без админов: скрипт `scratchpad/apns-voip.mjs` (ES256-JWT по `.p8`, HTTP/2 в `api.sandbox.push.apple.com`, VoIP-класс,
+topic `com.forta.chat.voip`, срок 90 с) шлёт пуш на VoIP-токен XR сам; `run-voip-test.sh` ставит звонок с веба, ждёт
+`call_id` из `call-peer.mjs` (дописан: `{"ev":"call_id"}`) и шлёт пуш. Ключ `.p8` — у владельца (`~/Downloads`, удалить
+после), Key ID/Team ID в `apns.env` (scratchpad, не в git). Результаты: пуш доходит (apsd → callservicesd → запуск
+Forta 03:27:46 и 03:40:11), и оба раза iOS **убивает приложение через 0,5 с**: «Killing app because it never posted an
+incoming call» — на холодном старте наш отчёт в CallKit не доходит до `callservicesd` (в 03:40 ни одного
+`reportNewIncomingCall`). Плагин `@capgo/capacitor-incoming-call-kit` откладывал `reportNewIncomingCall` через
+`DispatchQueue.main.async` — форк `j-bitmaker/capacitor-incoming-call-kit`, тег `8.2.1-forta.1` (inline на main thread,
+`dist/` закоммичен для git-install), `package.json` на нём; это необходимо, но не хватило. После третьего прогона
+`callservicesd`: «will not be launched because it failed to report an incoming call too many times… dropped on the
+floor» — **XR в бане для VoIP-пробуждений**, переустановка не снимает. Заблокированный телефон обрывает `idevicesyslog`
+— прогоны делать с разблокированным. Форк плагина как патч можно было бы держать через `patch-package` (есть в
+`postinstall`) — форк оставлен.
+
+План (по порядку):
+1. Снять бан: удалить Forta с XR (не поверх), перезагрузить XR, поставить сборку, вход владельца (TEST3).
+2. Прогон с диагностикой: в сборке `NSLog`-точки в `IOSVoIPPushPlugin` (`push received`, `no bridge`, `plugin not
+   registered`, `no showIncomingCall:`, `performed`, `failed`) — читать `idevicesyslog` по `IOSVoIPPush`. Убить
+   приложение можно без владельца (`xcrun devicectl device process launch/terminate`), вызов и пуш — `run-voip-test.sh`.
+3. Вероятная причина и правильная архитектура (делать независимо от п. 2): на PushKit-старте отчёт нельзя вешать на
+   Capacitor-мост — `PKPushRegistry` создавать в `AppDelegate.didFinishLaunching`, а отчёт делать через **публичный**
+   метод форка (`IncomingCallKit.shared.reportIncomingCall(callId:callerName:roomId:hasVideo:)`, добавить в форк, тег
+   `8.2.1-forta.2`), синхронно, до `completion()`. `IOSVoIPPushPlugin` оставить только для токена (реестр брать из
+   AppDelegate). Каждая неудача = новый бан → п. 1 заново, поэтому сначала п. 3, потом прогон.
+4. После успеха: записи «VoIP-push до `completion()`», «метка» шаг 3, холодный старт (`getPendingAnswer` отпускает
+   CallKit) — одной серией; затем запрос админам (`SYGNAL-CONFIG-REQUEST.md`, Key ID/Team ID, `.p8` через 1Password).
+
 Инструменты: консоль JS — `xcrun devicectl device process launch --console --terminate-existing --device <id>
 com.forta.chat > файл &` (Capacitor выводит `⚡️ [log]`), системный лог — `idevicesyslog -u <udid> > файл &` (очень
 шумный, grep по `App(WebKit)`, `audiomxd(MediaExperience)`, `callservicesd`). Режим «Не беспокоить» на XR должен

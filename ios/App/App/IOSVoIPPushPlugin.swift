@@ -97,8 +97,18 @@ public class IOSVoIPPushPlugin: CAPPlugin {
         hasVideo: Bool
     ) -> Bool {
         let selector = NSSelectorFromString("showIncomingCall:")
-        guard let plugin = bridge?.plugin(withName: Self.callKitPluginName),
-              plugin.responds(to: selector) else {
+        // NSLog, not CAPLog: on a PushKit cold start there is no attached console,
+        // and the system log is the only place these decisions can be read.
+        guard let bridge = bridge else {
+            NSLog("[IOSVoIPPush] no bridge yet for call %@", callId)
+            return false
+        }
+        guard let plugin = bridge.plugin(withName: Self.callKitPluginName) else {
+            NSLog("[IOSVoIPPush] plugin %@ not registered for call %@", Self.callKitPluginName, callId)
+            return false
+        }
+        guard plugin.responds(to: selector) else {
+            NSLog("[IOSVoIPPush] plugin %@ has no showIncomingCall: for call %@", Self.callKitPluginName, callId)
             return false
         }
         let options: [String: Any] = [
@@ -115,10 +125,11 @@ public class IOSVoIPPushPlugin: CAPPlugin {
             options: options,
             success: { _, _ in },
             error: { error in
-                CAPLog.print("[IOSVoIPPush] showIncomingCall failed: \(error?.message ?? "unknown")")
+                NSLog("[IOSVoIPPush] showIncomingCall failed for %@: %@", callId, error?.message ?? "unknown")
             }
         )
         _ = plugin.perform(selector, with: call)
+        NSLog("[IOSVoIPPush] showIncomingCall performed for %@", callId)
         return true
     }
 }
@@ -173,6 +184,7 @@ extension IOSVoIPPushPlugin: PKPushRegistryDelegate {
         // distinguishes voice vs video calls via `m.call.invite.video`
         // (see Sygnal config request doc).
         let hasVideo = (dict["msg_type"] as? String) == "m.call.invite.video"
+        NSLog("[IOSVoIPPush] VoIP push received for call %@ (room %@)", callId, roomId)
 
         // Tell CallKit now, from native code. This used to be a
         // NotificationCenter post that nothing observed, so the call was

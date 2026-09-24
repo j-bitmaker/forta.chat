@@ -445,7 +445,12 @@
   (ни PushKit, ни APNs; Pixel в том же аккаунте зазвонил через FCM). Шлюз
   пушей `matrix.pocketnet.app` не настроен для `fortaios` / `fortaios.voip` —
   нужен запрос админам homeserver'а по `docs/plans/ios/SYGNAL-CONFIG-REQUEST.md`
-  с APNs-ключом команды. До этого шаги ниже выполнить нельзя.
+  с APNs-ключом команды. Обход для проверки: свой пуш через `.p8` (`scratchpad/apns-voip.mjs`).
+  **03:27 и 03:40 24.09:** пуш доходит, iOS запускает Forta и убивает через 0,5 с — «never posted an
+  incoming call»: на холодном старте отчёт не доходит до `callservicesd`. Плагин CallKit форкнут
+  (`j-bitmaker/capacitor-incoming-call-kit#8.2.1-forta.1`, отчёт inline на main thread) — не хватило.
+  После этого XR в бане: «will not be launched … failed to report an incoming call too many times»,
+  снимается удалением приложения + перезагрузкой. План — handoff, раздел «iPhone», 03:55 24.09.
 - Шаги:
   1. Убить Forta (смахнуть из переключателя), заблокировать iPhone.
   2. Позвонить с веба. **Ожидается:** экран CallKit появляется, в `idevicesyslog`
