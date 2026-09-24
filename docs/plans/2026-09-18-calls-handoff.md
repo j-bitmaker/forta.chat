@@ -239,6 +239,15 @@ call / CallKit displayed|rejected`; `IOSVoIPPushPlugin` — тонкая JS-об
 владельца). Если снова «never posted» — читать `[VoIPPush]` в syslog: теперь видно, дошёл ли пуш до обработчика и что
 ответил CallKit.
 
+**14:08 24.09 — ЗАКРЫТО.** После удаления Forta + перезагрузки XR (бан снят) новая архитектура прошла четыре прогона до
+экрана CallKit и один полный: пуш → запуск с нуля 0,3 с → CallKit → «Принять» → ответ на вебе через 5 с → звук в обе
+стороны. Записи «VoIP-push до `completion()`», «метка» шаг 3 и холодный старт — проверены. Уроки: `SIGKILL` через
+`devicectl` для «убить» подходит (`device process signal --signal SIGKILL`, pid из `device info processes`, в строке
+процесса хвостовые пробелы); связь iPhone с APNs на этом Wi-Fi рвётся каждые ~25 с (`apsd: Connection closed`) — пуш
+со сроком 55–90 с иногда не доходит, это сеть, не приложение; «Фокус» на XR включается сам по расписанию — проверять
+перед серией. **По iPhone без сервера больше делать нечего.** Для продакшена: письмо админам по
+`SYGNAL-CONFIG-REQUEST.md` (Key ID/Team ID, `.p8` через 1Password); PR из форков в Cap-go — по желанию.
+
 Инструменты: консоль JS — `xcrun devicectl device process launch --console --terminate-existing --device <id>
 com.forta.chat > файл &` (Capacitor выводит `⚡️ [log]`), системный лог — `idevicesyslog -u <udid> > файл &` (очень
 шумный, grep по `App(WebKit)`, `audiomxd(MediaExperience)`, `callservicesd`). Режим «Не беспокоить» на XR должен
