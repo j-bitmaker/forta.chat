@@ -229,6 +229,16 @@ floor» — **XR в бане для VoIP-пробуждений**, переус�
 4. После успеха: записи «VoIP-push до `completion()`», «метка» шаг 3, холодный старт (`getPendingAnswer` отпускает
    CallKit) — одной серией; затем запрос админам (`SYGNAL-CONFIG-REQUEST.md`, Key ID/Team ID, `.p8` через 1Password).
 
+**04:30 24.09 — п. 3 плана сделан, ждёт п. 1–2.** `ios/App/App/VoIPPushCoordinator.swift`: `PKPushRegistry` с
+`didFinishLaunching`, отчёт синхронно через `IncomingCallKit.shared.reportIncomingCall` (форк `8.2.1-forta.2`, публичный
+метод; `import IncomingCallKitPlugin` в таргете App компилируется), `NSLog`-точки `[VoIPPush] push received / reported
+call / CallKit displayed|rejected`; `IOSVoIPPushPlugin` — тонкая JS-обёртка (`getToken`, события через
+`retainUntilConsumed`, очередь до `load()`). Сборки под симулятор и XR зелёные, на XR **не установлено**: сначала владелец
+удаляет Forta и перезагружает XR (снять бан), затем `devicectl device install app …`, вход TEST3, и прогон
+`run-voip-test.sh` (убить приложение — `xcrun devicectl device process launch --terminate-existing` + terminate, без
+владельца). Если снова «never posted» — читать `[VoIPPush]` в syslog: теперь видно, дошёл ли пуш до обработчика и что
+ответил CallKit.
+
 Инструменты: консоль JS — `xcrun devicectl device process launch --console --terminate-existing --device <id>
 com.forta.chat > файл &` (Capacitor выводит `⚡️ [log]`), системный лог — `idevicesyslog -u <udid> > файл &` (очень
 шумный, grep по `App(WebKit)`, `audiomxd(MediaExperience)`, `callservicesd`). Режим «Не беспокоить» на XR должен

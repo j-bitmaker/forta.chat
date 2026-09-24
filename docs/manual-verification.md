@@ -451,6 +451,14 @@
   (`j-bitmaker/capacitor-incoming-call-kit#8.2.1-forta.1`, отчёт inline на main thread) — не хватило.
   После этого XR в бане: «will not be launched … failed to report an incoming call too many times»,
   снимается удалением приложения + перезагрузкой. План — handoff, раздел «iPhone», 03:55 24.09.
+  **04:30 24.09 — переделано:** `PKPushRegistry` теперь создаётся в
+  `AppDelegate.didFinishLaunching` (`VoIPPushCoordinator.swift`), отчёт в CallKit идёт
+  напрямую и синхронно через публичный `IncomingCallKit.shared.reportIncomingCall`
+  форка `8.2.1-forta.2`, `completion()` сразу после; `IOSVoIPPushPlugin` — только
+  токен и события для JS (очередь до загрузки плагина). Собирается под симулятор и
+  устройство; на XR не проверено — устройство в бане до удаления + перезагрузки.
+  Ожидаемые строки в `idevicesyslog`: `[VoIPPush] push received`, `reported call`,
+  `CallKit displayed call`; в `callservicesd` — `reportNewIncomingCallWithUUID`.
 - Шаги:
   1. Убить Forta (смахнуть из переключателя), заблокировать iPhone.
   2. Позвонить с веба. **Ожидается:** экран CallKit появляется, в `idevicesyslog`
