@@ -338,6 +338,11 @@
     этого значения отчёт строит строку `| Full-screen intent | REVOKED |` (`collect-call-diagnostics.ts`, формат строки —
     `bug-report-sender.test.ts`).
 - Статус: ☐ Pixel: шаги 1–3 прошли 2026-09-17; Samsung: шаги 1 и 3 прошли 2026-09-14, шаг 2 не проверен
+
+---
+
+## Проверено
+
 ### iOS: звук в обе стороны в звонке, принятом на CallKit
 - Коммит: см. `git log -1 -- src/shared/lib/native-calls/native-call-bridge.ios.ts`
 - Почему нужен человек: слышимость и работу микрофона под CallKit проверяет
@@ -508,10 +513,6 @@
   убитое приложение поднято VoIP-пушем, принято на CallKit, разговор поднялся
   (см. запись «iOS: VoIP-push сообщает CallKit…»).
 - Статус: ☑ шаги 1–3 проверены 2026-09-24
-
----
-
-## Проверено
 
 ### Выход из аккаунта останавливает пуши и звонки (Android)
 - Коммит: см. `git log -1 -- android/app/src/main/java/com/forta/chat/plugins/push/PushSession.kt`

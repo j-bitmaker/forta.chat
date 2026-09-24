@@ -17,12 +17,12 @@
   `git log origin/fix/calls-2026-09..HEAD`.
 - Локальный `master` на 35 коммитов впереди `origin/master` — это та же работа по звонкам до ветки; `master` в ветку
   влит, отставаний нет.
-- Проверки на последнем коммите: `npm run build`, `npm run test` (4317), Kotlin
-  `:app:testSideloadDebugUnitTest --rerun-tasks` (569) — зелёные.
+- Проверки на последнем коммите: `npm run build`, `npm run test` (4388), Kotlin
+  `:app:testSideloadDebugUnitTest --rerun-tasks` (586) — зелёные (2026-09-24).
 
 ## Где что лежит
 
-- `docs/manual-verification.md` — все починки, которым нужна проверка на аппарате. Раздел «Ожидают проверки» (7
+- `docs/manual-verification.md` — все починки, которым нужна проверка на аппарате. Раздел «Ожидают проверки» (6
   записей) — открытые; «Проверено» — закрытые, с логами и замерами. У каждой записи шаги, «Раньше/Ожидается» и статус.
 - `docs/call-bugs-needing-you.md` — отчёты пользователей по группам (B–H) и что по каждой группе нужно от владельца.
   Раздел E — итог по Bastyon.
@@ -252,7 +252,7 @@ call / CallKit displayed|rejected`; `IOSVoIPPushPlugin` — тонкая JS-об
 com.forta.chat > файл &` (Capacitor выводит `⚡️ [log]`), системный лог — `idevicesyslog -u <udid> > файл &` (очень
 шумный, grep по `App(WebKit)`, `audiomxd(MediaExperience)`, `callservicesd`). Режим «Не беспокоить» на XR должен
 быть выключен — иначе `callservicesd` отбрасывает `reportNewIncomingCall` (`CallKit.error.incomingcall Code=3`).
-Pixel всё ещё в TEST3 (party `EMRXW` отклонял пробные звонки) — выйти.
+Pixel вышел из TEST3 (2026-09-24).
 
 Когда 5 будет: `npm run cap:build:ios`, затем сборка на XR
 `xcodebuild -project ios/App/App.xcodeproj -scheme App -destination 'id=00008020-001104C43A88003A' -allowProvisioningUpdates build`
@@ -265,6 +265,30 @@ Samsung → отклонить на CallKit → через >60 с позвони
 (`test3232883282`), веб-профиль TEST1 в scratchpad старой сессии `c0c9244b…/scratchpad/web/` (ночная очистка
 убивает его раз в ~3 дня; вход через `open-login.mjs`, ключ вводит владелец; там же `call-peer.mjs`,
 `reject-probe.mjs`, `probe-login.mjs`).
+
+## Сессия 2026-09-24, день — хвосты после iPhone
+
+- `b9fdc963` — `m.call.answer` повторяется при `ConnectionError` (3 отправки, паузы 0,5 и 1 с) в
+  `voip-send-retry.ts`: на iPhone WebKit ронял PUT ответа (`fetch failed: Load failed`) и звонок умирал с
+  `send_answer`. Проверено тестами; на устройстве сбой по заказу не воспроизводится.
+- `e6e15a08` — выход из аккаунта останавливает пуши (Android): метка сессии в нативной части
+  (`PushSessionPolicy`, FCM-сервис отбрасывает пуши после выхода), удаление пушеров `kind: null` и FCM-токена;
+  запуск без сессии делает то же для установок, вышедших старой сборкой. Проверено на Pixel, запись
+  «Выход из аккаунта останавливает пуши и звонки (Android)» в «Проверено». **Открыто для iOS:** на iOS выход
+  снимает только пушеры на сервере; выход без сети оставит VoIP-пушер, а локально отбросить VoIP-пуш нельзя
+  (iOS требует отчёт в CallKit на каждый) — отдельная задача, если понадобится.
+- `11199863` — `launchCallUI`/`dismissCallUI`/`closeAllPeerConnections` зовутся только на Android (на iOS плагина
+  `NativeWebRTC` нет, было 3 `UNIMPLEMENTED` на звонок).
+- `496d6a3a` — тест `sync-engine` «respects maxRetries» больше не ждёт реальный backoff (2,8 с → 30 мс).
+- Пять iOS-записей `manual-verification.md` перенесены в «Проверено».
+- **Для серии с Sygnal (задача после админов):** 2026-09-24 15:15 у TEST3 на сервере не было iOS-пушеров XR
+  (`fortaios`, `fortaios.voip`), хотя ночью оба `pushers/set` вернули 200. Вероятно, Synapse удалил их после
+  отказа шлюза (app_id не настроен). После настройки Sygnal — перезапустить Forta на XR (регистрация заново) и
+  проверить `getPushers()` перед звонками.
+- Стенд: Pixel — новая сборка, **вышел из TEST3** (пушера на сервере нет); TEST3 теперь только у XR.
+  CDP к Pixel: `adb forward tcp:9224 localabstract:webview_devtools_remote_<pid>`; клиент Matrix со страницы
+  доступен только во время звонка (`$pinia._s` → store `call` → `matrixCall.client`); страница в фоне заморожена и
+  на CDP не отвечает.
 
 ## Открытые задачи
 
