@@ -48,6 +48,11 @@ interface PushDataPlugin extends Plugin {
   getFullScreenIntentStatus(): Promise<{ allowed: boolean; manageable: boolean }>;
   /** Open the system screen that grants the full-screen intent (Android 14+). */
   openFullScreenIntentSettings(): Promise<void>;
+  /** Android: the account is signed in, so the FCM service delivers pushes. */
+  markSessionActive(): Promise<void>;
+  /** Android: the account is signing out; the FCM service drops every push
+   *  from now on, even one from a pusher the logout could not remove. */
+  markLoggedOut(): Promise<void>;
   addListener(event: 'pushReceived', handler: (data: PushPayload) => void): Promise<PluginListenerHandle>;
   addListener(event: 'pushOpenRoom', handler: (data: { roomId: string; eventId?: string }) => void): Promise<PluginListenerHandle>;
 }

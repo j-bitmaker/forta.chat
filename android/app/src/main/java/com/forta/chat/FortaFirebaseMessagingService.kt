@@ -23,6 +23,8 @@ import com.forta.chat.plugins.calls.InviteThrottleTracker
 import com.forta.chat.plugins.calls.RemoteHangupPolicy
 import com.forta.chat.plugins.calls.SecondRingPolicy
 import com.forta.chat.plugins.calls.SelectAnswerPolicy
+import com.forta.chat.plugins.push.PushSessionPolicy
+import com.forta.chat.plugins.push.PushSessionStore
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
@@ -134,6 +136,15 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
             "content_msgtype=${data["content_msgtype"]}")
 
         val roomId = data["room_id"] ?: return
+
+        // Signed out: a pusher the logout could not remove (offline, or a push
+        // already in flight) must neither ring nor show anything. See
+        // PushSessionPolicy.
+        if (!PushSessionPolicy.shouldDeliver(PushSessionStore.read(this))) {
+            Log.i(TAG, "Push dropped: signed out (msg_type=${data["msg_type"]})")
+            return
+        }
+
         val eventId = data["event_id"]
         val msgType = data["msg_type"] ?: ""
         val contentMsgtype = data["content_msgtype"]
