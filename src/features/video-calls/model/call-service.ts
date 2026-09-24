@@ -452,8 +452,8 @@ function wireCallEvents(call: MatrixCall, direction: "outgoing" | "incoming") {
   // Defensive: remove any prior handlers first
   unwireCallEvents();
 
-  // A restart offer or candidates that fail to send during a network change
-  // are retried instead of ending the call (voip-send-retry.ts).
+  // An answer, a restart offer or candidates that fail to send for lack of a
+  // connection are retried instead of ending the call (voip-send-retry.ts).
   installVoipSendRetry(call as unknown as Parameters<typeof installVoipSendRetry>[0]);
 
   const callStore = useCallStore();
