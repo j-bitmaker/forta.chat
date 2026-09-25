@@ -69,6 +69,18 @@ public class IOSPushIntentPlugin: CAPPlugin {
         return note.userInfo
     }
 
+    /// JS is signed in: VoIP pushes ring (see `PushSession`).
+    @objc func markSessionActive(_ call: CAPPluginCall) {
+        PushSession.write(PushSession.active)
+        call.resolve()
+    }
+
+    /// JS is signing out: from now on a VoIP push is reported and ended at once.
+    @objc func markLoggedOut(_ call: CAPPluginCall) {
+        PushSession.write(PushSession.loggedOut)
+        call.resolve()
+    }
+
     @objc func getPendingIntent(_ call: CAPPluginCall) {
         let p = pendingTap ?? [:]
         pendingTap = nil

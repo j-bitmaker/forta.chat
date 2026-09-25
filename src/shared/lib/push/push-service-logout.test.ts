@@ -1,7 +1,8 @@
 /**
  * Regression: logout left this device's pusher on the homeserver and kept the
  * FCM token, so the Pixel went on ringing for the account it had signed out
- * of (TEST3, 2026-09-24). `unregisterForLogout` tells native to drop pushes,
+ * of (TEST3, 2026-09-24). `unregisterForLogout` tells native to drop pushes
+ * (iOS: report and end a VoIP call at once),
  * deletes the pushers and, on Android, the FCM token — without ever holding
  * logout up for longer than LOGOUT_UNREGISTER_TIMEOUT_MS.
  */
@@ -116,7 +117,15 @@ describe('pushService.unregisterForLogout', () => {
       expect.objectContaining({ pushkey: 'voip-token', app_id: 'fortaios.voip', kind: null }),
     );
     expect(PushNotifications.unregister).not.toHaveBeenCalled();
-    expect(PushData.markLoggedOut).not.toHaveBeenCalled();
+    // The VoIP pusher may survive an offline logout; native ends its calls.
+    expect(PushData.markLoggedOut).toHaveBeenCalledOnce();
+  });
+
+  it('marks the iOS session active when push starts', async () => {
+    platform.ios = true;
+    const { svc } = await loadService();
+    await svc.init({ setPusher: vi.fn() });
+    expect(PushData.markSessionActive).toHaveBeenCalledOnce();
   });
 
   it('does not hold logout up when the homeserver never answers', async () => {
@@ -164,14 +173,13 @@ describe('pushService.unregisterForLogout', () => {
       expect(PushData.markLoggedOut).toHaveBeenCalledOnce();
     });
 
-    it('does nothing on iOS', async () => {
+    it('on iOS only marks the session, leaving the APNs registration alone', async () => {
       platform.ios = true;
       const { svc } = await loadService();
 
       svc.settleSignedOutLaunch();
-      await Promise.resolve();
+      await vi.waitFor(() => expect(PushData.markLoggedOut).toHaveBeenCalledOnce());
 
-      expect(PushData.markLoggedOut).not.toHaveBeenCalled();
       expect(PushNotifications.unregister).not.toHaveBeenCalled();
     });
 

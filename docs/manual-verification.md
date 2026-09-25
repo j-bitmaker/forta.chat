@@ -343,6 +343,24 @@
 
 ## Проверено
 
+### iOS: VoIP-звонок на вышедший аккаунт сообщается CallKit и сразу завершается
+- Коммит: см. `git log -1 -- ios/App/App/VoIPPushCoordinator.swift`
+- Почему нужен человек: PushKit-пуш и реакция `callservicesd` проверяются только на iPhone; выход и вход —
+  ключом владельца. Выход удаляет пушеры на сервере, но без сети VoIP-пушер остаётся, а VoIP-пуш нельзя
+  проигнорировать: iOS убивает приложение и перестаёт доставлять VoIP, если о пуше не сообщили CallKit. Теперь
+  JS пишет метку сессии (`PushData.markLoggedOut` / `markSessionActive`, `UserDefaults`), и
+  `VoIPPushCoordinator` при метке «вышел» сообщает звонок через отдельный `CXProvider`
+  (`SignedOutCallSink`, не в «Недавних») и сразу завершает его.
+- На чём: iPhone XR, пуш своим скриптом (`apns-voip.mjs`) — так имитируется пушер, оставшийся после выхода.
+- Шаги:
+  1. Вход в TEST3, Forta убита, пуш → CallKit звонит (обычный путь не сломан).
+  2. Выход, Forta убита, «Фокус» выключен, пуш → в `idevicesyslog` `[VoIPPush] signed out: ended call`, телефон
+     не звонит, нет «never posted» / «Killing app».
+  3. Снова вход в TEST3, Forta убита, пуш → CallKit звонит.
+- Статус: ☑ проверено 2026-09-25. Шаг 1 — 14:17 (`CallKit displayed call`). Шаг 2 — 15:11:58: `signed out:
+  ended call` через 65 мс после пуша, телефон не звонил, приложение не убито (при включённом «Фокусе» в 15:01
+  CallKit отклонил отчёт с `error 3` — тоже без убийства). Шаг 3 — 15:22:39: после входа `CallKit displayed call`.
+
 ### iOS: звук в обе стороны в звонке, принятом на CallKit
 - Коммит: см. `git log -1 -- src/shared/lib/native-calls/native-call-bridge.ios.ts`
 - Почему нужен человек: слышимость и работу микрофона под CallKit проверяет

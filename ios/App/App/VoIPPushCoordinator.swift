@@ -1,7 +1,65 @@
 import Foundation
 import PushKit
+import CallKit
 import Capacitor
 import IncomingCallKitPlugin
+
+/// The account state JS last reported, kept where a PushKit launch can read it
+/// before the WebView exists. Mirrors Android's `PushSessionPolicy`.
+///
+/// Logout deletes this device's pushers on the homeserver, but that needs the
+/// network: a logout made offline leaves the VoIP pusher behind, and every call
+/// to the old account would ring here. A VoIP push cannot simply be ignored —
+/// iOS kills the app and stops delivering VoIP pushes unless each one is
+/// reported to CallKit — so a signed-out device reports it and ends it at once.
+/// No state at all is an install whose JS has not reported since the update:
+/// signed in as far as anyone knows.
+enum PushSession {
+    static let active = "active"
+    static let loggedOut = "logged_out"
+    private static let key = "forta.push.session"
+
+    static var state: String? { UserDefaults.standard.string(forKey: key) }
+
+    static func write(_ state: String) {
+        UserDefaults.standard.set(state, forKey: key)
+    }
+
+    static func shouldRing(_ state: String?) -> Bool { state != loggedOut }
+}
+
+/// Reports a VoIP push for a signed-out device and ends the call in the same
+/// breath. Its own provider, so the app's call provider (the CallKit plugin)
+/// never sees the call; kept out of Recents.
+final class SignedOutCallSink: NSObject, CXProviderDelegate {
+    private lazy var provider: CXProvider = {
+        let config = CXProviderConfiguration()
+        config.includesCallsInRecents = false
+        config.supportsVideo = false
+        config.maximumCallGroups = 1
+        config.maximumCallsPerCallGroup = 1
+        let provider = CXProvider(configuration: config)
+        provider.setDelegate(self, queue: .main)
+        return provider
+    }()
+
+    func reportAndEnd(callId: String) {
+        let uuid = UUID()
+        let update = CXCallUpdate()
+        update.localizedCallerName = "Forta"
+        update.hasVideo = false
+        provider.reportNewIncomingCall(with: uuid, update: update) { [provider] error in
+            if let error {
+                NSLog("[VoIPPush] signed out: CallKit rejected call %@: %@", callId, error.localizedDescription)
+                return
+            }
+            provider.reportCall(with: uuid, endedAt: nil, reason: .failed)
+            NSLog("[VoIPPush] signed out: ended call %@", callId)
+        }
+    }
+
+    func providerDidReset(_ provider: CXProvider) {}
+}
 
 /// Owns the app's `PKPushRegistry` from `application(_:didFinishLaunchingWithOptions:)`
 /// and reports every VoIP push to CallKit itself, synchronously.
@@ -28,6 +86,7 @@ final class VoIPPushCoordinator: NSObject, PKPushRegistryDelegate {
     /// Hex VoIP token, or nil until iOS issued one (or after invalidation).
     private(set) var tokenHex: String?
     private var pendingEvents: [(name: String, data: [String: Any])] = []
+    private let signedOutSink = SignedOutCallSink()
 
     /// Set by `IOSVoIPPushPlugin.load()`; queued events flush on assignment.
     weak var plugin: CAPPlugin? {
@@ -84,6 +143,13 @@ final class VoIPPushCoordinator: NSObject, PKPushRegistryDelegate {
         // NSLog, not CAPLog: on a push launch there is no attached console and
         // the system log is the only place these lines can be read.
         NSLog("[VoIPPush] push received for call %@ (room %@)", callId, roomId)
+
+        guard PushSession.shouldRing(PushSession.state) else {
+            // Synchronous report, as below; nothing reaches JS or the app's provider.
+            signedOutSink.reportAndEnd(callId: callId)
+            completion()
+            return
+        }
 
         // Synchronous on the main queue (the registry's queue): the provider is
         // told before this method returns and before completion().

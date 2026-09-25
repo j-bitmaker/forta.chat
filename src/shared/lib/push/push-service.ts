@@ -643,12 +643,10 @@ class PushService {
     if (!isNative) return;
 
     this.matrixClient = matrixClient;
-    if (!isIOS) {
-      try {
-        await PushData.markSessionActive();
-      } catch (e) {
-        console.warn('[PushService] markSessionActive failed:', e);
-      }
+    try {
+      await PushData.markSessionActive();
+    } catch (e) {
+      console.warn('[PushService] markSessionActive failed:', e);
     }
     // init push service
 
@@ -790,17 +788,19 @@ class PushService {
   }
 
   /**
-   * The app started with nobody signed in (Android). An install that signed
-   * out before logout removed pushers still has them on the homeserver, and
-   * kept ringing for that account (Pixel, TEST3, 2026-09-24): tell native to
-   * drop pushes and delete the FCM token, so those pushers die at FCM and a
-   * later login gets a token no old pusher knows. Never throws.
+   * The app started with nobody signed in. An install that signed out before
+   * logout removed pushers still has them on the homeserver, and kept ringing
+   * for that account (Pixel, TEST3, 2026-09-24): tell native to drop pushes
+   * (iOS: report and end VoIP calls at once) and, on Android, delete the FCM
+   * token, so those pushers die at FCM and a later login gets a token no old
+   * pusher knows. Never throws.
    */
   settleSignedOutLaunch(): void {
-    if (!isNative || isIOS) return;
+    if (!isNative) return;
     Promise.resolve()
       .then(() => PushData.markLoggedOut())
       .catch((e) => console.warn('[PushService] markLoggedOut failed:', e));
+    if (isIOS) return;
     this.tokenReset = Promise.resolve()
       .then(() => PushNotifications.unregister())
       .catch((e) => console.warn('[PushService] FCM token delete failed:', e));
@@ -813,7 +813,8 @@ class PushService {
    * Logout used to leave the pusher on the homeserver, and the Pixel kept
    * ringing for the account it had signed out of (TEST3, 2026-09-24). Three
    * layers, the local one first because it needs no network:
-   *  1. Android: the FCM service is told to drop every push (PushSessionPolicy).
+   *  1. Native is told the account is gone: Android's FCM service drops every
+   *     push (PushSessionPolicy); iOS reports a VoIP push and ends it at once.
    *  2. The homeserver deletes this device's pushers (`kind: null`).
    *  3. Android: the FCM token is deleted, so a pusher that step 2 missed —
    *     offline, or left by an older build — dies at FCM on its next send.
@@ -828,12 +829,10 @@ class PushService {
     this.fcmToken = null;
     this.voipToken = null;
 
-    if (!isIOS) {
-      try {
-        await PushData.markLoggedOut();
-      } catch (e) {
-        console.warn('[PushService] markLoggedOut failed:', e);
-      }
+    try {
+      await PushData.markLoggedOut();
+    } catch (e) {
+      console.warn('[PushService] markLoggedOut failed:', e);
     }
 
     // A registration that lands after this point must not put the pusher back.
