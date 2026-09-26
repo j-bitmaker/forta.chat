@@ -343,6 +343,22 @@
 
 ## Проверено
 
+### Прогресс отправки файла без Tor и клиент Matrix вслед за Tor из настроек
+- Коммиты: см. `git log -2 -- public/service-worker.js src/app/providers/initializers/tor-matrix-proxy.ts`
+- Почему нужен человек: прогресс отправки зависит от движка WebView и service worker'а — в тестах их нет.
+  SDK грузит файлы через `fetch` (без прогресса), теперь загрузка с прогрессом идёт через XMLHttpRequest. На
+  Android и в Electron service worker перехватывает каждый запрос, и тогда прогресса нет даже у XHR: страница
+  спрашивает маршрут Tor и, если загрузка идёт напрямую, помечает URL `forta_direct=1`, а service worker
+  статическим маршрутом (Chromium 123+) отдаёт её сети мимо себя. Клиент Matrix раньше узнавал о Tor только при
+  старте; теперь `syncMatrixTorProxy` ведёт `setTorProxyUrl` весь сеанс.
+- На чём: Samsung SM-A528B, TEST2, чат с TEST1.
+- Шаги: без Tor отправить файл 20 МБ → процент на пузыре растёт; включить Tor в настройках → в консоли
+  `[TOR] Matrix proxy applied`, файл 1 МБ уходит через Tor (URL без флага); выключить → `Matrix proxy cleared`.
+- Статус: ☑ проверено 2026-09-26. Без статического маршрута (только пропуск в `onFetch`) событий прогресса не было
+  ни одного; с ним пузырь 5 → 30 → 50 → 71 → 93 → 100 % за 13 с. Tor поднялся за 35 с: `Matrix proxy applied`,
+  файл 1 МБ ушёл через Tor (HTTP 200); выключение — `Matrix proxy cleared`. Старые WebView (< 123) остаются
+  при 0 % до конца, как раньше.
+
 ### Файлы идут через TorFile и показывают прогресс, когда Tor включили без перезапуска
 - Коммит: см. `git log -1 -- android/app/src/main/java/com/forta/chat/plugins/tor/TorPlugin.kt`
 - Почему нужен человек: маршрут файла (плагин TorFile или service worker) и прогресс на экране видны только в
