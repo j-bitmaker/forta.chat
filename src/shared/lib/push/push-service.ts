@@ -1,6 +1,7 @@
 import { PushNotifications } from '@capacitor/push-notifications';
 import { isIOS, isNative } from '@/shared/lib/platform';
 import { PushData, type PushPayload } from './push-data-plugin';
+import { isIncomingCallsEnabled, syncIncomingCallsSettingToNative } from './incoming-calls-setting';
 import { IOSVoIPPush } from './ios-voip-push';
 import { shouldRingForCallPush } from './call-push-dedup';
 import {
@@ -578,6 +579,12 @@ class PushService {
 
     // Handle calls
     if (data.msg_type === 'm.call.invite') {
+      // "Incoming calls" off: no ringer (#1388). Native drops these pushes
+      // too; a build whose native copy lags still must not ring.
+      if (!isIncomingCallsEnabled()) {
+        interopLog('push', 'call push ignored: incoming calls off', { roomId });
+        return;
+      }
       // Prefer the stable Matrix call_id over event_id: caller clients
       // resend m.call.invite with a new event_id each retry while keeping
       // the call_id constant. Session 41.
@@ -648,6 +655,7 @@ class PushService {
     } catch (e) {
       console.warn('[PushService] markSessionActive failed:', e);
     }
+    void syncIncomingCallsSettingToNative();
     // init push service
 
     // 1. Request notification permission (Android 13+ shows OS dialog)

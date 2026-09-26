@@ -28,9 +28,22 @@ enum PushSession {
     static func shouldRing(_ state: String?) -> Bool { state != loggedOut }
 }
 
-/// Reports a VoIP push for a signed-out device and ends the call in the same
-/// breath. Its own provider, so the app's call provider (the CallKit plugin)
-/// never sees the call; kept out of Recents.
+/// The "Incoming calls" switch JS last reported (forta-bugs#1388). Off, a VoIP
+/// push is reported and ended at once like a signed-out one, so Bastyon and
+/// the account's other devices keep ringing. No value yet: calls ring.
+enum IncomingCallsSetting {
+    private static let key = "forta.calls.incoming_enabled"
+
+    static var isEnabled: Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? true }
+
+    static func write(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: key)
+    }
+}
+
+/// Reports a VoIP push that must not ring (signed out, or incoming calls off)
+/// and ends the call in the same breath. Its own provider, so the app's call
+/// provider (the CallKit plugin) never sees the call; kept out of Recents.
 final class SignedOutCallSink: NSObject, CXProviderDelegate {
     private lazy var provider: CXProvider = {
         let config = CXProviderConfiguration()
@@ -43,18 +56,18 @@ final class SignedOutCallSink: NSObject, CXProviderDelegate {
         return provider
     }()
 
-    func reportAndEnd(callId: String) {
+    func reportAndEnd(callId: String, reason: String) {
         let uuid = UUID()
         let update = CXCallUpdate()
         update.localizedCallerName = "Forta"
         update.hasVideo = false
         provider.reportNewIncomingCall(with: uuid, update: update) { [provider] error in
             if let error {
-                NSLog("[VoIPPush] signed out: CallKit rejected call %@: %@", callId, error.localizedDescription)
+                NSLog("[VoIPPush] %@: CallKit rejected call %@: %@", reason, callId, error.localizedDescription)
                 return
             }
             provider.reportCall(with: uuid, endedAt: nil, reason: .failed)
-            NSLog("[VoIPPush] signed out: ended call %@", callId)
+            NSLog("[VoIPPush] %@: ended call %@", reason, callId)
         }
     }
 
@@ -146,7 +159,12 @@ final class VoIPPushCoordinator: NSObject, PKPushRegistryDelegate {
 
         guard PushSession.shouldRing(PushSession.state) else {
             // Synchronous report, as below; nothing reaches JS or the app's provider.
-            signedOutSink.reportAndEnd(callId: callId)
+            signedOutSink.reportAndEnd(callId: callId, reason: "signed out")
+            completion()
+            return
+        }
+        guard IncomingCallsSetting.isEnabled else {
+            signedOutSink.reportAndEnd(callId: callId, reason: "incoming calls off")
             completion()
             return
         }

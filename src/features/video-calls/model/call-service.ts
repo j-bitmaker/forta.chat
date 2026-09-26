@@ -33,6 +33,7 @@ import { ensureCallPermissions, PermissionDeniedError, callPermissionError } fro
 import { finalizeCall, waitForFinalizeSettled, FINALIZE_SETTLE_WAIT_MS } from "./finalize-call";
 import { holdPageAwake } from "./page-awake-tone";
 import { waitUntil } from "@/shared/lib/wait-until";
+import { isIncomingCallsEnabled } from "@/shared/lib/push/incoming-calls-setting";
 import {
   isLegacyWebView,
   shouldWarnLegacyWebView,
@@ -1335,6 +1336,14 @@ export function useCallService() {
       return;
     }
     if (matrixCall.callId) markIncomingCallSeen(matrixCall.callId);
+
+    // "Incoming calls" off (#1388): no ringer and no reject, so Bastyon and
+    // the account's other devices keep ringing. The SDK drops the call when
+    // the caller hangs up or the invite expires.
+    if (!isIncomingCallsEnabled()) {
+      console.info("[call-service] incoming call ignored, incoming calls are off:", matrixCall.callId);
+      return;
+    }
 
     // Check FIRST whether the user already declined this call in the
     // native ringer (before JS was running). If so, send the rejection

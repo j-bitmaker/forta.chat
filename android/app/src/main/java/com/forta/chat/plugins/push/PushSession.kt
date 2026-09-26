@@ -42,3 +42,24 @@ object PushSessionStore {
             .commit()
     }
 }
+
+/**
+ * The "Incoming calls" switch JS last reported (forta-bugs#1388). Off, the FCM
+ * service drops call invites: no ringer, no reject, so Bastyon and the
+ * account's other devices keep ringing. No value yet is an install whose JS
+ * has not reported: calls ring as before.
+ */
+object IncomingCallsStore {
+    private const val PREFS = "forta_push_session"
+    private const val KEY_ENABLED = "incoming_calls_enabled"
+
+    fun isEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_ENABLED, true)
+
+    fun write(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_ENABLED, enabled)
+            .commit()
+    }
+}

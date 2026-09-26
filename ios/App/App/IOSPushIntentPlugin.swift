@@ -81,6 +81,12 @@ public class IOSPushIntentPlugin: CAPPlugin {
         call.resolve()
     }
 
+    /// The "Incoming calls" switch (see `IncomingCallsSetting`).
+    @objc func setIncomingCallsEnabled(_ call: CAPPluginCall) {
+        IncomingCallsSetting.write(call.getBool("enabled") ?? true)
+        call.resolve()
+    }
+
     @objc func getPendingIntent(_ call: CAPPluginCall) {
         let p = pendingTap ?? [:]
         pendingTap = nil

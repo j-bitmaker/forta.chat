@@ -825,6 +825,36 @@ describe('call-service permission flow', () => {
     });
   });
 
+  describe('incoming calls switched off (#1388)', () => {
+    it('neither rings nor rejects, so Bastyon and other devices keep ringing', async () => {
+      const { __resetIncomingCallDedupForTests } = await import('./incoming-call-dedup');
+      const { useCallService } = await import('./call-service');
+      __resetIncomingCallDedupForTests();
+      window.localStorage.setItem('forta-chat:incoming_calls_enabled', 'false');
+      mockSetMatrixCall.mockClear();
+      const reject = vi.fn();
+      const on = vi.fn();
+
+      try {
+        await useCallService().handleIncomingCall({
+          callId: 'calls-off-a',
+          roomId: '!room:matrix.org',
+          type: 'voice',
+          on,
+          off: vi.fn(),
+          reject,
+          getOpponentMember: vi.fn(() => ({ userId: '@peer:matrix.org' })),
+        } as never);
+      } finally {
+        window.localStorage.removeItem('forta-chat:incoming_calls_enabled');
+      }
+
+      expect(mockSetMatrixCall).not.toHaveBeenCalled();
+      expect(on).not.toHaveBeenCalled();
+      expect(reject).not.toHaveBeenCalled();
+    });
+  });
+
   describe('incoming-call dedup window (#644)', () => {
     function incoming(callId: string) {
       return {

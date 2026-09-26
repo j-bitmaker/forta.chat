@@ -165,6 +165,9 @@ export const en = {
   "settings.about": "About",
   "settings.downloadApps": "Download apps",
   // ── Notification settings (WEE-75) ──
+  "notificationsSettings.callsTitle": "Calls",
+  "notificationsSettings.incomingCalls": "Incoming calls",
+  "notificationsSettings.incomingCallsDesc": "Turn off so Forta does not ring. You can still take the call in Bastyon or on another device.",
   "notificationsSettings.soundTitle": "Message sound",
   "notificationsSettings.soundDesc": "How new-message notifications alert you.",
   "notificationsSettings.soundOnHint": "New messages now play a notification sound out of the box.",

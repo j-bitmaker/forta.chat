@@ -178,6 +178,13 @@ class PushDataPlugin : Plugin() {
         call.resolve()
     }
 
+    /** The "Incoming calls" switch (see IncomingCallsStore). */
+    @PluginMethod
+    fun setIncomingCallsEnabled(call: PluginCall) {
+        IncomingCallsStore.write(context, call.getBoolean("enabled", true) ?: true)
+        call.resolve()
+    }
+
     @PluginMethod
     fun cacheRoomName(call: PluginCall) {
         val roomId = call.getString("roomId") ?: run {

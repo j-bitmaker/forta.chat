@@ -54,6 +54,8 @@ interface PushDataPlugin extends Plugin {
    *  push and iOS reports each VoIP push to CallKit and ends it at once, even
    *  one from a pusher the logout could not remove. */
   markLoggedOut(): Promise<void>;
+  /** "Incoming calls" switch: off, a call push neither rings nor shows (see incoming-calls-setting). */
+  setIncomingCallsEnabled(options: { enabled: boolean }): Promise<void>;
   addListener(event: 'pushReceived', handler: (data: PushPayload) => void): Promise<PluginListenerHandle>;
   addListener(event: 'pushOpenRoom', handler: (data: { roomId: string; eventId?: string }) => void): Promise<PluginListenerHandle>;
 }

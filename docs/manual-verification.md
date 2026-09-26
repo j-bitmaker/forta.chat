@@ -24,6 +24,16 @@
 
 ## Ожидают проверки
 
+### Переключатель «Входящие звонки» (forta-bugs#1388), iOS
+- Коммит: см. `git log -1 -- ios/App/App/VoIPPushCoordinator.swift`
+- Почему нужен человек: VoIP-пуш и CallKit — только на iPhone. Выключено: `VoIPPushCoordinator` сообщает звонок
+  отдельному `CXProvider` и сразу завершает (как для вышедшего аккаунта), лог `[VoIPPush] incoming calls off:
+  ended call`. Сборка для симулятора компилируется.
+- На чём: iPhone XR, пуш `apns-voip.mjs` (см. «iOS: VoIP-звонок на вышедший аккаунт…»).
+- Шаги: выключить в Настройки → Уведомления, убить Forta, пуш → `incoming calls off: ended call`, телефон не
+  звонит; включить → пуш → CallKit звонит.
+- Статус: ☐ ждёт подключения XR
+
 ### Разговор переживает завершение предыдущего звонка
 - Коммит: `00ddc636`
 - Почему нужен человек: проверяется гонка жизненного цикла сервиса — ОС решает,
@@ -342,6 +352,18 @@
 ---
 
 ## Проверено
+
+### Переключатель «Входящие звонки» (forta-bugs#1388), Android
+- Коммит: см. `git log -1 -- src/shared/lib/push/incoming-calls-setting.ts`
+- Почему нужен человек: пуш FCM и экран входящего живут в нативной части, тестами не покрыты.
+  Настройки → Уведомления → «Звонки» → «Входящие звонки». Выключено: Forta не звонит и не отклоняет (Bastyon и
+  другие устройства звонят как обычно). JS — `isIncomingCallsEnabled` в `call-service` и `push-service`; нативная
+  копия — `IncomingCallsStore` (SharedPreferences), её читает `FortaFirebaseMessagingService`.
+- На чём: Samsung SM-A528B (TEST2, экран заблокирован), звонок с веба TEST1 (`.bench/web/call-out.mjs`).
+- Статус: ☑ проверено 2026-09-26. Выключено, приложение живо (11:40:31): `Call push dropped: incoming calls are
+  off` и `[call-service] incoming call ignored`, экрана входящего нет. Выключено, процесс убит (11:41:18): тот же
+  отказ FCM. Включено, процесс убит (11:44:04): `Started IncomingCallActivity`. Значение переживает перезапуск: JS
+  при старте отдаёт его нативной части (`setIncomingCallsEnabled` в logcat).
 
 ### Прогресс отправки файла без Tor и клиент Matrix вслед за Tor из настроек
 - Коммиты: см. `git log -2 -- public/service-worker.js src/app/providers/initializers/tor-matrix-proxy.ts`
