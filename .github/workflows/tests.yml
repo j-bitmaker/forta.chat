@@ -80,6 +80,13 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle', 'android/gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
+      # llama-cpp-pro pins an NDK (android/build.gradle ndkVersion) that Gradle
+      # downloads on first configure; the runner's SDK does not have its
+      # licence accepted, so configuration fails without this (same step as
+      # android-test-apk.yml).
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+
       - name: Run unit tests
         working-directory: android
         run: ./gradlew :app:testSideloadDebugUnitTest --no-daemon
