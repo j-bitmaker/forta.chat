@@ -58,13 +58,24 @@ const videoSrc = computed(() => fileState.value.objectUrl);
 useVideoStatePreservation(videoEl, fileCacheKey, { dontResumePlay: true });
 
 let observer: IntersectionObserver | null = null;
+/** Last visibility the observer reported; it fires once on mount, often
+ *  before the video has loaded. */
+let inView = false;
+
+/** Muted autoplay for a circle that is on screen, unless the user stopped it. */
+const startIfInView = () => {
+  if (!inView || !videoEl.value || isCirclePausedByUser(fileCacheKey.value)) return;
+  videoEl.value.play().then(() => { isPlaying.value = true; showPlayIcon.value = false; }).catch(() => {});
+};
 
 const setupObserver = () => {
   if (!containerEl.value) return;
   observer = new IntersectionObserver(
     (entries) => {
       const entry = entries[0];
-      if (!entry || !videoEl.value || !isLoaded.value) return;
+      if (!entry) return;
+      inView = entry.isIntersecting;
+      if (!videoEl.value || !isLoaded.value) return;
       if (entry.isIntersecting) {
         // The user stopped this circle: coming back into view does not restart it.
         if (isCirclePausedByUser(fileCacheKey.value)) return;
@@ -120,7 +131,15 @@ const onEnded = () => {
   markCirclePausedByUser(fileCacheKey.value);
 };
 
-const onCanPlay = () => { isLoaded.value = true; };
+// A circle already on screen when its video becomes ready starts here: the
+// observer fired before the load and does not fire again while it stays in
+// view, so a new circle never started (Samsung, 2026-10-12). Only the first
+// canplay; later ones follow seeks and the loop back to 0.
+const onCanPlay = () => {
+  const firstReady = !isLoaded.value;
+  isLoaded.value = true;
+  if (firstReady) startIfInView();
+};
 
 watch(videoSrc, (url) => {
   if (url && videoEl.value) { videoEl.value.src = url; videoEl.value.load(); }

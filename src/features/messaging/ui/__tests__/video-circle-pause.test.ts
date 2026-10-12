@@ -106,4 +106,32 @@ describe("VideoCirclePlayer", () => {
     expect(circleActionOnEnded(true)).toBe("loop");
     expect(circleActionOnEnded(false)).toBe("stop");
   });
+
+  // Samsung 2026-10-12: a new circle on screen never started. The observer
+  // fired once, before the video had loaded, and gave up; nothing played it
+  // when the video became ready while it stayed in view.
+  it("starts a circle that becomes ready while it is already in view", async () => {
+    const wrapper = mount(VideoCirclePlayer, { props: { message: message as never, isOwn: false } });
+    observers.at(-1)!([{ isIntersecting: true }]);
+    await flushPromises();
+    expect(play).not.toHaveBeenCalled();
+
+    await wrapper.find("video").trigger("canplay");
+    await flushPromises();
+    expect(play).toHaveBeenCalledTimes(1);
+    expect((wrapper.find("video").element as HTMLVideoElement).muted).toBe(true);
+
+    // Later canplay events (a seek, the loop back to 0) start nothing new.
+    await wrapper.find("video").trigger("canplay");
+    await flushPromises();
+    expect(play).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start a circle that becomes ready off screen", async () => {
+    const wrapper = mount(VideoCirclePlayer, { props: { message: message as never, isOwn: false } });
+    observers.at(-1)!([{ isIntersecting: false }]);
+    await wrapper.find("video").trigger("canplay");
+    await flushPromises();
+    expect(play).not.toHaveBeenCalled();
+  });
 });
