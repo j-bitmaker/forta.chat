@@ -4,7 +4,7 @@ import type { Pcrypto, PcryptoRoomInstance } from "@/entities/matrix/model/matri
 import { DEFAULT_WATCHDOG_CONFIG } from "@/entities/matrix/model/sync-failover";
 import { ensureRoomMembers, type LazyMembersRoom } from "@/entities/matrix/model/ensure-room-members";
 import { getmatrixid, hexEncode, hexDecode } from "@/shared/lib/matrix/functions";
-import { matrixIdToAddress, messageTypeFromMime, parseFileInfo, cleanMatrixIds, looksLikeProperName, isVideoNoteInfo, isVoiceAudioMessage } from "../lib/chat-helpers";
+import { matrixIdToAddress, messageTypeFromMime, mediaMessageType, parseFileInfo, cleanMatrixIds, looksLikeProperName, isVideoNoteInfo, isVoiceAudioMessage } from "../lib/chat-helpers";
 import { buildLastMessage, lastMessageFromMessage, resolveLastMessagePreview } from "../lib/last-message-builder";
 import { parseEditBody } from "../lib/parse-edit";
 import { countUnreadRoomsForTab } from "../lib/room-visibility";
@@ -6079,21 +6079,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     if (mtype === "m.image" || mtype === "m.file" || mtype === "m.audio" || mtype === "m.video") {
       fileInfo = parseFileInfo(content, mtype);
       if (fileInfo) {
-        if (mtype === "m.image") msgType = MessageType.image;
-        // m.audio carries either a voice recording (MSC3245 marker / waveform)
-        // or a regular audio file picked from gallery. The latter must render
-        // as a file-bubble with save-to-disk, not as the voice player UI
-        // (forta-bugs#841 / WEE-50).
-        else if (mtype === "m.audio") msgType = fileInfo.isVoice ? MessageType.audio : MessageType.file;
-        else if (mtype === "m.video") msgType = fileInfo.videoNote ? MessageType.videoCircle : MessageType.video;
-        // m.file: route audio MIME (mp3, m4a, …) to MessageType.file so the
-        // receiver renders a file-bubble with save-to-disk instead of the
-        // voice player UI. Forta ships gallery picks as m.file regardless
-        // of MIME, so without this override the receiver re-introduces the
-        // forta-bugs#841 misclassification.
-        else msgType = fileInfo.type.startsWith("audio/")
-          ? MessageType.file
-          : messageTypeFromMime(fileInfo.type);
+        // Voice vs audio file, video circle vs video: see mediaMessageType.
+        msgType = mediaMessageType(mtype, fileInfo);
         body = fileInfo.name;
       } else {
         if (mtype === "m.image") msgType = MessageType.image;
@@ -6525,7 +6512,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
               const mtype = content?.msgtype as string;
               if (mtype === "m.image") msgType = MessageType.image;
               else if (mtype === "m.audio") msgType = MessageType.audio;
-              else if (mtype === "m.video") msgType = MessageType.video;
+              else if (mtype === "m.video") {
+                msgType = isVideoNoteInfo(content?.info as Record<string, unknown> | undefined)
+                  ? MessageType.videoCircle
+                  : MessageType.video;
+              }
               else if (mtype === "m.file") msgType = MessageType.file;
 
               if (senderId) {
@@ -8195,13 +8186,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       if (mtype === "m.image" || mtype === "m.file" || mtype === "m.audio" || mtype === "m.video") {
         fileInfo = parseFileInfo(content, mtype);
         if (fileInfo) {
-          if (mtype === "m.image") msgType = MessageType.image;
-          // See decryption-path branch above for the voice vs. audio-file split.
-          else if (mtype === "m.audio") msgType = fileInfo.isVoice ? MessageType.audio : MessageType.file;
-          else if (mtype === "m.video") msgType = MessageType.video;
-          else msgType = fileInfo.type.startsWith("audio/")
-            ? MessageType.file
-            : messageTypeFromMime(fileInfo.type);
+          // Same mapping as the history path, video circles included.
+          msgType = mediaMessageType(mtype, fileInfo);
           body = fileInfo.name;
         } else {
           if (mtype === "m.image") msgType = MessageType.image;
