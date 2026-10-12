@@ -71,6 +71,7 @@ vi.mock("@/entities/matrix", () => ({
       oldState: { paginationToken: null },
     })),
     isReady: vi.fn(() => true),
+    hasLiveSync: () => true,
     getUserId: vi.fn(() => "@mock:s"),
     getRooms: vi.fn(() => []),
     getRoomAccountData: vi.fn(() => null),

@@ -64,6 +64,12 @@ interface MatrixLoginData {
  *  is set. The "refresh" is a password re-login (see reloginForExpiredToken). */
 const RELOGIN_REFRESH_TOKEN = "forta-password-relogin";
 
+/** Whether a sync state means a /sync from the server completed: SYNCING, or a
+ *  PREPARED not replayed from the local store. */
+export function isLiveSync(state: string, fromCache: boolean): boolean {
+  return state === "SYNCING" || (state === "PREPARED" && !fromCache);
+}
+
 /** `fromCache`: PREPARED replayed from the local SDK store, before any live /sync. */
 export type SyncCallback = (
   state: "PREPARED" | "SYNCING" | "ERROR" | "STOPPED" | "RECONNECTING",
@@ -106,6 +112,9 @@ export class MatrixClientService {
   // or touch ready/error.
   private initGeneration = 0;
   private clientBuildGeneration = 0;
+  /** A /sync from the server completed for the current client. Until then the
+   *  SDK holds only its cached state, which can be older than Dexie. */
+  private liveSyncSeen = false;
   // Exponential backoff state for retrying the SAME host on a sync ERROR,
   // replacing the old tight retryImmediately() loop (WEE-105 H2).
   private errorRetryAttempt = 0;
@@ -438,6 +447,7 @@ export class MatrixClientService {
       console.warn("[matrix] stopping the previous client before starting a new one");
       this.stopClientOnly();
     }
+    this.liveSyncSeen = false;
     this.client = userClient;
     this.initEvents();
 
@@ -747,6 +757,7 @@ export class MatrixClientService {
     });
 
     this.client.on("sync", (state: string, _prev: string | null, data?: { error?: { message?: string }; fromCache?: boolean }) => {
+      if (isLiveSync(state, data?.fromCache === true)) this.liveSyncSeen = true;
       if (state === "PREPARED" || state === "SYNCING") {
         if (!this.chatsReady) {
           this.chatsReady = true;
@@ -1155,6 +1166,11 @@ export class MatrixClientService {
 
   isChatsReady(): boolean {
     return this.chatsReady;
+  }
+
+  /** A /sync from the server has completed for the current client (see liveSyncSeen). */
+  hasLiveSync(): boolean {
+    return this.liveSyncSeen;
   }
 
   /** Send text message. `txnId` is the Matrix transaction ID used for

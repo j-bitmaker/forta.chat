@@ -24,6 +24,7 @@ const sendText = vi.fn<(roomId: string, text: string, txnId?: string) => Promise
 vi.mock("@/entities/matrix", () => ({
   getMatrixClientService: vi.fn(() => ({
     isReady: () => matrix.ready,
+    hasLiveSync: () => true,
     getUserId: () => "@mockuser:server",
     getRoom: vi.fn(() => null),
     setTyping: vi.fn(),

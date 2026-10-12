@@ -23,6 +23,7 @@ vi.mock("heic2any", () => ({ default: vi.fn(async () => new Blob(["jpeg"], { typ
 vi.mock("@/entities/matrix", () => ({
   getMatrixClientService: vi.fn(() => ({
     isReady: () => false,
+    hasLiveSync: () => true,
     getUserId: () => "@mockuser:server",
     getRoom: vi.fn(),
     setTyping: vi.fn(),

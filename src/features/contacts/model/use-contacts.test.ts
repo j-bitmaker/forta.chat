@@ -43,6 +43,7 @@ const mockMxcToHttp = vi.fn((mxcUrl: string) => mxcUrl.replace("mxc://", "https:
 vi.mock("@/entities/matrix", () => ({
   getMatrixClientService: vi.fn(() => ({
     isReady: () => mockIsReady(),
+    hasLiveSync: () => true,
     getUserId: () => "@" + hexEncode("PMyAddress123456789012345678901234").toLowerCase() + ":matrix.pocketnet.app",
     createRoom: mockCreateRoom,
     joinRoom: mockJoinRoom,

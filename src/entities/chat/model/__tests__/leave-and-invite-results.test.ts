@@ -17,6 +17,7 @@ const mockMatrixService = {
   getUserId: vi.fn(() => "@me:server"),
   getRoom: vi.fn(() => (sdkMembership === undefined ? null : { selfMembership: sdkMembership })),
   isReady: vi.fn(() => false),
+  hasLiveSync: () => true,
   leaveRoom: vi.fn(async () => {}),
   forgetRoom: vi.fn(async () => {}),
   joinRoom: vi.fn(async () => {}),

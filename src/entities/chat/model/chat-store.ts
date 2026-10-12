@@ -3933,11 +3933,25 @@ export const useChatStore = defineStore(NAMESPACE, () => {
    * read through roomUnreadCount, which takes the peer's call hangups out.
    * This heals any poisoned counts left in Dexie from previous buggy increments.
    */
+  let unreadHealRetry: ReturnType<typeof setTimeout> | null = null;
   const syncAllUnreadFromMatrix = async () => {
     const dbKit = chatDbKitRef.value;
     if (!dbKit) return;
     const matrixService = getMatrixClientService();
     if (!matrixService.isReady()) return;
+    // Before the first /sync from the server the SDK holds only its cached
+    // state, older than Dexie: copying it turned a room's 1 into 0 at a cold
+    // start, and a push tap then opened that room without the unread banner
+    // (Samsung, 2026-10-12). Try again once a live sync has come in.
+    if (!matrixService.hasLiveSync()) {
+      if (unreadHealRetry === null) {
+        unreadHealRetry = setTimeout(() => {
+          unreadHealRetry = null;
+          void syncAllUnreadFromMatrix();
+        }, 3000);
+      }
+      return;
+    }
 
     try {
       const matrixRooms = matrixService.getRooms() as any[];
