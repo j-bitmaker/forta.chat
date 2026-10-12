@@ -134,4 +134,13 @@ describe("VideoCirclePlayer", () => {
     await flushPromises();
     expect(play).not.toHaveBeenCalled();
   });
+
+  // Review 2026-10-12: a batch of observer entries lists the newest last.
+  it("takes the newest visibility from a batch of observer entries", async () => {
+    const wrapper = mount(VideoCirclePlayer, { props: { message: message as never, isOwn: false } });
+    observers.at(-1)!([{ isIntersecting: true }, { isIntersecting: false }]);
+    await wrapper.find("video").trigger("canplay");
+    await flushPromises();
+    expect(play).not.toHaveBeenCalled();
+  });
 });

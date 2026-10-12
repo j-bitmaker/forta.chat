@@ -341,7 +341,7 @@ let roomOpenedAt = 0;
 let lastRoomIdSeen: string | null = null;
 
 const fabBadgeCount = computed(() => {
-  const c = hasBanner() ? bannerState.value.frozenUnreadCount : newMessageCount.value;
+  const c = hasBanner() ? bannerShownCount.value : newMessageCount.value;
   return c > 99 ? '99+' : c;
 });
 
@@ -458,6 +458,12 @@ const virtualItems = computed<VirtualItem[]>(() => {
 
   return items;
 });
+
+/** The number the unread banner shows (see bannerUnreadCount); the scroll
+ *  button's badge shows the same one. */
+const bannerShownCount = computed(() =>
+  virtualItems.value.find((item) => item.type === "unread-banner")?.unreadCount ?? bannerState.value.frozenUnreadCount,
+);
 
 /** Newest-first for the inverted scroller (index 0 = visual bottom).
  *  Requires `activeMessages` / `virtualItems` in chronological order (oldest→newest).

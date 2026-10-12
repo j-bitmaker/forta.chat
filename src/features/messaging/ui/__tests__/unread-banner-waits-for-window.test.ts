@@ -70,4 +70,12 @@ describe("MessageList — scroll to the unread banner", () => {
     expect(items).toContain("bannerMsgIndex = i;");
     expect(items).toMatch(/const below = msgs\.slice\(bannerMsgIndex\)\.filter\(\(m\) => !isGhostMessage\(m\)\);\s*bannerItem\.unreadCount = bannerUnreadCount\(frozenUnreadCount, below, myAddr\);/);
   });
+
+  // Review 2026-10-12: the scroll button's badge kept the open-time snapshot
+  // while the banner showed the recount.
+  it("gives the scroll button the banner's own number", () => {
+    const fab = source.slice(source.indexOf("const fabBadgeCount = computed"), source.indexOf("const fabBadgeCount = computed") + 300);
+    expect(fab).toContain("bannerShownCount.value");
+    expect(source).toMatch(/const bannerShownCount = computed\(\(\) =>[\s\S]*?virtualItems\.value\.find\(/);
+  });
 });

@@ -80,13 +80,14 @@ export async function resolveUnreadBannerPlan(
  * message that reached the device through /sync after the snapshot (a cold
  * push tap, Samsung 2026-10-10: "1 unread message" over two) is counted; a
  * window that does not hold all of them yet never lowers the snapshot. Own
- * messages and system rows are not unread messages.
+ * messages, system rows and deleted messages are not unread messages.
  */
 export function bannerUnreadCount(
   snapshot: number,
-  below: ReadonlyArray<{ senderId: string; type?: string }>,
+  below: ReadonlyArray<{ senderId: string; type?: string; deleted?: boolean }>,
   myAddress: string | null | undefined,
 ): number {
-  const inbound = below.filter((m) => m.senderId !== myAddress && m.type !== "system").length;
+  // A deleted message is drawn as a placeholder and is not unread.
+  const inbound = below.filter((m) => m.senderId !== myAddress && m.type !== "system" && !m.deleted).length;
   return Math.max(snapshot, inbound);
 }

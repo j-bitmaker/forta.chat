@@ -158,4 +158,11 @@ describe("bannerUnreadCount", () => {
     ];
     expect(bannerUnreadCount(0, below, me)).toBe(1);
   });
+
+  // Review 2026-10-12: a deleted message is drawn as a placeholder, and the
+  // server does not count it as unread.
+  it("leaves out deleted messages", () => {
+    const below = [{ senderId: "PPeer", type: "text" }, { senderId: "PPeer", type: "text", deleted: true }];
+    expect(bannerUnreadCount(0, below, me)).toBe(1);
+  });
 });

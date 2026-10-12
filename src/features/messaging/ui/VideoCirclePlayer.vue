@@ -72,7 +72,8 @@ const setupObserver = () => {
   if (!containerEl.value) return;
   observer = new IntersectionObserver(
     (entries) => {
-      const entry = entries[0];
+      // A delayed batch lists the newest change last.
+      const entry = entries[entries.length - 1];
       if (!entry) return;
       inView = entry.isIntersecting;
       if (!videoEl.value || !isLoaded.value) return;
