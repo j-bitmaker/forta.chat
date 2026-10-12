@@ -83,6 +83,21 @@ class CancelledCallStore(context: Context) {
         prefs.edit().putLong(HANDLED_PREFIX + callId, nowMs + ttlMs).commit()
     }
 
+    /** Stamp [callId] as seen: an invite push for it reached this phone. */
+    fun markInviteSeen(
+        callId: String,
+        ttlMs: Long = HANDLED_TTL_MS,
+        nowMs: Long = System.currentTimeMillis(),
+    ) {
+        prefs.edit().putLong(SEEN_PREFIX + callId, nowMs + ttlMs).apply()
+    }
+
+    /** `true` if an invite push for [callId] reached this phone within the TTL window. */
+    fun inviteSeen(
+        callId: String,
+        nowMs: Long = System.currentTimeMillis(),
+    ): Boolean = prefs.getLong(SEEN_PREFIX + callId, 0L) > nowMs
+
     /** `true` if [callId] was marked by [markHandled] within the TTL window. */
     fun wasHandled(
         callId: String,
@@ -120,5 +135,6 @@ class CancelledCallStore(context: Context) {
         const val HANDLED_TTL_MS: Long = 30 * 60_000L
         private const val PREFS_NAME = "forta_cancelled_calls"
         private const val HANDLED_PREFIX = "handled:"
+        private const val SEEN_PREFIX = "seen:"
     }
 }

@@ -66,6 +66,17 @@ object InvitePushPolicy {
     fun cancelledInviteIsMissed(expired: Boolean, handled: Boolean): Boolean = expired && !handled
 
     /**
+     * Whether the caller's hangup leaves a "missed call" notice. With the phone
+     * offline during the call, FCM later delivered only the hangup and never
+     * the invite (Samsung, T1 run 2026-10-12), so the stale-invite notice never
+     * showed. Only for a call this phone never saw: no invite push came, and
+     * it was not [handled] (rang or answered here, answered or declined on
+     * another device).
+     */
+    fun hangupLeavesMissedNotice(msgType: String, callId: String?, inviteSeen: Boolean, handled: Boolean): Boolean =
+        msgType == "m.call.hangup" && !callId.isNullOrEmpty() && !inviteSeen && !handled
+
+    /**
      * Whether a later push withdraws the missed-call notice: only the caller's
      * select_answer naming the noticed call, which means another device of the
      * user answered it. A hangup or reject leaves the call missed.

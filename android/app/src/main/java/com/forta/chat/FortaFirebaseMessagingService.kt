@@ -285,6 +285,17 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
             // process memory only and the FCM service is routinely
             // torn down between pushes, which is precisely when the
             // late retry arrives.
+            // Offline during the call, FCM may bring only the caller's hangup
+            // later, never the invite: say the call was missed (T1).
+            if (IncomingCallsStore.isEnabled(this) &&
+                InvitePushPolicy.hangupLeavesMissedNotice(
+                    msgType, endedCallId,
+                    inviteSeen = endedCallId != null && CancelledCallStore(this).inviteSeen(endedCallId),
+                    handled = handledHere || (endedCallId != null && CancelledCallStore(this).wasHandled(endedCallId)),
+                )
+            ) {
+                maybeShowMissedCallNotice(roomId, eventId, endedCallId ?: "", sender, senderName, roomName)
+            }
             if (endedCallId != null) {
                 CancelledCallStore(this).markCancelled(endedCallId)
                 // Rang or answered here, or answered or declined on another
@@ -315,6 +326,8 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
             // event_id. Without this guard each retry stacks another
             // ringer on top of the one the user is already looking at.
             val callId = data["call_id"] ?: data["event_id"] ?: ""
+            // A later hangup for a call no invite reached is a missed call (below).
+            if (callId.isNotEmpty()) CancelledCallStore(this).markInviteSeen(callId)
             if (callId.isNotEmpty() && callId == lastRingingCallId) {
                 Log.d(TAG, "Duplicate invite retry for $callId — suppressing")
                 forwardToJs(data)

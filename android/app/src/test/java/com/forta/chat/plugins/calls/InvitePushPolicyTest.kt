@@ -108,6 +108,23 @@ class InvitePushPolicyTest {
         )
     }
 
+    // T1 on the Samsung 2026-10-12: with the phone offline during the call FCM
+    // later delivered only the caller's hangup; the invite never came, so the
+    // stale-invite notice never showed.
+    @Test
+    fun aHangupForACallThisPhoneNeverSawLeavesTheNotice() {
+        assertTrue(InvitePushPolicy.hangupLeavesMissedNotice("m.call.hangup", "c1", inviteSeen = false, handled = false))
+    }
+
+    @Test
+    fun aHangupForASeenOrHandledCallOrAnotherEventLeavesNone() {
+        assertFalse(InvitePushPolicy.hangupLeavesMissedNotice("m.call.hangup", "c1", inviteSeen = true, handled = false))
+        assertFalse(InvitePushPolicy.hangupLeavesMissedNotice("m.call.hangup", "c1", inviteSeen = false, handled = true))
+        assertFalse(InvitePushPolicy.hangupLeavesMissedNotice("m.call.reject", "c1", inviteSeen = false, handled = false))
+        assertFalse(InvitePushPolicy.hangupLeavesMissedNotice("m.call.select_answer", "c1", inviteSeen = false, handled = false))
+        assertFalse(InvitePushPolicy.hangupLeavesMissedNotice("m.call.hangup", null, inviteSeen = false, handled = false))
+    }
+
     // Review 2026-10-10: a call another device of the user answered is not
     // missed. Its select_answer can trail the stale invite in the same flush.
     @Test

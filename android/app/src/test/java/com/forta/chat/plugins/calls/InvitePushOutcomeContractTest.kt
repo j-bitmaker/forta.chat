@@ -162,4 +162,23 @@ class InvitePushOutcomeContractTest {
         val body = plugin.substring(start, plugin.indexOf("\n    }\n", start))
         assertTrue(body, body.contains("markHandled(callId)") && body.contains("markHandled(slotId)"))
     }
+
+    // T1 on the Samsung 2026-10-12: offline during the call, only the hangup came.
+    @Test
+    fun everyInvitePushIsRememberedAsSeen() {
+        val invite = service.indexOf("if (msgType == \"m.call.invite\") {")
+        val seen = service.indexOf("CancelledCallStore(this).markInviteSeen(callId)", invite)
+        val firstReturn = service.indexOf("return", service.indexOf("val callId = data[\"call_id\"]", invite))
+        assertTrue("the invite is marked seen before any early return", seen > invite && seen < firstReturn)
+    }
+
+    @Test
+    fun aHangupForAnUnseenCallShowsTheNoticeThroughThePolicy() {
+        val branch = service.substring(service.indexOf("Call ended remotely (type="), service.indexOf("// Handle calls"))
+        val decide = branch.indexOf("InvitePushPolicy.hangupLeavesMissedNotice(")
+        val show = branch.indexOf("maybeShowMissedCallNotice(", decide)
+        assertTrue(branch, decide >= 0 && show > decide)
+        assertTrue(branch.substring(decide, show), branch.substring(decide, show).contains("handledHere"))
+        assertTrue(branch.substring(decide, show), branch.substring(decide, show).contains(".inviteSeen(endedCallId)"))
+    }
 }
