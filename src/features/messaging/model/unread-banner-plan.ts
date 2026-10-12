@@ -73,3 +73,20 @@ export async function resolveUnreadBannerPlan(
     needsBootstrap: false,
   };
 }
+
+/**
+ * The number the unread banner shows: the open-time snapshot, or the inbound
+ * messages already loaded below the banner when there are more of them. A
+ * message that reached the device through /sync after the snapshot (a cold
+ * push tap, Samsung 2026-10-10: "1 unread message" over two) is counted; a
+ * window that does not hold all of them yet never lowers the snapshot. Own
+ * messages and system rows are not unread messages.
+ */
+export function bannerUnreadCount(
+  snapshot: number,
+  below: ReadonlyArray<{ senderId: string; type?: string }>,
+  myAddress: string | null | undefined,
+): number {
+  const inbound = below.filter((m) => m.senderId !== myAddress && m.type !== "system").length;
+  return Math.max(snapshot, inbound);
+}

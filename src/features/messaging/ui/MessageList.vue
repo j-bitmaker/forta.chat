@@ -29,7 +29,7 @@ import TypingBubble from "./TypingBubble.vue";
 import ChatVirtualScroller from "@/shared/ui/ChatVirtualScroller.vue";
 import { useI18n } from "@/shared/lib/i18n";
 import { useUnreadBanner } from "../model/use-unread-banner";
-import { resolveUnreadBannerPlan } from "../model/unread-banner-plan";
+import { bannerUnreadCount, resolveUnreadBannerPlan } from "../model/unread-banner-plan";
 import { useReadTracker } from "../model/use-read-tracker";
 import { decideFabAction, shouldAutoDismissBanner } from "../model/fab-decision";
 import UnreadBanner from "./UnreadBanner.vue";
@@ -395,6 +395,9 @@ const virtualItems = computed<VirtualItem[]>(() => {
   // This ensures own messages sent after the watermark stay ABOVE the banner.
   let bannerPending = hasUnread && frozenLastReadId === null;
   let bannerInserted = false;
+  /** The banner row and the index of the first message below it. */
+  let bannerItem: VirtualItem | null = null;
+  let bannerMsgIndex = -1;
 
   for (let i = 0; i < msgs.length; i++) {
     const msg = msgs[i];
@@ -416,14 +419,14 @@ const virtualItems = computed<VirtualItem[]>(() => {
     // (before its date separator if one exists, so the banner sits right above the first unread)
     if (bannerPending && !bannerInserted && msg.senderId !== myAddr) {
       // Insert banner before the date separator (if any) for this message
+      bannerItem = { id: "unread-banner", type: "unread-banner", unreadCount: frozenUnreadCount };
+      items.push(bannerItem);
       if (dateLabel) {
         const stableId = (msg as any)._key || msg.id;
-        items.push({ id: "unread-banner", type: "unread-banner", unreadCount: frozenUnreadCount });
         items.push({ id: `date-${stableId}`, type: "date-separator", label: dateLabel });
-      } else {
-        items.push({ id: "unread-banner", type: "unread-banner", unreadCount: frozenUnreadCount });
       }
       bannerInserted = true;
+      bannerMsgIndex = i;
     } else if (dateLabel) {
       const stableId = (msg as any)._key || msg.id;
       items.push({ id: `date-${stableId}`, type: "date-separator", label: dateLabel });
@@ -439,6 +442,13 @@ const virtualItems = computed<VirtualItem[]>(() => {
         bannerPending = true;
       }
     }
+  }
+
+  // The count was snapshotted at open; messages that reached the device after
+  // it (a cold push tap) sit below the banner too.
+  if (bannerItem) {
+    const below = msgs.slice(bannerMsgIndex).filter((m) => !isGhostMessage(m));
+    bannerItem.unreadCount = bannerUnreadCount(frozenUnreadCount, below, myAddr);
   }
 
   // Typing indicator

@@ -63,4 +63,11 @@ describe("MessageList — scroll to the unread banner", () => {
     expect(fallback).toMatch(/if \(ownAppendCount !== ownAppendsAtOpen\) return;/);
     expect(source).toMatch(/const lastAddedIsOwn = lastMsg\.senderId === authStore\.address;\s*if \(lastAddedIsOwn\) ownAppendCount\+\+;/);
   });
+
+  // Samsung 2026-10-10: "1 unread message" over two after a cold push tap.
+  it("counts the messages that reached the device after the open snapshot", () => {
+    const items = source.slice(source.indexOf("const virtualItems = computed"), source.indexOf("const reversedItems = computed"));
+    expect(items).toContain("bannerMsgIndex = i;");
+    expect(items).toMatch(/const below = msgs\.slice\(bannerMsgIndex\)\.filter\(\(m\) => !isGhostMessage\(m\)\);\s*bannerItem\.unreadCount = bannerUnreadCount\(frozenUnreadCount, below, myAddr\);/);
+  });
 });
