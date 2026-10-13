@@ -2771,6 +2771,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     _suppressDexieRecompute = true;
     try {
     perfMark("fullRoomRefresh-start");
+    // Before the first /sync the SDK's counts come from its store, which can
+    // be older than Dexie; syncAllUnreadFromMatrix reconciles after the /sync.
+    const reconcileUnread = getMatrixClientService().hasLiveSync();
     // Retry previously failed decryptions on full refresh
     decryptFailedRooms.clear();
     // The rows on screen need not wait for the whole refresh (35s observed on
@@ -2912,7 +2915,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         syncedAt: now,
         updatedAt: r.updatedAt,
         lastMessageTimestamp: r.lastMessage?.timestamp || r.updatedAt || undefined,
-        serverUnreadCount: r.unreadCount, // cross-device unread reconciliation
+        // cross-device unread reconciliation
+        serverUnreadCount: reconcileUnread ? r.unreadCount : undefined,
         // Full insert fields for genuinely new rooms
         unreadCount: r.unreadCount,
         lastMessagePreview: r.lastMessage?.deleted
@@ -3137,6 +3141,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     changed: Set<string>,
   ) => {
     const matrixService = getMatrixClientService();
+    // Same as fullRoomRefresh: no unread reconciliation from the SDK's store.
+    const reconcileUnread = matrixService.hasLiveSync();
     let removed = false;
 
     // Rebuild only changed rooms — fetch each individually from SDK
@@ -3220,7 +3226,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           syncedAt: now,
           updatedAt: r.updatedAt,
           lastMessageTimestamp: r.lastMessage?.timestamp || r.updatedAt || undefined,
-          serverUnreadCount: r.unreadCount, // cross-device unread reconciliation
+          // cross-device unread reconciliation
+          serverUnreadCount: reconcileUnread ? r.unreadCount : undefined,
           unreadCount: r.unreadCount,
           lastMessagePreview: r.lastMessage?.deleted
             ? "🚫 Message deleted"
@@ -3526,11 +3533,24 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     }
   };
 
+  /** A room refresh ran before the current client's first /sync and left
+   *  unread counts alone; the first refresh after that /sync heals every room. */
+  let unreadHealAfterSync = false;
+
   const refreshRoomsImmediate = () => {
     const matrixService = getMatrixClientService();
     const kit = matrixKitRef.value;
     if (!matrixService.isReady() || !kit) {
       return;
+    }
+
+    // The changed rooms may be gone with the skipped pass, and a rebuilt
+    // client replays its store after the one-time startup heal.
+    if (!matrixService.hasLiveSync()) {
+      unreadHealAfterSync = true;
+    } else if (unreadHealAfterSync) {
+      unreadHealAfterSync = false;
+      void syncAllUnreadFromMatrix();
     }
 
     refreshIgnoredMatrixUserCache();

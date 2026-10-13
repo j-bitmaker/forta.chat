@@ -79,6 +79,7 @@ Detail reference for [AGENTS.md](../../AGENTS.md). See also [local-first-archite
 - `decryptEvent()`, `encryptEvent()`, `getRoomMembers()`, `fetchEventContext()`
 - E2E is Bastyon's Pcrypto (`matrix-crypto.ts`: secp256k1 + AES-SIV, AES-CBC for files), not Olm/Megolm; the SDK's Rust crypto is never initialised and stays a lazy chunk
 - The SDK's IndexedDB sync store runs in a Web Worker where the WebView supports it (`sync-store-worker.ts`: probed once, falls back to the main thread; a failed probe is remembered per userAgent)
+- The SDK saves that store every 5 min, so at a cold start it can be older than Dexie. Room refreshes and the startup heal `syncAllUnreadFromMatrix` reconcile stored unread counts with the SDK only after a /sync from the server (`hasLiveSync()`). The first refresh after that /sync runs the heal for every room. A room new to Dexie still takes the SDK count.
 - Room members: `ensureRoomMembers()` (`ensure-room-members.ts`) before encryption decisions; peer keys for several rooms are fetched in one batch via `chatStore.preloadRoomKeys()`. `lazyLoadMembers` stays `false` (plan `docs/plans/2026-10-03-initial-sync-lazy-members.md`, phase II cancelled)
 
 ### Vendored Pocketnet SDK (`public/js/lib/client/sdk.js`)
