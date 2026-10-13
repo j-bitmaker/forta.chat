@@ -36,6 +36,12 @@ import { collectTimelineReactions } from "../lib/timeline-reactions";
 import { createHistoryBackfill } from "./history-backfill";
 import { roomAddresses, roomsKeyAddresses } from "../lib/room-addresses";
 import { unreadPeerHangupCount, unreadCountWithoutHangups, hasCallEvent } from "../lib/call-hangup-unread";
+import {
+  PENDING_RECEIPT_MAX_AGE_MS,
+  parsePendingReceipts,
+  pendingReceiptsKey,
+  serializePendingReceipts,
+} from "../lib/pending-read-receipts";
 import { createHangupGapCounter } from "./hangup-gap-counter";
 import { callHangupRuleSince } from "@/shared/lib/push/call-hangup-push-rule";
 import { callSelectAnswerRuleSince } from "@/shared/lib/push/call-select-answer-push-rule";
@@ -1269,8 +1275,12 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   };
 
   // Room-level pin/mute (Batch 7) — per-account keys
-  let _pinnedKey = "chat_pinned_rooms";
-  let _mutedKey = "chat_muted_rooms";
+  const LEGACY_PINNED_KEY = "chat_pinned_rooms";
+  const LEGACY_MUTED_KEY = "chat_muted_rooms";
+  let _pinnedKey = LEGACY_PINNED_KEY;
+  let _mutedKey = LEGACY_MUTED_KEY;
+  /** Account whose keys are bound; null before the first bind and after cleanup. */
+  let _boundAddress: string | null = null;
 
   const pinnedRoomIds = ref<Set<string>>(new Set());
   const mutedRoomIds = ref<Set<string>>(new Set());
@@ -1279,13 +1289,52 @@ export const useChatStore = defineStore(NAMESPACE, () => {
    *  A failed write stays here for the session so an offline mute holds. */
   const pendingMuteWrites = new Map<string, boolean>();
 
-  /** Called from auth store on login/switch to bind per-account keys */
+  /** The account's room set with the ids left under the shared key folded
+   *  in: a restored session used to write there (it never bound the keys). */
+  const loadRoomSet = (key: string, legacyKey: string): Set<string> => {
+    const read = (k: string): string[] => {
+      try {
+        const parsed: unknown = JSON.parse(localStorage.getItem(k) || "[]");
+        return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+      } catch {
+        return [];
+      }
+    };
+    const set = new Set([...read(key), ...read(legacyKey)]);
+    try {
+      if (localStorage.getItem(legacyKey) !== null) {
+        localStorage.setItem(key, JSON.stringify([...set]));
+        localStorage.removeItem(legacyKey);
+      }
+    } catch {
+      // Storage unavailable: the set in memory still holds both.
+    }
+    return set;
+  };
+
+  /** Bind the per-account keys. The auth store calls this on every Matrix
+   *  start, login and account switch; binding the bound account is a no-op. */
   const bindAccountKeys = (address: string) => {
+    if (_boundAddress === address) return;
+    _boundAddress = address;
     _pinnedKey = `chat_pinned_rooms:${address}`;
     _mutedKey = `chat_muted_rooms:${address}`;
     pendingMuteWrites.clear();
-    pinnedRoomIds.value = new Set(JSON.parse(localStorage.getItem(_pinnedKey) || "[]"));
-    mutedRoomIds.value = new Set(JSON.parse(localStorage.getItem(_mutedKey) || "[]"));
+    pinnedRoomIds.value = loadRoomSet(_pinnedKey, LEGACY_PINNED_KEY);
+    mutedRoomIds.value = loadRoomSet(_mutedKey, LEGACY_MUTED_KEY);
+    const receiptsKey = pendingReceiptsKey(address);
+    if (_pendingReceiptsKey !== receiptsKey) {
+      // Another account's reads stay in its own key. A read made before the
+      // first bind (nothing bound yet) belongs to this account and is kept.
+      if (_pendingReceiptsKey !== null) {
+        pendingReadWatermarks.clear();
+        watermarkQueuedAt.clear();
+        restoredReadWatermarks.clear();
+      }
+      _pendingReceiptsKey = receiptsKey;
+      restorePendingReadWatermarks();
+      persistPendingReadWatermarks();
+    }
   };
 
   const persistRoomSets = () => {
@@ -2915,8 +2964,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         syncedAt: now,
         updatedAt: r.updatedAt,
         lastMessageTimestamp: r.lastMessage?.timestamp || r.updatedAt || undefined,
-        // cross-device unread reconciliation
-        serverUnreadCount: reconcileUnread ? r.unreadCount : undefined,
+        // cross-device unread reconciliation; a room whose receipt is still
+        // on its way keeps its local count
+        serverUnreadCount: reconcileUnread && !pendingReadWatermarks.has(r.id) ? r.unreadCount : undefined,
         // Full insert fields for genuinely new rooms
         unreadCount: r.unreadCount,
         lastMessagePreview: r.lastMessage?.deleted
@@ -3226,8 +3276,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           syncedAt: now,
           updatedAt: r.updatedAt,
           lastMessageTimestamp: r.lastMessage?.timestamp || r.updatedAt || undefined,
-          // cross-device unread reconciliation
-          serverUnreadCount: reconcileUnread ? r.unreadCount : undefined,
+          // cross-device unread reconciliation; a room whose receipt is still
+          // on its way keeps its local count
+          serverUnreadCount: reconcileUnread && !pendingReadWatermarks.has(r.id) ? r.unreadCount : undefined,
           unreadCount: r.unreadCount,
           lastMessagePreview: r.lastMessage?.deleted
             ? "🚫 Message deleted"
@@ -3919,6 +3970,77 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   // could not be sent (event not found in timeline, HTTP error, tab hidden, etc.).
   // Retried on every sync cycle so the server eventually learns about reads.
   const pendingReadWatermarks = new Map<string, number>();
+  /** Track when each pending watermark was first queued (staleness warnings, age limit) */
+  const watermarkQueuedAt = new Map<string, number>();
+  /** Storage key for this account's pending watermarks (set by bindAccountKeys).
+   *  They survive a restart: a read made offline is not lost to a swipe. */
+  let _pendingReceiptsKey: string | null = null;
+  /** Rooms whose watermark came from storage. After a restart the SDK's
+   *  timeline may lack the read event, so these go out by Dexie's event id. */
+  const restoredReadWatermarks = new Set<string>();
+
+  const persistPendingReadWatermarks = () => {
+    if (!_pendingReceiptsKey) return;
+    try {
+      if (pendingReadWatermarks.size === 0) {
+        localStorage.removeItem(_pendingReceiptsKey);
+        return;
+      }
+      const now = Date.now();
+      const entries = new Map(
+        [...pendingReadWatermarks].map(([roomId, ts]) => [roomId, { ts, at: watermarkQueuedAt.get(roomId) ?? now }]),
+      );
+      localStorage.setItem(_pendingReceiptsKey, serializePendingReceipts(entries));
+    } catch (e) {
+      console.warn("[chat-store] pending read receipts not saved:", e);
+    }
+  };
+
+  /** Queue a read position for the server (the highest one wins) and save it. */
+  const queueReadWatermark = (roomId: string, ts: number) => {
+    pendingReadWatermarks.set(roomId, Math.max(pendingReadWatermarks.get(roomId) ?? 0, ts));
+    if (!watermarkQueuedAt.has(roomId)) watermarkQueuedAt.set(roomId, Date.now());
+    persistPendingReadWatermarks();
+  };
+
+  /** A delayed receipt reached the server. Its echo zeroes the room whatever
+   *  it points at, and refreshes skipped the room while it was pending, so the
+   *  room is reconciled once the /sync with the server's new count is in. */
+  const RECEIPT_RECONCILE_DELAY_MS = 3000;
+
+  /** Forget a room's pending watermark: the server has the read up to
+   *  `sentTs` (a newer read queued meanwhile stays), or the entry is given up. */
+  const dropReadWatermark = (roomId: string, sentTs?: number) => {
+    const pending = pendingReadWatermarks.get(roomId);
+    if (pending === undefined) return;
+    if (sentTs !== undefined && pending > sentTs) return;
+    pendingReadWatermarks.delete(roomId);
+    watermarkQueuedAt.delete(roomId);
+    restoredReadWatermarks.delete(roomId);
+    persistPendingReadWatermarks();
+    if (sentTs !== undefined) {
+      setTimeout(() => {
+        markRoomChanged(roomId);
+        refreshRooms();
+      }, RECEIPT_RECONCILE_DELAY_MS);
+    }
+  };
+
+  /** Load the pending watermarks this account left in storage last run. */
+  const restorePendingReadWatermarks = () => {
+    if (!_pendingReceiptsKey) return;
+    let raw: string | null = null;
+    try {
+      raw = localStorage.getItem(_pendingReceiptsKey);
+    } catch {
+      return;
+    }
+    for (const [roomId, { ts, at }] of parsePendingReceipts(raw, Date.now())) {
+      pendingReadWatermarks.set(roomId, Math.max(pendingReadWatermarks.get(roomId) ?? 0, ts));
+      if (!watermarkQueuedAt.has(roomId)) watermarkQueuedAt.set(roomId, at);
+      restoredReadWatermarks.add(roomId);
+    }
+  };
 
   /** Send a read receipt if the page is visible, otherwise queue for later.
    *  On native platforms (Capacitor WebView), document.visibilityState is unreliable —
@@ -3932,7 +4054,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         if (!success) {
           // HTTP error (e.g. 500) — queue the watermark for retry on next sync
           const ts = (event as any)?.getTs?.() ?? (event as any)?.event?.origin_server_ts ?? 0;
-          if (ts > 0) pendingReadWatermarks.set(roomId, ts);
+          if (ts > 0) queueReadWatermark(roomId, ts);
         }
         return success;
       } catch (e) {
@@ -3981,6 +4103,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
 
       for (const mxRoom of matrixRooms) {
         const roomId = mxRoom.roomId as string;
+        // The server's count still holds what was read here until it has the receipt.
+        if (pendingReadWatermarks.has(roomId)) continue;
         const unreadCount = roomUnreadCount(mxRoom, myUserId, callRules);
         const localRoom = dexieRoomMap.get(roomId);
         if (localRoom && localRoom.unreadCount !== unreadCount) {
@@ -4093,7 +4217,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           matrixService.sendReadReceipt(event).then((success) => {
             if (!success) {
               const ts = (event as any)?.getTs?.() ?? (event as any)?.event?.origin_server_ts ?? 0;
-              if (ts > 0) pendingReadWatermarks.set(roomId, ts);
+              if (ts > 0) queueReadWatermark(roomId, ts);
             }
           }).catch(() => {});
         }
@@ -4211,8 +4335,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     const lastSent = receiptCooldowns.get(roomId) ?? 0;
     if (now - lastSent < RECEIPT_COOLDOWN_MS) {
       // Queue for next flush — don't spam the server (keep highest pending ts)
-      const prevPending = pendingReadWatermarks.get(roomId) ?? 0;
-      pendingReadWatermarks.set(roomId, Math.max(prevPending, timestamp));
+      queueReadWatermark(roomId, timestamp);
       return;
     }
 
@@ -4227,13 +4350,32 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           roomId,
           Math.max(lastReadReceiptSentTs.get(roomId) ?? 0, appliedTs),
         );
-        pendingReadWatermarks.delete(roomId);
-        watermarkQueuedAt.delete(roomId);
+        dropReadWatermark(roomId, timestamp);
       }
     } else {
-      const prevPending = pendingReadWatermarks.get(roomId) ?? 0;
-      pendingReadWatermarks.set(roomId, Math.max(prevPending, timestamp));
-      if (!watermarkQueuedAt.has(roomId)) watermarkQueuedAt.set(roomId, Date.now());
+      queueReadWatermark(roomId, timestamp);
+    }
+  };
+
+  /** A watermark kept from the last run. Dexie holds the full history, so the
+   *  read event is found by its position even when the SDK's timeline lacks it. */
+  const flushRestoredReadWatermark = async (roomId: string, ts: number) => {
+    const dbKit = chatDbKitRef.value;
+    if (!dbKit) return;
+    try {
+      const msg = await dbKit.messages.getLastMessageAtOrBefore(roomId, ts, dbKit.eventWriter.getClearedAtTs(roomId));
+      if (!msg?.eventId) {
+        // Nothing the server can point at (the history is gone or unsent).
+        dropReadWatermark(roomId);
+        return;
+      }
+      const sent = await getMatrixClientService().sendReadReceiptById(roomId, msg.eventId);
+      if (sent) {
+        lastReadReceiptSentTs.set(roomId, Math.max(lastReadReceiptSentTs.get(roomId) ?? 0, msg.timestamp));
+        dropReadWatermark(roomId, ts);
+      }
+    } catch (e) {
+      console.warn("[chat-store] restored read receipt failed:", e);
     }
   };
 
@@ -4241,18 +4383,22 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   const WATERMARK_FLUSH_INTERVAL = 5000;
   const STALE_WATERMARK_WARN_MS = 30_000; // warn if a receipt is stuck for >30s
   let lastWatermarkFlush = 0;
-  /** Track when each pending watermark was first queued (for staleness warnings) */
-  const watermarkQueuedAt = new Map<string, number>();
   const flushPendingReadWatermarks = () => {
     const now = Date.now();
     if (now - lastWatermarkFlush < WATERMARK_FLUSH_INTERVAL) return;
     if (pendingReadWatermarks.size === 0) return;
+    // Before the first /sync the SDK's timeline is its saved store, which may
+    // not hold the read event yet (the store saves every 5 min).
+    if (!getMatrixClientService().hasLiveSync()) return;
     lastWatermarkFlush = now;
 
-    // Warn about stale pending receipts
-    for (const [roomId] of pendingReadWatermarks) {
+    // Warn about stale pending receipts; give up on those past the age limit
+    for (const roomId of [...pendingReadWatermarks.keys()]) {
       const queuedAt = watermarkQueuedAt.get(roomId);
-      if (queuedAt && now - queuedAt > STALE_WATERMARK_WARN_MS) {
+      if (queuedAt && now - queuedAt > PENDING_RECEIPT_MAX_AGE_MS) {
+        console.warn(`[chat-store] read receipt for room ${roomId} dropped after ${Math.round((now - queuedAt) / 3_600_000)} h`);
+        dropReadWatermark(roomId);
+      } else if (queuedAt && now - queuedAt > STALE_WATERMARK_WARN_MS) {
         console.warn(`[chat-store] stale read receipt for room ${roomId} — pending for ${Math.round((now - queuedAt) / 1000)}s`);
       } else if (!queuedAt) {
         watermarkQueuedAt.set(roomId, now);
@@ -4263,8 +4409,12 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     const entries = [...pendingReadWatermarks];
     for (const [roomId, timestamp] of entries) {
       if (timestamp <= (lastReadReceiptSentTs.get(roomId) ?? 0)) {
-        pendingReadWatermarks.delete(roomId);
-        watermarkQueuedAt.delete(roomId);
+        dropReadWatermark(roomId);
+        continue;
+      }
+      if (restoredReadWatermarks.has(roomId)) {
+        receiptCooldowns.set(roomId, now);
+        void flushRestoredReadWatermark(roomId, timestamp);
         continue;
       }
       const event = findMatrixEventForTimestamp(roomId, timestamp);
@@ -4278,8 +4428,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
               roomId,
               Math.max(lastReadReceiptSentTs.get(roomId) ?? 0, appliedTs),
             );
-            pendingReadWatermarks.delete(roomId);
-            watermarkQueuedAt.delete(roomId);
+            dropReadWatermark(roomId, timestamp);
           }
         }).catch(() => {});
       }
@@ -8923,7 +9072,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     activeRoomKeysRetryAttempts.clear();
   };
 
-  /** Reset all in-memory state and account-specific localStorage (called on logout) */
+  /** Reset all in-memory state (called on logout and account switch) */
   const cleanup = () => {
     discardRoomOpenQuiet();
     roomSnapshots.clear();
@@ -8986,10 +9135,16 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     _sortedRoomsRef.value = [];
     messageWindowSize.value = 50;
     lastReadReceiptSentTs.clear();
+    pendingReadWatermarks.clear();
+    watermarkQueuedAt.clear();
+    restoredReadWatermarks.clear();
 
-    // Clear localStorage account data
-    localStorage.removeItem(_pinnedKey);
-    localStorage.removeItem(_mutedKey);
+    // The account's keys stay in storage: an account switch needs them, and
+    // logout removes them (clearAccountLocalStorage).
+    _boundAddress = null;
+    _pendingReceiptsKey = null;
+    _pinnedKey = LEGACY_PINNED_KEY;
+    _mutedKey = LEGACY_MUTED_KEY;
   };
 
   return {

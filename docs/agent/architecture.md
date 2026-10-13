@@ -88,6 +88,8 @@ Detail reference for [AGENTS.md](../../AGENTS.md). See also [local-first-archite
 
 ### Pinia stores
 - `useAuthStore()` (auth, sessions, Matrix init), `useChatStore()` (rooms, active room, metadata), `useUserStore()`, `useCallStore()` (WebRTC), `useChannelStore()`, `useThemeStore()`, `useLocaleStore()`, `useTorStore()`, `useMediaStore()`, local-ai and ai-chat stores
+- Per-account chat keys in localStorage hold pinned rooms, muted rooms and unsent read receipts. `initMatrix` binds them on every start through `chatStore.bindAccountKeys`, and so do login and account switch. Logout removes them through `clearAccountLocalStorage`. An account switch keeps them.
+- A read receipt that did not reach the server is saved per account (`entities/chat/lib/pending-read-receipts.ts`, 3 days). It goes out after the first live /sync, by the event id that Dexie holds for the read position. While it is pending, the room's unread count is not taken from the SDK.
 
 ### Calls (`src/features/video-calls/model/`)
 - `useCallService()` in `call-service.ts` is a facade over `call-outgoing`, `call-incoming`, `call-answer`, `call-media`; event wiring in `call-events`, timers in `call-timers`, the single exit in `finalize-call`.

@@ -30,7 +30,7 @@ import { initMediaCache, clearMediaCache, closeMediaCache } from "@/shared/lib/m
 import { clearAllDrafts } from "@/shared/lib/drafts";
 import { clearQueue } from "@/shared/lib/offline-queue";
 import { deleteLegacyCache } from "@/shared/lib/cache/chat-cache";
-import { clearAccountLocalStorage } from "@/shared/lib/clear-account-storage";
+import { clearAccountLocalStorage, clearPerAccountKeys } from "@/shared/lib/clear-account-storage";
 import { isNative } from "@/shared/lib/platform";
 import { interopLog } from "@/shared/lib/interop";
 import { onConnectivityChange, useConnectivity } from "@/shared/lib/connectivity";
@@ -506,6 +506,12 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
       matrixError.value = "No credentials";
       return;
     }
+
+    // Per-account chat keys (pinned and muted rooms, unsent read receipts) on
+    // every start: a restored session never runs completeLoginNetwork, so its
+    // pins vanished on each restart. Bound before the client syncs, so saved
+    // read receipts are back before the first refresh.
+    useChatStore().bindAccountKeys(address.value);
 
     const startedOffline = !useConnectivity().isOnline.value;
     matrixReady.value = false;
@@ -1705,6 +1711,9 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
     // history — that lives in Dexie and is wiped by deleteChatDb() below,
     // roadmap 2.4/7.2). Never throws; no-op if no client was ever created.
     useLocalAiStore().releaseRuntime().catch(() => {});
+    // No Matrix retry from here on: one firing during the push unregister
+    // below would start Matrix again and rebind this account's chat keys.
+    stopMatrixReconnect();
 
     // ── 1.5. Stop best-effort blockchain WS BEFORE Matrix teardown so its
     //         handlers can't try to refresh torn-down stores. ──
@@ -2548,6 +2557,8 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
     // Remove non-active account
     backgroundSyncManager.stop(targetAddress);
     sessionManager.removeSession(targetAddress);
+    // An account switch keeps these keys, so a removed account takes them along.
+    clearPerAccountKeys(targetAddress);
     syncSessionsFromStorage();
   };
 

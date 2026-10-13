@@ -1482,6 +1482,21 @@ export class MatrixClientService {
     }
   }
 
+  /** Read receipt for an event known only by id (it may be missing from the
+   *  SDK's timeline, e.g. a read kept from the last run). */
+  async sendReadReceiptById(roomId: string, eventId: string): Promise<boolean> {
+    if (!this.client) return false;
+    const event = this.client.getRoom(roomId)?.findEventById(eventId);
+    if (event) return this.sendReadReceipt(event);
+    try {
+      await this.client.setRoomReadMarkersHttpRequest(roomId, eventId, eventId);
+      return true;
+    } catch (e) {
+      console.warn("[matrix-client] sendReadReceiptById error:", e);
+      return false;
+    }
+  }
+
   /** Load older messages for a room (scrollback/pagination) */
   async scrollback(roomId: string, limit = 50): Promise<void> {
     if (!this.client) return;
