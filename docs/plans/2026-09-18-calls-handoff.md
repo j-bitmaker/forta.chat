@@ -125,8 +125,12 @@ TEST3 (`test23438111`). `libimobiledevice` на Mac стоит (`ideviceinfo`, `
    запуск — `devicectl device process launch … com.forta.chat`. Ловушки: `find-identity -v -p codesigning` пишет
    «0 valid» из-за просроченного WWDR-корня 2023 г. в System keychain — реальная подпись работает (`codesign` даёт
    `TeamIdentifier=Y5JW9JU787`); `defaults read com.apple.dt.Xcode IDEProvisioningTeams` пуст, аккаунт Xcode 16 хранит
-   в связке. Соглашение Apple Developer Program должен принять Daniel Satchkov **до 2026-10-02**, иначе выпуск
-   профилей остановится. Ниже — старое описание стены:
+   в связке. Соглашение Apple Developer Program (PLA) команды Dvm Analytics принято: 2026-10-02 Xcode → Settings →
+   Accounts → Dvm Analytics LLC → Manage Certificates… показывал «Unable to process request - PLA Update available»,
+   2026-10-13 лист сертификатов загружается без ошибки. Принимает его только Account Holder (Daniel) на
+   developer.apple.com, в Xcode принять нельзя. Единственная проверка — этот лист; `xcodebuild
+   -allowProvisioningUpdates` подписывает кешированным профилем и к порталу не обращается. Ниже — старое описание
+   стены:
    `security find-identity -v -p codesigning` → 0. Проект —
    автоподпись, Team `Y5JW9JU787`. Владельцу: Xcode → Settings → Accounts → «+» Apple ID → Manage Certificates →
    «+» Apple Development. Профили для App и двух расширений (NotificationService, ShareExtension) Xcode создаст при
