@@ -20,7 +20,12 @@ Commands inside plans (e.g. `npm run lint`, old paths like `com/bastyon/chat`, `
 | [2026-09-28-full-app-audit](2026-09-28-full-app-audit.md) | 50 fixed, 2 partly (W2D-02, S10-05 Electron report-only CSP), 4 closed otherwise, 5 open; merged with the calls cleanup (`c121d525`) | W2D-02 (ChannelView virtualization), owner decisions S10-01, S10-06, S8-02, S4-05, W2C-06; CSP on web and mobile |
 | [2026-10-08-calls-next-session](2026-10-08-calls-next-session.md) | calls cleanup in PR #276 | iOS checks on the XR (C06, C07, C08), Tor proxy `Host`, WebRTC engine toggle removal |
 | [2026-10-10-missed-push-calls](2026-10-10-missed-push-calls.md) | T1–T3 done on `audit/full-app-2026-09` | T4 done 2026-10-13 (rings in deep Doze on the Samsung); T5 tester data (questions handed to the owner); missed-call card for an invite with no hangup |
-| [2026-10-08-background-voice-playback](2026-10-08-background-voice-playback.md) | not started | everything (stages 0–8) |
+| [2026-10-14-firebase-fortachat-migration](2026-10-14-firebase-fortachat-migration.md) | code in `7c99fe38`, switched off (release stays on `forta-chat`) | app_id + configs swap, Sygnal/APNs check, device check, iOS duplicates |
+| [2026-10-13-peertube-hls-player](2026-10-13-peertube-hls-player.md) | stages 0–6 in code (not committed) | 7: device checks (`manual-verification.md`) |
+| [2026-10-13-sdk-upstream-sliding-sync](2026-10-13-sdk-upstream-sliding-sync.md) | plan only; stage 0 decided (cache variant A) | stages 1–8: fork rebase in `C:\inetpub2022\matrix-js-sdk`, local test on Forta, usage docs, npm publish (owner) |
+| [2026-10-11-resumable-media-download](2026-10-11-resumable-media-download.md) | plan only | everything; section 8 first (confirm prod runs `rebase/v1.148.0`, nginx owner) |
+| [2026-10-10-delete-account](2026-10-10-delete-account.md) | stages 1–3 done | 4 (check on a test account, `manual-verification.md`) |
+| [2026-10-08-background-voice-playback](2026-10-08-background-voice-playback.md) | stages 0–5 done (stage 0: plan defaults) | 6 (Android FGS; device prototype first), 7 (iOS audio session; check stage 5 lock screen first), 8 |
 | [2026-10-02-decrypt-priority-roadmap](2026-10-02-decrypt-priority-roadmap.md) | stages 0–3, 5 done | 4 (decrypt only visible bubbles on open), 6 (partly), 7 (`fullRoomRefresh` 35 s) |
 | [2026-10-03-initial-sync-lazy-members](2026-10-03-initial-sync-lazy-members.md) | phase I done (`5ff01d6d`), phase II cancelled | slow first `/sync`: stage 1A (proxy timeout, server side), response composition, variant D |
 | [2026-08-29-registration-actions-sdk-migration](2026-08-29-registration-actions-sdk-migration.md) | not started | everything (tracks A and B) |

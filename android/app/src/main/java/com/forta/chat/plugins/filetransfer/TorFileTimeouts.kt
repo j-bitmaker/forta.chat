@@ -7,15 +7,9 @@ package com.forta.chat.plugins.filetransfer
  * at all (audit S4-01).
  */
 object TorFileTimeouts {
-    /** Opening the connection to the local reverse proxy, which answers at once while it runs. */
+    /** Opening an upload's connection to the local reverse proxy, which answers at
+     *  once while it runs. Downloads use the plugin's own connect and read bounds. */
     const val CONNECT_MS = 15_000
-
-    /**
-     * Longest silence while waiting for a download's headers or between two reads
-     * of its body. The proxy streams the response as Tor delivers it, so this bounds
-     * a stall, not the length of a large download.
-     */
-    const val DOWNLOAD_READ_MS = 60_000
 
     private const val UPLOAD_READ_FLOOR_MS = 5L * 60_000
     private const val UPLOAD_READ_CEILING_MS = 60L * 60_000

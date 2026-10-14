@@ -76,9 +76,9 @@ import { parseCallLinkBody, callLinkPreview } from "@/shared/lib/call-link";
 
 import type { ChatDbKit, ParsedMessage, LocalRoom } from "@/shared/lib/local-db";
 import type { RoomChange } from "@/shared/lib/local-db";
-import { ChatDatabase, useLiveQuery, localToMessage, localToMessages, deriveOutboundStatus, readUserAliases } from "@/shared/lib/local-db";
+import { ChatDatabase, useLiveQuery, localToMessage, localToMessages, deriveOutboundStatus, readUserAliases, needsSystemPreviewRepair } from "@/shared/lib/local-db";
 import type { ChatRoom, FileInfo, ForwardingMessage, LinkPreview, Message, PeerKeysStatus, PollInfo, ReplyTo, TransferInfo } from "./types";
-import { MessageStatus, MessageType } from "./types";
+import { MessageStatus, MessageType, POST_SHARE_ROOM_ID } from "./types";
 import { resolveCachedRoomsAddress } from "./cached-rooms-address";
 
 /** How long boot waits for the SDK's own push rules before fetching them. */
@@ -1088,6 +1088,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       forwardedFrom: message.forwardedFrom,
       withSenderInfo: true,
       sourceTimestamp: message.timestamp,
+      pollInfo: message.pollInfo,
+      transferInfo: message.transferInfo,
+      callLinkInfo: message.callLinkInfo,
     };
   };
 
@@ -1103,7 +1106,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     forwardPickerRequested.value = true;
     forwardingMessage.value = {
       id: `__post_share_${Date.now()}`,
-      roomId: "__post_share__",
+      roomId: POST_SHARE_ROOM_ID,
       senderId: "",
       senderName: channelName,
       content: postLink,
@@ -2941,6 +2944,10 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           || prev.membership !== (r.membership ?? "join")
           || prev.avatar !== r.avatar
           || (prev.historyVisibility ?? null) !== (hv ?? null)
+          || needsSystemPreviewRepair(prev, {
+            lastMessageEventId: r.lastMessage?.id,
+            lastMessageSystemMeta: r.lastMessage?.systemMeta,
+          })
         ) {
           changedForDexie.push(r);
         }
@@ -2975,6 +2982,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         lastMessageSenderId: r.lastMessage?.senderId,
         lastMessageType: r.lastMessage?.type,
         lastMessageEventId: r.lastMessage?.id || undefined,
+        // The chat list builds system/call previews from these, not from the text.
+        lastMessageCallInfo: r.lastMessage?.type === MessageType.system ? r.lastMessage.callInfo : undefined,
+        lastMessageSystemMeta: r.lastMessage?.type === MessageType.system ? r.lastMessage.systemMeta : undefined,
         lastMessageLocalStatus: (
           r.lastMessage?.status === MessageStatus.sending ? "pending"
           : r.lastMessage?.status === MessageStatus.failed ? "failed"
@@ -3286,6 +3296,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           lastMessageSenderId: r.lastMessage?.senderId,
           lastMessageType: r.lastMessage?.type,
           lastMessageEventId: r.lastMessage?.id || undefined,
+          // The chat list builds system/call previews from these, not from the text.
+          lastMessageCallInfo: r.lastMessage?.type === MessageType.system ? r.lastMessage.callInfo : undefined,
+          lastMessageSystemMeta: r.lastMessage?.type === MessageType.system ? r.lastMessage.systemMeta : undefined,
           lastMessageLocalStatus: (
             r.lastMessage?.status === MessageStatus.sending ? "pending"
             : r.lastMessage?.status === MessageStatus.failed ? "failed"

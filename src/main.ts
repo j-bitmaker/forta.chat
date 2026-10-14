@@ -10,7 +10,7 @@ import { Buffer } from "buffer";
 import { setupDeepLinkHandler } from "./app/providers/initializers/deep-link-handler";
 setupDeepLinkHandler();
 
-import { app } from "./app";
+import { app, mountApp } from "./app";
 
 // This body runs only after every static import evaluated. Tell the boot
 // guard in index.html that the module graph loaded, so it never swaps the app
@@ -19,5 +19,5 @@ import { app } from "./app";
 
 app.then(app => {
   // On boot failure app is null — AppLoading stays mounted with error UI
-  if (app) app.mount("#app");
+  if (app) mountApp(app);
 });

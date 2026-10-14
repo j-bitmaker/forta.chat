@@ -1260,7 +1260,7 @@ describe("useFileDownload", () => {
     // three of them no media in the app loaded at all.
     it("frees the permit when a Tor download fails, and hands the Tor path the caller's signal", async () => {
       mockTorDownloadActive = true;
-      mockTorDownload.mockRejectedValue(new Error("Tor download timed out after 600000ms"));
+      mockTorDownload.mockRejectedValue(new Error("Tor download stalled"));
       vi.useFakeTimers();
       const scope = effectScope();
       try {
@@ -1283,7 +1283,7 @@ describe("useFileDownload", () => {
           await done;
 
           expect(mockTorDownload).toHaveBeenCalled();
-          const [, , options] = mockTorDownload.mock.calls[0] as [string, unknown, { signal?: AbortSignal }];
+          const [, options] = mockTorDownload.mock.calls[0] as [string, { signal?: AbortSignal }];
           expect(options.signal).toBe(controller.signal);
           expect(_mediaGateActiveForTests()).toBe(0);
         });

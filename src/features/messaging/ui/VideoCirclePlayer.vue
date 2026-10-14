@@ -9,6 +9,7 @@ import {
   isCirclePausedByUser,
   markCirclePausedByUser,
 } from "../model/video-circle-pause";
+import { BLANK_VIDEO_POSTER } from "@/shared/lib/video-poster";
 
 interface Props {
   message: Message;
@@ -163,6 +164,7 @@ onUnmounted(() => {
       ref="videoEl"
       class="video-circle block h-[150px] w-[150px] object-cover sm:h-[200px] sm:w-[200px] select-none [-webkit-touch-callout:none] [-webkit-user-drag:none]"
       :src="videoSrc ?? undefined"
+      :poster="BLANK_VIDEO_POSTER"
       draggable="false"
       muted
       playsinline

@@ -20,15 +20,16 @@ class TorFileTimeoutsTest {
 
     @Test
     fun uploadAndDownload_bothBoundTheirConnections() {
-        assertEquals(2, Regex("conn\\.connectTimeout = TorFileTimeouts\\.CONNECT_MS").findAll(plugin).count())
-        assertTrue(plugin.contains("conn.readTimeout = TorFileTimeouts.DOWNLOAD_READ_MS"))
+        assertTrue(plugin.contains("conn.connectTimeout = TorFileTimeouts.CONNECT_MS"))
         assertTrue(plugin.contains("conn.readTimeout = TorFileTimeouts.uploadReadMs(fileSize)"))
+        // Downloads: the plugin's own bounds (upstream 1.13.6, with byte progress).
+        assertTrue(plugin.contains("conn.connectTimeout = DOWNLOAD_CONNECT_TIMEOUT_MS"))
+        assertTrue(plugin.contains("conn.readTimeout = DOWNLOAD_READ_TIMEOUT_MS"))
     }
 
     @Test
     fun timeoutsAreSet() {
         assertTrue(TorFileTimeouts.CONNECT_MS > 0)
-        assertTrue(TorFileTimeouts.DOWNLOAD_READ_MS > 0)
     }
 
     @Test
