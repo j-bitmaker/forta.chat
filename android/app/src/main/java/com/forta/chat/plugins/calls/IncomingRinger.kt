@@ -166,23 +166,28 @@ object IncomingRinger {
         try {
             val am = app.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
             val modeAtArm = RingerModePolicy.modeName(runCatching { am.mode }.getOrNull())
-            val slot = CallConnectionService.currentConnection
-            val slotState = slot?.state
+            val slotState = CallConnectionService.currentConnection?.state
             val liveCall = RingerModePolicy.isLiveCall(slotState, CallForegroundService.isRunning)
             val reset = AudioRouter.getSharedInstance(app).releaseModeForRing(liveCall)
-            val telecom = RingerModePolicy.slotLabel(slotState, slot != null && CallSlotPolicy.owns(slot.callId, callId))
+            val telecom = telecomLabel(callId)
             val atMs = System.currentTimeMillis()
             audioLog.armed(RingAudioLog.Record(atMs, callId, modeAtArm, reset, telecom))
             Log.i(TAG, "ring audio callId=$callId mode=$modeAtArm reset=$reset telecom=$telecom")
             handler.postDelayed({
                 if (!ledger.isArmedFor(callId)) return@postDelayed
                 val modeInRing = RingerModePolicy.modeName(runCatching { am.mode }.getOrNull())
-                audioLog.sampled(callId, atMs, modeInRing)
-                Log.i(TAG, "ring audio callId=$callId +${RING_AUDIO_SAMPLE_MS}ms mode=$modeInRing")
+                val telecomInRing = telecomLabel(callId)
+                audioLog.sampled(callId, atMs, modeInRing, telecomInRing)
+                Log.i(TAG, "ring audio callId=$callId +${RING_AUDIO_SAMPLE_MS}ms mode=$modeInRing telecom=$telecomInRing")
             }, RING_AUDIO_SAMPLE_MS)
         } catch (e: Exception) {
             Log.w(TAG, "prepareRingAudio failed", e)
         }
+    }
+
+    private fun telecomLabel(callId: String): String {
+        val slot = CallConnectionService.currentConnection
+        return RingerModePolicy.slotLabel(slot?.state, slot != null && CallSlotPolicy.owns(slot.callId, callId))
     }
 
     /**

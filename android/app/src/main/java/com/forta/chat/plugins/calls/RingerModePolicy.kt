@@ -37,7 +37,8 @@ object RingerModePolicy {
      * Withdraw this process's mode request before the ring when nothing of
      * ours owns it. Withdrawing never touches another app's request, so the
      * current mode does not decide: Android 12+ reports an idle request of
-     * ours as `MODE_NORMAL`, and the ringtone's own playback revives it.
+     * ours as `MODE_NORMAL`, and it takes effect again whenever this process
+     * captures or plays voice-communication audio.
      */
     fun shouldReleaseModeForRing(routerActive: Boolean, liveCall: Boolean): Boolean =
         !routerActive && !liveCall
@@ -45,7 +46,7 @@ object RingerModePolicy {
     /**
      * Whether the withdrawal dropped a VoIP mode of ours, for the report: the
      * effective mode left `MODE_IN_COMMUNICATION`, or our session marker was
-     * still open (an idle request Android 12+ did not report). A mode that
+     * still open (a request Android 12+ did not report while idle). A mode that
      * stays `MODE_IN_COMMUNICATION` is another app's call.
      */
     fun droppedStrandedMode(before: Int?, after: Int?, sessionMarkerOpen: Boolean): Boolean {

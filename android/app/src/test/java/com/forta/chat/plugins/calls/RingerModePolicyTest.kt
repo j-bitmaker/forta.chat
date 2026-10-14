@@ -12,7 +12,7 @@ import org.junit.Test
  * ringtone to the earpiece while the phone is in an in-call audio mode. A
  * MODE_IN_COMMUNICATION left behind by an earlier call (no Telecom ringing focus to
  * override it: Android 7, a disabled calling account) made the next ring quiet. On
- * Android 12+ that request reads as MODE_NORMAL while idle and returns with the ringtone.
+ * Android 12+ that request reads as MODE_NORMAL while idle and returns with the next capture.
  */
 class RingerModePolicyTest {
 

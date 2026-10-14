@@ -69,7 +69,7 @@ export interface RingAudioRecord {
   modeAtArm: string;
   /** The ringer dropped a stranded MODE_IN_COMMUNICATION before it rang. */
   modeReset: boolean;
-  /** The Telecom slot when the ringer armed: "none" means the ring ran without Telecom. */
+  /** The Telecom slot 1.5 s into the ring ("none": the ring ran without Telecom). */
   telecom: string;
   /** Audio mode 1.5 s into the ring; "" when the ring ended before. */
   modeInRing: string;

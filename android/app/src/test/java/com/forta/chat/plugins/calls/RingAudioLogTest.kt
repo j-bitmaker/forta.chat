@@ -28,8 +28,10 @@ class RingAudioLogTest {
         log.armed(ring("a", 1))
         // The same call rang again (a second ringer instance): only that arm gets the sample.
         log.armed(ring("a", 5))
-        log.sampled("a", 5, "MODE_NORMAL")
+        log.sampled("a", 5, "MODE_NORMAL", "RINGING")
         assertEquals(listOf("", "MODE_NORMAL"), log.snapshot().map { it.modeInRing })
+        // The push armed the ringer before Telecom made the connection.
+        assertEquals(listOf("none", "RINGING"), log.snapshot().map { it.telecom })
     }
 
     @Test
@@ -37,7 +39,7 @@ class RingAudioLogTest {
         val log = RingAudioLog(maxRecords = 1)
         log.armed(ring("a", 1))
         log.armed(ring("b", 2))
-        log.sampled("a", 1, "MODE_RINGTONE")
+        log.sampled("a", 1, "MODE_RINGTONE", "RINGING")
         assertEquals(listOf(""), log.snapshot().map { it.modeInRing })
     }
 

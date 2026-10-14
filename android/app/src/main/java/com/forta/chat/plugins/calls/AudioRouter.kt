@@ -759,9 +759,11 @@ class AudioRouter private constructor(private val context: Context) {
      * Drop a stranded `MODE_IN_COMMUNICATION` before an incoming ringtone, so
      * it does not play through the earpiece — see [RingerModePolicy].
      *
-     * Withdraws this process's request whatever `getMode()` says: on Android
-     * 12+ an idle request reads as `MODE_NORMAL` and comes back once the
-     * ringtone itself plays in this process (SM-A528B, 2026-10-15).
+     * Withdraws this process's request whatever `getMode()` says: Android
+     * 12+ counts a VoIP request only while its process plays or records
+     * voice-communication audio, so an idle request reads as `MODE_NORMAL`
+     * and takes effect again with the next capture (SM-A528B, 2026-10-15:
+     * a capture held the mode about 30 s after its track stopped).
      *
      * Only the mode: `setMode(MODE_NORMAL)` withdraws this process's own
      * request, while speakerphone and the microphone mute are global on older
