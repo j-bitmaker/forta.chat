@@ -42,6 +42,7 @@ vi.mock("@/shared/lib/native-calls", () => ({
 }));
 
 let iosInterruptionHandler: (() => void) | null = null;
+const { mockIsRecentCallKitRelease } = vi.hoisted(() => ({ mockIsRecentCallKitRelease: vi.fn(() => false) }));
 const mockIOSCallAudioAddListener: Mock = vi.fn(
   async (event: string, handler: () => void) => {
     if (event === "audioInterruptionBegan") {
@@ -57,7 +58,7 @@ vi.mock("@/shared/lib/native-calls/native-call-bridge.ios", () => ({
   },
   // No CallKit release in these cases: every interruption here is a real
   // phone call taking the session, so the watchdog must hang up.
-  isRecentCallKitRelease: () => false,
+  isRecentCallKitRelease: mockIsRecentCallKitRelease,
 }));
 
 // `vi.hoisted` so the spy survives `vi.resetModules()` — without this,
@@ -352,6 +353,19 @@ describe("setupAudioWatchdog — iOS AVAudioSession interruption (Step 6 Task 6)
       () => expect(mockCallServiceHangup).toHaveBeenCalledOnce(),
       { timeout: 1000 },
     );
+  });
+
+  // XR 2026-10-14: the echo of our CallKit release came 1.1 s after the
+  // connect and 6.7 s after the release; the check needs the connect time.
+  it("asks whether the interruption echoes our CallKit release with the call's connect time", async () => {
+    mockCallStore.activeCall = { callId: "live", status: "connected", startedAt: 4242 };
+    mockIsRecentCallKitRelease.mockClear();
+
+    const { setupAudioWatchdog } = await reload();
+    await setupAudioWatchdog();
+    iosInterruptionHandler!();
+
+    expect(mockIsRecentCallKitRelease).toHaveBeenCalledWith(expect.any(Number), 4242);
   });
 
   it("hangs up if matrixCall is set but activeCall is null (mid-setup) — interruption still ends the call cleanly", async () => {

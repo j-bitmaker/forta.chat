@@ -1,5 +1,6 @@
 import { registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 import { IOSVoIPPush } from '@/shared/lib/push/ios-voip-push';
+import { isCallKitReleaseEcho } from './callkit-release-echo';
 import { Camera } from '@capacitor/camera';
 import type {
   AudioProbeResult,
@@ -170,9 +171,11 @@ function unwrapEvent(e: IncomingCallEvent): { callId: string; roomId?: string } 
  */
 let lastCallKitReleaseAt = 0;
 
-/** True while an interruption could still be the echo of our own CallKit release. */
-export function isRecentCallKitRelease(now: number = Date.now()): boolean {
-  return now - lastCallKitReleaseAt < 5_000;
+/** True while an interruption could still be the echo of our own CallKit
+ *  release (see `isCallKitReleaseEcho`); `connectedAt` is the current call's
+ *  connect time, when it has connected. */
+export function isRecentCallKitRelease(now: number = Date.now(), connectedAt: number | null = null): boolean {
+  return isCallKitReleaseEcho(now, lastCallKitReleaseAt, connectedAt);
 }
 
 export function createIOSNativeCallAdapter(): NativeCallNativePlugin {

@@ -116,7 +116,7 @@ export async function setupAudioWatchdog(): Promise<void> {
           // hand the audio hardware to WebKit; CallKit then deactivates the
           // session it had activated, and that arrives here as an
           // interruption. It is our own doing, not a phone call.
-          if (isRecentCallKitRelease()) {
+          if (isRecentCallKitRelease(Date.now(), callStore.activeCall?.startedAt ?? null)) {
             console.log("[audio-watchdog] interruption follows our CallKit release — ignoring");
             return;
           }
