@@ -419,6 +419,15 @@ export function hangup() {
  * the id because a push-created connection's id can never be compared with a
  * Matrix one.
  */
+/** Wake the Matrix sync (see `BridgeCallService.kickSync`). Never throws. */
+export function kickSync(): void {
+  try {
+    getClient()?.retryImmediately();
+  } catch (e) {
+    console.warn("[call-service] sync kick failed:", e);
+  }
+}
+
 export function currentCall(): { callId: string | undefined; roomId?: string; state?: string } {
   const callStore = useCallStore();
   const call = callStore.matrixCall as MatrixCall | null;

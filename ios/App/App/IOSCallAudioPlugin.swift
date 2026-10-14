@@ -35,7 +35,10 @@ import AVFoundation
 ///   - .allowBluetooth + .allowBluetoothA2DP — accept BT headsets as
 ///     input/output. Without these the user has no way to switch to AirPods.
 ///   - .defaultToSpeaker — voice calls without a headset go to the loud
-///     speaker instead of the earpiece, matching Android's defaults.
+///     speaker (Android starts voice calls on the earpiece). The call audio
+///     itself plays in WebKit's own audio session, which uses the loudspeaker
+///     and ignores this app's output override, so iOS shows no speaker toggle
+///     (C06, XR 2026-10-14).
 ///   - .mixWithOthers — keeps this session from interrupting the WebKit GPU
 ///     process's own session, which does the microphone capture: see
 ///     `callOptions` below.

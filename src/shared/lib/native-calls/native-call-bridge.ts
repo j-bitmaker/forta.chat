@@ -395,6 +395,13 @@ interface BridgeCallService {
    * user tapped Accept): release its Telecom connection and screens.
    */
   releaseOrphanedNativeAnswer?: (callId: string, roomId?: string) => void;
+  /**
+   * Wake the Matrix sync. An app woken in the background (VoIP push, CallKit
+   * accept) has its /sync parked in backoff: backgrounding killed the
+   * long-poll, so the invite waited until the user opened the app (XR,
+   * 2026-10-14).
+   */
+  kickSync?: () => void;
 }
 
 class NativeCallBridge {
@@ -666,6 +673,10 @@ class NativeCallBridge {
     const deadline = Date.now() + MAX_WAIT_MS;
     const startTime = Date.now();
     let recoveryAttempted = false;
+    // Repeated: a kick lands only while the SDK waits to retry, and the dead
+    // long-poll may not have failed yet at the first one.
+    const SYNC_KICK_EVERY_MS = 3000;
+    let lastSyncKickAt = 0;
 
     const tick = async (): Promise<void> => {
       // Abandoning a superseded wait also abandons its recovery pass below.
@@ -716,6 +727,13 @@ class NativeCallBridge {
           );
           this.callService?.answerCall();
           return;
+        }
+
+        // The invite is not here yet: in a backgrounded app the /sync that
+        // would bring it waits in backoff until something wakes it.
+        if (Date.now() - lastSyncKickAt >= SYNC_KICK_EVERY_MS) {
+          lastSyncKickAt = Date.now();
+          this.callService?.kickSync?.();
         }
 
         // Recovery pass — only after the grace window, and only if

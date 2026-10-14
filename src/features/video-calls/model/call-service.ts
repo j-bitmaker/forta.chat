@@ -1,5 +1,5 @@
 import { setAudioDevice, setLocalVideoMuted, setVideoDevice, toggleCamera, toggleMute, toggleScreenShare } from "./call-media";
-import { answerCall, currentCall, hangup, rejectCall, releaseOrphanedNativeAnswer } from "./call-answer";
+import { answerCall, currentCall, hangup, kickSync, rejectCall, releaseOrphanedNativeAnswer } from "./call-answer";
 import { startCall } from "./call-outgoing";
 import { handleIncomingCall } from "./call-incoming";
 export { MATRIX_READY_WAIT_MS } from "./call-outgoing";
@@ -21,5 +21,6 @@ export function useCallService() {
     setVideoDevice,
     setLocalVideoMuted,
     releaseOrphanedNativeAnswer,
+    kickSync,
   };
 }

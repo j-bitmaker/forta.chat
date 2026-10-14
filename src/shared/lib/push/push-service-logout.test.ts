@@ -42,6 +42,8 @@ vi.mock('./ios-voip-push', () => ({
   },
 }));
 vi.mock('@/shared/lib/i18n', () => ({ tRaw: (k: string) => k }));
+const endAllCalls = vi.hoisted(() => vi.fn());
+vi.mock('@/shared/lib/native-calls/native-call-bridge.ios', () => ({ IncomingCallKit: { endAllCalls } }));
 const toast = vi.hoisted(() => vi.fn());
 vi.mock('@/shared/lib/use-toast', () => ({ useToast: () => ({ toast }) }));
 
@@ -252,5 +254,33 @@ describe('pushService.unregisterForLogout', () => {
       await init;
       expect(PushNotifications.register).toHaveBeenCalledOnce();
     });
+  });
+});
+
+// iPhone XR 2026-10-14: logging out while CallKit rang left the ringer up;
+// the account it rang for was gone, so nothing would ever end it (P5).
+describe('pushService.unregisterForLogout and CallKit', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    for (const f of [...Object.values(PushNotifications), ...Object.values(PushData)]) {
+      f.mockResolvedValue(undefined);
+    }
+    endAllCalls.mockResolvedValue({ calls: [] });
+  });
+
+  it('iOS: ends the calls CallKit still shows', async () => {
+    platform.ios = true;
+    const { svc, internals } = await loadService();
+    signedIn(internals, { voip: 'voip-token' });
+    await svc.unregisterForLogout();
+    expect(endAllCalls).toHaveBeenCalledWith({ reason: 'logout' });
+  });
+
+  it('Android: has no CallKit to end', async () => {
+    platform.ios = false;
+    const { svc, internals } = await loadService();
+    signedIn(internals);
+    await svc.unregisterForLogout();
+    expect(endAllCalls).not.toHaveBeenCalled();
   });
 });

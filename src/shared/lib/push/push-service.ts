@@ -275,6 +275,14 @@ class PushService {
     return fallback || tRaw('push.unknownSender');
   }
 
+  /** Wakes the live Matrix client's sync. Set by the auth store: the client
+   *  init() got is stopped after an in-place failover to another host. */
+  private syncKicker: (() => void) | null = null;
+
+  setSyncKicker(kicker: (() => void) | null) {
+    this.syncKicker = kicker;
+  }
+
   setSenderNameGetter(getter: (matrixUserId: string) => string | null) {
     this.getSenderName = getter;
   }
@@ -1066,6 +1074,17 @@ class PushService {
           // registerVoipPusher() pass.
           console.log('[PushService] VoIP token invalidated by iOS');
         }));
+        // The push may wake a backgrounded app whose /sync sits in backoff
+        // (backgrounding killed the long-poll): wake it, so the invite is here
+        // by the time the user answers on CallKit (XR, 2026-10-14).
+        this.voipListeners.push(await IOSVoIPPush.addListener('voipPushReceived', () => {
+          try {
+            if (this.syncKicker) this.syncKicker();
+            else this.matrixClient?.retryImmediately?.();
+          } catch (e) {
+            console.warn('[PushService] sync kick on VoIP push failed:', e);
+          }
+        }));
         const { token, environment } = await IOSVoIPPush.getToken();
         if (token) {
           await this.registerVoipPusher(matrixClient, token, environment);
@@ -1137,6 +1156,17 @@ class PushService {
       await PushData.markLoggedOut();
     } catch (e) {
       console.warn('[PushService] markLoggedOut failed:', e);
+    }
+
+    // A call CallKit still rings belongs to the account that is leaving, and
+    // nothing would end it after the logout (XR, 2026-10-14).
+    if (isIOS) {
+      try {
+        const { IncomingCallKit } = await import('@/shared/lib/native-calls/native-call-bridge.ios');
+        await IncomingCallKit.endAllCalls({ reason: 'logout' });
+      } catch (e) {
+        console.warn('[PushService] ending CallKit calls on logout failed:', e);
+      }
     }
 
     // A registration that lands after this point must not put the pusher back.

@@ -1135,6 +1135,9 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
               return aliases;
             });
 
+            pushService.setSyncKicker(() => {
+              getMatrixClientService().client?.retryImmediately();
+            });
             pushService.setSenderNameGetter((userId) => {
               const hexId = getmatrixid(userId);
               const addr = hexId ? hexDecode(hexId) : "";

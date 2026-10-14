@@ -104,8 +104,9 @@ describe('PushService on iOS', () => {
     await pushService.init(first);
     await pushService.init(second);
 
-    expect(removes.slice(0, 2).every((r) => r.mock.calls.length === 1)).toBe(true);
-    expect(removes.slice(2).every((r) => r.mock.calls.length === 0)).toBe(true);
+    // Three listeners per init: token received, token invalidated, push received.
+    expect(removes.slice(0, 3).every((r) => r.mock.calls.length === 1)).toBe(true);
+    expect(removes.slice(3).every((r) => r.mock.calls.length === 0)).toBe(true);
 
     first.setPusher.mockClear();
     await handlers[handlers.length - 1]({ token: 'rotated' });
@@ -140,5 +141,33 @@ describe('PushService on iOS', () => {
     expect(client.setPusher).toHaveBeenCalledWith(
       expect.objectContaining({ pushkey: 'voip-hex-2', app_id: 'fortaios.voip' }),
     );
+  });
+
+  // iPhone XR 2026-10-14: the push woke a backgrounded Forta whose /sync sat
+  // in backoff, so the invite came only once the app was opened, and an
+  // Accept on CallKit never connected.
+  it('wakes the Matrix sync when a VoIP push arrives', async () => {
+    const client = { setPusher: vi.fn().mockResolvedValue({}), getPushers: vi.fn().mockResolvedValue({ pushers: [] }), retryImmediately: vi.fn() };
+    const { pushService } = await import('./push-service');
+    await pushService.init(client);
+    const onPush = voipAddListener.mock.calls.filter(([name]) => name === 'voipPushReceived').pop()?.[1] as (() => void) | undefined;
+    expect(onPush).toBeDefined();
+    onPush?.();
+    expect(client.retryImmediately).toHaveBeenCalledTimes(1);
+  });
+
+  // Review 2026-10-14: the client init() captured is stopped after an
+  // in-place failover to another host; the kick must reach the live one.
+  it('wakes the live client through the sync kicker when one is set', async () => {
+    const stale = { setPusher: vi.fn().mockResolvedValue({}), getPushers: vi.fn().mockResolvedValue({ pushers: [] }), retryImmediately: vi.fn() };
+    const kicker = vi.fn();
+    const { pushService } = await import('./push-service');
+    pushService.setSyncKicker(kicker);
+    await pushService.init(stale);
+    const onPush = voipAddListener.mock.calls.filter(([name]) => name === 'voipPushReceived').pop()?.[1] as (() => void) | undefined;
+    onPush?.();
+    expect(kicker).toHaveBeenCalledTimes(1);
+    expect(stale.retryImmediately).not.toHaveBeenCalled();
+    pushService.setSyncKicker(null);
   });
 });
