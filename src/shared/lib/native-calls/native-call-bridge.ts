@@ -14,6 +14,7 @@ import type {
   AudioTimelineEntry,
   InviteThrottleRecord,
   InviteThrottleSnapshot,
+  RingAudioRecord,
   NativeCallNativePlugin,
 } from './native-call-bridge.types';
 import { nativeCallEventAppliesTo } from './native-call-event-scope';
@@ -26,6 +27,7 @@ export type {
   AudioTimelineEntry,
   InviteThrottleRecord,
   InviteThrottleSnapshot,
+  RingAudioRecord,
 } from './native-call-bridge.types';
 
 /** Native AudioRouter device identifiers (see `CallPlugin.setAudioDevice`). */
@@ -1244,6 +1246,23 @@ class NativeCallBridge {
       return Array.isArray(result?.entries) ? result.entries : [];
     } catch (e) {
       console.warn('[NativeCallBridge] getAudioTimeline unavailable:', e);
+      return [];
+    }
+  }
+
+  /**
+   * The audio state of the last incoming rings in the native process: the
+   * mode the ringtone played in and whether Telecom held the call. Android
+   * only; an older native build without the method gives an empty list, so
+   * a bug report never fails on it.
+   */
+  async getRingAudioLog(): Promise<RingAudioRecord[]> {
+    if (!isAndroid) return [];
+    try {
+      const result = await NativeCall.getRingAudioLog();
+      return Array.isArray(result?.records) ? result.records : [];
+    } catch (e) {
+      console.warn('[NativeCallBridge] getRingAudioLog unavailable:', e);
       return [];
     }
   }

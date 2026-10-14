@@ -57,6 +57,25 @@ export interface InviteThrottleSnapshot {
 }
 
 /**
+ * The audio state of one incoming ring, as recorded by `RingAudioLog.kt`.
+ * A ringtone played in an in-call audio mode goes to the earpiece: that is
+ * the "rings very quietly at full volume" report.
+ */
+export interface RingAudioRecord {
+  /** Wall clock when the ringer armed. */
+  atMs: number;
+  callId: string;
+  /** Audio mode when the ringer armed, e.g. "MODE_IN_COMMUNICATION". */
+  modeAtArm: string;
+  /** The ringer dropped a stranded MODE_IN_COMMUNICATION before it rang. */
+  modeReset: boolean;
+  /** The Telecom slot when the ringer armed: "none" means the ring ran without Telecom. */
+  telecom: string;
+  /** Audio mode 1.5 s into the ring; "" when the ring ended before. */
+  modeInRing: string;
+}
+
+/**
  * Capacitor plugin contract for the Android-side `NativeCall.kt`. The iOS
  * adapter (`native-call-bridge.ios.ts`) implements the SAME shape but
  * routes to `@capgo/capacitor-incoming-call-kit` + `IOSCallAudio` so the
@@ -183,6 +202,11 @@ export interface NativeCallNativePlugin {
    * records. Surfaced by {@link NativeCallBridge.getInviteThrottleSnapshot}.
    */
   getInviteThrottleSnapshot(): Promise<InviteThrottleSnapshot>;
+  /**
+   * The audio state of the last incoming rings — see
+   * {@link NativeCallBridge.getRingAudioLog}.
+   */
+  getRingAudioLog(): Promise<{ records: RingAudioRecord[] }>;
   addListener(
     event: 'callAnswered',
     cb: (data: { callId: string; roomId?: string }) => void,

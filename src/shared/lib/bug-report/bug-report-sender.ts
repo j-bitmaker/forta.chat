@@ -243,6 +243,27 @@ async function formatBody(
       });
       lines.push('</details>');
     }
+    // "Rings very quietly at full volume": a ringtone played in an in-call
+    // audio mode goes to the earpiece. Telecom "none" = the ring ran without
+    // Telecom, which never switches the phone to MODE_RINGTONE.
+    if (diag.ringAudio?.length) {
+      lines.push(
+        '',
+        '<details><summary>Incoming ring audio</summary>',
+        '',
+        '| # | time (UTC) | callId | mode at ring | stranded mode reset | mode in ring | Telecom |',
+        '|---|------------|--------|--------------|---------------------|--------------|---------|',
+      );
+      diag.ringAudio.forEach((r, i) => {
+        // A malformed record must not throw and take the whole report down.
+        const time = Number.isFinite(r.atMs) ? new Date(r.atMs).toISOString().slice(11, 19) : '?';
+        const callIdShort = r.callId ? r.callId.slice(0, 12) : '(none)';
+        lines.push(
+          `| ${i + 1} | ${time} | \`${callIdShort}\` | ${r.modeAtArm} | ${r.modeReset ? 'yes' : 'no'} | ${r.modeInRing || '—'} | ${r.telecom} |`,
+        );
+      });
+      lines.push('</details>');
+    }
     // The ordered event list is what distinguishes "never left MODE_RINGTONE"
     // from "fell back into it after hangup". Collapsed so the report stays
     // scannable; times are relative to the first event.

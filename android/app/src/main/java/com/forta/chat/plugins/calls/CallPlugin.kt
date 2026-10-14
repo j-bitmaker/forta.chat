@@ -884,6 +884,20 @@ class CallPlugin : Plugin() {
         call.resolve(JSObject().apply { put("records", arr) })
     }
 
+    /**
+     * The audio state of the last incoming rings in this process, oldest
+     * first — see [RingAudioLog]. A "rings very quietly" report reads the
+     * mode the ringtone played in and whether Telecom held the call here.
+     */
+    @PluginMethod
+    fun getRingAudioLog(call: PluginCall) {
+        val arr = org.json.JSONArray()
+        for (r in IncomingRinger.audioLog.snapshot()) {
+            arr.put(org.json.JSONObject(r.toWireMap()))
+        }
+        call.resolve(JSObject().apply { put("records", arr) })
+    }
+
     @PluginMethod
     fun getPendingAnswer(call: PluginCall) {
         // One atomic read-and-clear: the three parts can never be mixed

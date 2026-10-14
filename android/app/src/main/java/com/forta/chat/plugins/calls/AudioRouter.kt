@@ -13,6 +13,7 @@ import android.media.audiofx.AcousticEchoCanceler
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 
 /**
@@ -467,6 +468,10 @@ class AudioRouter private constructor(private val context: Context) {
     // Armed by ensureCommunicationMode() when the router is not yet active;
     // cancelled by start()/stop()/forceStop(). See shouldForceStopAfterEnsure.
     private var ensureWatchdog: Runnable? = null
+    // When ensureCommunicationMode() last set the mode for a call that has not
+    // started routing yet; null once start()/stop()/forceStop() settled it.
+    // Read by releaseModeForRing(). Guarded by [lifecycleLock].
+    private var ensureAtMs: Long? = null
 
     private val deviceCallback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
@@ -562,6 +567,7 @@ class AudioRouter private constructor(private val context: Context) {
         // pre-start ensure watchdog would only race it.
         ensureWatchdog?.let { mainHandler.removeCallbacks(it) }
         ensureWatchdog = null
+        ensureAtMs = null
         markSessionOpen()
         Log.d(LIFECYCLE_TAG, "start($callType): set mode=MODE_IN_COMMUNICATION, initial active=$activeDevice")
 
@@ -729,6 +735,7 @@ class AudioRouter private constructor(private val context: Context) {
             return@synchronized
         }
         timeline.record("mode_ensure", source)
+        ensureAtMs = SystemClock.elapsedRealtime()
         markSessionOpen()
         Log.d(LIFECYCLE_TAG, "ensureCommunicationMode($source): set MODE_IN_COMMUNICATION before start()")
         ensureWatchdog?.let { mainHandler.removeCallbacks(it) }
@@ -746,6 +753,53 @@ class AudioRouter private constructor(private val context: Context) {
         }
         ensureWatchdog = watchdog
         mainHandler.postDelayed(watchdog, AUDIO_MAX_LIFETIME_MS)
+    }
+
+    /**
+     * Drop a stranded `MODE_IN_COMMUNICATION` before an incoming ringtone, so
+     * it does not play through the earpiece — see [RingerModePolicy].
+     *
+     * Withdraws this process's request whatever `getMode()` says: on Android
+     * 12+ an idle request reads as `MODE_NORMAL` and comes back once the
+     * ringtone itself plays in this process (SM-A528B, 2026-10-15).
+     *
+     * Only the mode: `setMode(MODE_NORMAL)` withdraws this process's own
+     * request, while speakerphone and the microphone mute are global on older
+     * releases and could belong to another app's call. [forceStop] resets
+     * those too and stays reserved for sessions proven to be ours.
+     *
+     * @param liveCall a Forta call is still going ([RingerModePolicy.isLiveCall])
+     * @return true when a stranded VoIP mode of ours was dropped
+     */
+    fun releaseModeForRing(liveCall: Boolean): Boolean = synchronized(lifecycleLock) {
+        // A call between its first capture and the start of routing owns the
+        // mode too: several OEM firmwares mute the microphone without it.
+        val settingUp = RingerModePolicy.isSettingUp(ensureAtMs, SystemClock.elapsedRealtime())
+        if (!RingerModePolicy.shouldReleaseModeForRing(isActive, liveCall || settingUp)) return@synchronized false
+        val before = runCatching { audioManager.mode }.getOrNull()
+        val sessionOpen = hasOpenSessionMarker(context)
+        try {
+            audioManager.mode = AudioManager.MODE_NORMAL
+        } catch (e: Exception) {
+            Log.w(LIFECYCLE_TAG, "releaseModeForRing: setMode threw", e)
+            return@synchronized false
+        }
+        // Nothing of ours is open with the router idle and no call going: a
+        // pending ensure watchdog and the session marker would only claim
+        // somebody else's VoIP mode later.
+        ensureWatchdog?.let { mainHandler.removeCallbacks(it) }
+        ensureWatchdog = null
+        ensureAtMs = null
+        markSessionClosed()
+        val after = runCatching { audioManager.mode }.getOrNull()
+        val dropped = RingerModePolicy.droppedStrandedMode(before, after, sessionOpen)
+        if (dropped) timeline.record("mode_reset_for_ring")
+        Log.i(
+            LIFECYCLE_TAG,
+            "releaseModeForRing: mode ${RingerModePolicy.modeName(before)} -> ${RingerModePolicy.modeName(after)}, " +
+                "session marker was ${if (sessionOpen) "open" else "closed"}, dropped=$dropped",
+        )
+        dropped
     }
 
     /** Whether [start] ran and [stop]/[forceStop] have not yet. */
@@ -836,6 +890,7 @@ class AudioRouter private constructor(private val context: Context) {
         stopWatchdog = null
         ensureWatchdog?.let { mainHandler.removeCallbacks(it) }
         ensureWatchdog = null
+        ensureAtMs = null
         cancelReapplyRunnables()
 
         // Session 23: previously a single call chain. If
@@ -977,6 +1032,7 @@ class AudioRouter private constructor(private val context: Context) {
         ownerCallId = null
         ensureWatchdog?.let { mainHandler.removeCallbacks(it) }
         ensureWatchdog = null
+        ensureAtMs = null
 
         // Session 54: same cancellation as stop() — the watchdog itself
         // may have triggered this forceStop, but a no-op removeCallbacks
