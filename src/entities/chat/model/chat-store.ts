@@ -24,7 +24,8 @@ import { categorizeJoinError, validateRoomId, type JoinRoomResult } from "../lib
 import { getModeratorChange, isServiceRoomName, isWithinCreationBurst, isCreationBurstMemberEvent } from "../lib/system-event-filter";
 import { preservePendingRooms } from "../lib/preserve-pending-rooms";
 import { mergeIntoSortedRooms } from "../lib/merge-sorted-rooms";
-import { indexCallEvents, isMissedCallHangup, type CallEventIndex } from "../lib/call-outcome";
+import { indexCallEvents, isMissedCallHangup, isOrphanedInvite, orphanInviteDueAt, type CallEventIndex } from "../lib/call-outcome";
+import { inviteCallRecord } from "../lib/invite-call-record";
 import {
   classifyTimelineEvent,
   describeTimeline,
@@ -439,6 +440,10 @@ function matrixRoomToChatRoom(
           callInfo: { callType: isVideo ? "video" : "voice", missed, duration: Math.round(durationMs / 1000), callId: callContent.call_id as string | undefined },
           systemMeta: { template: callTemplateKey, senderAddr: sender },
         };
+      } else if (raw.type === "m.call.invite") {
+        // An invite nobody ended stands in for the hangup that never came.
+        if (!callEvents) callEvents = indexCallEvents(timelineEvents.map(getRawEvent));
+        if (isOrphanedInvite(raw, callEvents, Date.now())) lastSystemMessage = inviteCallRecord(raw, roomId);
       }
     }
     if (lastMessage && lastTs) break;
@@ -6096,6 +6101,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       return buildSystemMessage(raw, roomId);
     }
 
+    // An invite nobody ended stands in for the hangup that never came (isOrphanedInvite).
+    if (raw.type === "m.call.invite") {
+      return isOrphanedInvite(raw, callEvents, Date.now()) ? inviteCallRecord(raw, roomId) : null;
+    }
+
     // Handle call hangup events as system messages in timeline history
     if (raw.type === "m.call.hangup") {
       const callContent = raw.content as Record<string, unknown>;
@@ -7178,7 +7188,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         return !clearedAtTs || ts === undefined || ts > clearedAtTs;
       });
       const timeline = describeTimeline(raws);
-      const pending = await planTimelineParse(raws, timeline, timeline.rowEventIds);
+      const pending = await planTimelineParse(raws, timeline, [...timeline.rowEventIds, ...timeline.orphanInviteIds]);
 
       const oldestId = timeline.rowEventIds[0];
       const backToken = matrixRoom.getLiveTimeline?.()?.getPaginationToken?.("b") ?? null;
@@ -7216,7 +7226,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       return !clearedAtTs || ts === undefined || ts > clearedAtTs;
     });
     const timeline = describeTimeline(raws);
-    if ((await planTimelineParse(raws, timeline, timeline.rowEventIds)).size > 0) {
+    if ((await planTimelineParse(raws, timeline, [...timeline.rowEventIds, ...timeline.orphanInviteIds])).size > 0) {
       await loadRoomMessages(roomId, { scrollback: false, awaitWrite: true });
     }
     if ((await dbKit.rooms.getRoom(roomId))?.gapToken) backfillRoom(roomId, { front: true });
@@ -7544,7 +7554,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         timelineLength: allEvents.length,
         hasMoreHistory: matrixRoom.oldState?.paginationToken !== null,
         minTimelineEvents: MIN_TIMELINE_EVENTS,
-        pendingIds: await planTimelineParse(rawEvents, timeline, timeline.rowEventIds),
+        pendingIds: await planTimelineParse(rawEvents, timeline, [...timeline.rowEventIds, ...timeline.orphanInviteIds]),
       });
     } catch (e) {
       console.warn("[chat-store] isRoomInSyncWithSdk failed:", e);
@@ -7978,6 +7988,71 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   };
 
   /** Handle incoming timeline event from Matrix sync */
+  /**
+   * Live invites waiting for their call's record, by call id. An unanswered call that
+   * ends without a hangup gets its record from the invite (`isOrphanedInvite`): after a
+   * reject (the callee's app declines a call nobody answered after 30 s), or once the
+   * lifetime is over when the caller's client went away. History loads find it too; these
+   * checks cover a room that stays open meanwhile.
+   */
+  const orphanInviteChecks = new Map<string, ReturnType<typeof setTimeout>>();
+  /** A batch's later events (the call's own hangup) land before a check runs. */
+  const ORPHAN_INVITE_MIN_CHECK_MS = 5_000;
+
+  const armOrphanInviteCheck = (
+    invite: Record<string, unknown>,
+    roomId: string,
+    callId: string,
+    kit: ChatDbKit | null,
+    delay: number,
+  ) => {
+    const pending = orphanInviteChecks.get(callId);
+    if (pending) clearTimeout(pending);
+    orphanInviteChecks.set(callId, setTimeout(() => {
+      orphanInviteChecks.delete(callId);
+      // Another account's store by now: the record is not its to write.
+      if (chatDbKitRef.value !== kit) return;
+      const matrixRoom = getMatrixClientService().getRoom(roomId);
+      if (!matrixRoom) return;
+      const callEvents = indexCallEvents(getTimelineEvents(matrixRoom).map(getRawEvent));
+      if (isOrphanedInvite(invite, callEvents, Date.now())) {
+        const record = inviteCallRecord(invite, roomId);
+        addMessage(roomId, record);
+        dexieWriteMessage(record, roomId, invite);
+        return;
+      }
+      // Timers run on a monotonic clock and Date.now() on the wall clock, so a check can
+      // fire a hair before the invite is due (web bench, 2026-10-15): wait out the rest.
+      const left = orphanInviteDueAt(invite) - Date.now();
+      if (left > 0 && !callEvents.hungUp.has(callId) && !callEvents.answered.has(callId)) {
+        armOrphanInviteCheck(invite, roomId, callId, kit, left);
+      }
+    }, delay));
+  };
+
+  const scheduleOrphanInviteCheck = (invite: Record<string, unknown>, roomId: string) => {
+    const callId = (invite.content as Record<string, unknown> | undefined)?.call_id;
+    const dueAt = orphanInviteDueAt(invite);
+    if (typeof callId !== "string" || !callId || dueAt === 0 || orphanInviteChecks.has(callId)) return;
+    armOrphanInviteCheck(invite, roomId, callId, chatDbKitRef.value, Math.max(dueAt - Date.now(), ORPHAN_INVITE_MIN_CHECK_MS));
+  };
+
+  /** A reject ends the call without a record: check its invite soon, not at the lifetime. */
+  const checkInviteOfRejectedCall = (reject: Record<string, unknown>, roomId: string) => {
+    const callId = (reject.content as Record<string, unknown> | undefined)?.call_id;
+    if (typeof callId !== "string" || !callId) return;
+    const matrixRoom = getMatrixClientService().getRoom(roomId);
+    if (!matrixRoom) return;
+    const invite = getTimelineEvents(matrixRoom).map(getRawEvent).find((raw) =>
+      raw?.type === "m.call.invite" && (raw.content as Record<string, unknown> | undefined)?.call_id === callId);
+    if (invite) armOrphanInviteCheck(invite, roomId, callId, chatDbKitRef.value, ORPHAN_INVITE_MIN_CHECK_MS);
+  };
+
+  const clearOrphanInviteChecks = () => {
+    for (const timer of orphanInviteChecks.values()) clearTimeout(timer);
+    orphanInviteChecks.clear();
+  };
+
   const handleTimelineEvent = async (event: unknown, roomId: string) => {
     try {
       const raw = getRawEvent(event);
@@ -8008,6 +8083,15 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           addMessage(roomId, sysMsg);
           dexieWriteMessage(sysMsg, roomId, raw);
         }
+        return;
+      }
+
+      if (raw.type === "m.call.invite") {
+        scheduleOrphanInviteCheck(raw, roomId);
+        return;
+      }
+      if (raw.type === "m.call.reject") {
+        checkInviteOfRejectedCall(raw, roomId);
         return;
       }
 
@@ -9088,6 +9172,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   /** Reset all in-memory state (called on logout and account switch) */
   const cleanup = () => {
     discardRoomOpenQuiet();
+    clearOrphanInviteChecks();
     roomSnapshots.clear();
     historyBackfill.stop();
     historyBackfill = makeHistoryBackfill();

@@ -16,16 +16,27 @@ import type { Message } from "../model/types";
  *
  * A deleted call record goes too (#1091): a card has no "deleted" placeholder,
  * so without this a call deleted for oneself stayed on screen.
+ *
+ * A record taken from an invite nobody ended (`callInfo.fromInvite`) only stands
+ * in for its call's hangup: when the hangup's record is loaded too, deleted or
+ * not, the invite's record goes, though it comes first.
  */
 export function dedupeCallEvents<T extends { callInfo?: Message["callInfo"]; deleted?: boolean }>(
   messages: readonly T[],
 ): T[] {
   const seen = new Set<string>();
+  const recorded = new Set<string>();
   const out: T[] = [];
+
+  for (const message of messages) {
+    const callId = message.callInfo?.callId;
+    if (callId && !message.callInfo?.fromInvite) recorded.add(callId);
+  }
 
   for (const message of messages) {
     if (message.callInfo && message.deleted) continue;
     const callId = message.callInfo?.callId;
+    if (callId && message.callInfo?.fromInvite && recorded.has(callId)) continue;
     if (!callId) {
       out.push(message);
       continue;

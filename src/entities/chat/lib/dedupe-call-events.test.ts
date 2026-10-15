@@ -5,7 +5,7 @@ type Row = {
   id: string;
   _key?: string;
   deleted?: boolean;
-  callInfo?: { callType: "voice" | "video"; missed: boolean; callId?: string };
+  callInfo?: { callType: "voice" | "video"; missed: boolean; callId?: string; fromInvite?: boolean };
 };
 
 const call = (id: string, callId?: string, missed = false): Row => ({
@@ -32,6 +32,28 @@ describe("dedupeCallEvents", () => {
     const rows = [call("ev1", "call-a"), call("ev2", "call-b"), call("ev3", "call-a")];
 
     expect(dedupeCallEvents(rows).map((r) => r.id)).toEqual(["ev1", "ev2"]);
+  });
+
+  // An invite nobody ended stands in for its call's record (call-outcome.ts, isOrphanedInvite).
+  // A hangup that turns up later is the real record and wins, though the invite came first.
+  it("lets a later hangup of the call replace the record taken from its invite", () => {
+    const fromInvite: Row = { id: "invite", callInfo: { callType: "voice", missed: true, callId: "call-a", fromInvite: true } };
+    const rows = [text("m1"), fromInvite, call("hangup", "call-a", true), text("m2")];
+
+    expect(dedupeCallEvents(rows).map((r) => r.id)).toEqual(["m1", "hangup", "m2"]);
+  });
+
+  it("keeps the record taken from an invite while no other record of the call is loaded", () => {
+    const fromInvite: Row = { id: "invite", callInfo: { callType: "voice", missed: true, callId: "call-a", fromInvite: true } };
+
+    expect(dedupeCallEvents([fromInvite, call("other", "call-b")]).map((r) => r.id)).toEqual(["invite", "other"]);
+  });
+
+  it("does not bring an invite's record back when the call's hangup record was deleted", () => {
+    const fromInvite: Row = { id: "invite", callInfo: { callType: "voice", missed: true, callId: "call-a", fromInvite: true } };
+    const deletedHangup: Row = { ...call("hangup", "call-a", true), deleted: true };
+
+    expect(dedupeCallEvents([fromInvite, deletedHangup]).map((r) => r.id)).toEqual([]);
   });
 
   it("leaves non-call messages untouched and in place", () => {
