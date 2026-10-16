@@ -24,7 +24,7 @@ import { categorizeJoinError, validateRoomId, type JoinRoomResult } from "../lib
 import { getModeratorChange, isServiceRoomName, isWithinCreationBurst, isCreationBurstMemberEvent } from "../lib/system-event-filter";
 import { preservePendingRooms } from "../lib/preserve-pending-rooms";
 import { mergeIntoSortedRooms } from "../lib/merge-sorted-rooms";
-import { indexCallEvents, isMissedCallHangup, isOrphanedInvite, orphanInviteDueAt, type CallEventIndex } from "../lib/call-outcome";
+import { indexCallEvents, isMissedCallHangup, isOrphanedInvite, orphanInviteDueAt, pendingInvites, type CallEventIndex } from "../lib/call-outcome";
 import { inviteCallRecord } from "../lib/invite-call-record";
 import {
   classifyTimelineEvent,
@@ -3642,6 +3642,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const matrixRooms = matrixService.getRooms() as any[];
       fullRoomRefresh(matrixRooms, kit, myUserId);
+      if (isInitial) armPendingOrphanInviteChecks(matrixRooms);
     } else {
       // Incremental: only process changed room IDs, don't scan all rooms
       incrementalRoomRefresh(kit, myUserId, changed);
@@ -8046,6 +8047,23 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     const invite = getTimelineEvents(matrixRoom).map(getRawEvent).find((raw) =>
       raw?.type === "m.call.invite" && (raw.content as Record<string, unknown> | undefined)?.call_id === callId);
     if (invite) armOrphanInviteCheck(invite, roomId, callId, chatDbKitRef.value, ORPHAN_INVITE_MIN_CHECK_MS);
+  };
+
+  /**
+   * The first sync's events reach no live handler: the SDK replays its store before
+   * `chatsReady`, and stores.ts drops timeline events until `roomsInitialized`. A call
+   * that rang while the app started then never got its check (review 2026-10-16), so
+   * the first full refresh arms one for each invite still pending (`pendingInvites`).
+   */
+  const armPendingOrphanInviteChecks = (matrixRooms: unknown[]) => {
+    const now = Date.now();
+    for (const room of matrixRooms) {
+      const roomId = (room as { roomId?: unknown } | null)?.roomId;
+      if (typeof roomId !== "string") continue;
+      for (const invite of pendingInvites(getTimelineEvents(room).map(getRawEvent), now)) {
+        scheduleOrphanInviteCheck(invite, roomId);
+      }
+    }
   };
 
   const clearOrphanInviteChecks = () => {

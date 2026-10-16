@@ -5,6 +5,7 @@ import {
   isOrphanedInvite,
   ORPHAN_INVITE_GRACE_MS,
   orphanInviteDueAt,
+  pendingInvites,
 } from "./call-outcome";
 
 const CALLER = "@caller:server";
@@ -141,5 +142,32 @@ describe("isOrphanedInvite", () => {
     expect(isOrphanedInvite(hangup("c1", CALLER), indexCallEvents([i]), due)).toBe(false);
     expect(isOrphanedInvite({ ...i, content: { version: 1 } }, indexCallEvents([]), due)).toBe(false);
     expect(isOrphanedInvite({ ...i, origin_server_ts: undefined }, indexCallEvents([]), due)).toBe(false);
+  });
+});
+
+describe("pendingInvites", () => {
+  // The app started while a call rang: the first sync delivered the invite before live events
+  // reached the chat store, so no check was armed for it (review 2026-10-16).
+  const sent = 1_000_000;
+  const inv = (callId: string) => ({
+    type: "m.call.invite",
+    sender: CALLER,
+    event_id: `$invite-${callId}`,
+    origin_server_ts: sent,
+    content: { call_id: callId, version: 1, lifetime: 60_000 },
+  });
+  const reject = (callId: string) => ({ type: "m.call.reject", sender: CALLEE, content: { call_id: callId, version: 1 } });
+
+  it("lists invites whose call may still end without a record", () => {
+    const events = [inv("ringing"), inv("rejected"), reject("rejected"), inv("hung-up"), hangup("hung-up", CALLER), inv("answered"), answer("answered")];
+    expect(pendingInvites(events, sent + 20_000).map((e) => e.event_id)).toEqual(["$invite-ringing", "$invite-rejected"]);
+  });
+
+  it("leaves invites already past due to the history load", () => {
+    expect(pendingInvites([inv("old")], orphanInviteDueAt(inv("old")))).toEqual([]);
+  });
+
+  it("skips entries that are not events", () => {
+    expect(pendingInvites([null, undefined, inv("c1")], sent)).toHaveLength(1);
   });
 });

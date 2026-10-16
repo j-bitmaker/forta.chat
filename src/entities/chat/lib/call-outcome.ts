@@ -98,3 +98,22 @@ export function isOrphanedInvite(invite: RawEvent, index: CallEventIndex, now: n
   const dueAt = orphanInviteDueAt(invite);
   return dueAt > 0 && now >= dueAt;
 }
+
+/**
+ * Invites whose call may still end without a record: no hangup, no answer, and not yet past
+ * due. A live check armed for each writes the record once it is orphaned. Invites already past
+ * due are left to the history load, which builds their records when the room is parsed.
+ */
+export function pendingInvites(rawEvents: ReadonlyArray<RawEvent | null | undefined>, now: number): RawEvent[] {
+  let index: CallEventIndex | undefined;
+  const out: RawEvent[] = [];
+  for (const raw of rawEvents) {
+    if (raw?.type !== "m.call.invite") continue;
+    const callId = callIdOf(raw);
+    if (!callId || orphanInviteDueAt(raw) <= now) continue;
+    index ??= indexCallEvents(rawEvents);
+    if (index.hungUp.has(callId) || index.answered.has(callId)) continue;
+    out.push(raw);
+  }
+  return out;
+}
