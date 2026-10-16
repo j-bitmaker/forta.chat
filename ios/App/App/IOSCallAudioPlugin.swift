@@ -1,6 +1,7 @@
 import Capacitor
 import Foundation
 import AVFoundation
+import CallKit
 
 /// AVAudioSession lifecycle for VoIP calls. Owns the
 /// `.playAndRecord / .voiceChat (or .videoChat)` category that keeps
@@ -102,6 +103,12 @@ public class IOSCallAudioPlugin: CAPPlugin {
         .mixWithOthers,
     ]
 
+    /// Calls the system has in progress: cellular, FaceTime, other VoIP apps.
+    /// Forta's own call is not among them once it connects: an outgoing call
+    /// never enters CallKit, and an incoming one leaves it before the answer
+    /// (`releaseCallKitAudio` in native-call-bridge.ios.ts).
+    private let callObserver = CXCallObserver()
+
     deinit {
         NotificationCenter.default.removeObserver(self)
     }
@@ -115,7 +122,11 @@ public class IOSCallAudioPlugin: CAPPlugin {
 
         switch type {
         case .began:
-            notifyListeners("audioInterruptionBegan", data: [:])
+            // WebKit's GPU process interrupts this session when it starts the
+            // call's audio (iPhone XR 2026-10-16, audiomxd `interrupted_by
+            // com.apple.WebKit.GPU`). JS hangs up only for a real phone call.
+            let phoneCall = callObserver.calls.contains { !$0.hasEnded }
+            notifyListeners("audioInterruptionBegan", data: ["phoneCall": phoneCall])
         case .ended:
             // The .ended payload includes the interruption options,
             // most importantly `.shouldResume`. Forward it so JS can

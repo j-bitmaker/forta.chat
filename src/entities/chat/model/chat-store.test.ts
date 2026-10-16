@@ -11,6 +11,8 @@ const mockGetUserIdFn = vi.fn(() => "@me:server");
 const mockMatrixService = {
   getUserId: mockGetUserIdFn,
   getRoom: mockGetRoom,
+  // Fake-timer tests advance into the debounced room refresh: not ready, so it stays out.
+  isReady: vi.fn(() => false),
   sendReadReceipt: vi.fn(async () => true),
   kit: {
     client: { getUserId: mockGetUserIdFn },

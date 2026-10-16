@@ -126,12 +126,14 @@ export interface IOSCallAudioPlugin {
   setOutput(opts: { device: string }): Promise<void>;
   /**
    * AVAudioSession.interruptionNotification (.began). Fires when iOS takes
-   * the audio session away from us — typically a real cellular phone call,
-   * Siri activation, or a system alarm.
+   * the audio session away from us — a real cellular phone call, Siri, a
+   * system alarm, or WebKit's own GPU process starting the call's audio.
+   * `phoneCall`: the system has a call in progress (`CXCallObserver`);
+   * absent from native builds before 2026-10-16.
    */
   addListener(
     event: 'audioInterruptionBegan',
-    cb: () => void,
+    cb: (data?: { phoneCall?: boolean }) => void,
   ): Promise<PluginListenerHandle>;
   /**
    * AVAudioSession.interruptionNotification (.ended). The `shouldResume`
