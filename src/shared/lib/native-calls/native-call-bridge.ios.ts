@@ -1,6 +1,7 @@
 import { registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 import { IOSVoIPPush } from '@/shared/lib/push/ios-voip-push';
 import { isCallKitReleaseEcho } from './callkit-release-echo';
+import { createAnswerReminder } from './answer-reminder';
 import { Camera } from '@capacitor/camera';
 import type {
   AudioProbeResult,
@@ -124,6 +125,10 @@ export interface IOSCallAudioPlugin {
     isBtScoOn: boolean;
   }>;
   setOutput(opts: { device: string }): Promise<void>;
+  /** A local notification in `delayMs`, replacing an earlier one (see answer-reminder.ts). */
+  scheduleAnswerReminder(opts: { delayMs: number; title: string; body: string }): Promise<void>;
+  /** Withdraws the reminder, pending or shown. */
+  cancelAnswerReminder(): Promise<void>;
   /**
    * AVAudioSession.interruptionNotification (.began). Fires when iOS takes
    * the audio session away from us — a real cellular phone call, Siri, a
@@ -227,6 +232,22 @@ export function createIOSNativeCallAdapter(): NativeCallNativePlugin {
    * for the ids listed here so the release does not hang up the call.
    */
   const releasedToWebKit = new Set<string>();
+
+  /** Tells the user to open Forta when an Accept off screen waits for the microphone. */
+  const answerReminder = createAnswerReminder({
+    schedule: (opts) => IOSCallAudio.scheduleAnswerReminder(opts),
+    cancel: () => IOSCallAudio.cancelAnswerReminder(),
+    isPageVisible: () => typeof document === 'undefined' || document.visibilityState === 'visible',
+    text: async (callerName) => {
+      const { tRaw } = await import('@/shared/lib/i18n');
+      return { title: callerName || 'Forta', body: tRaw('call.openToAnswer') };
+    },
+  });
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') answerReminder.settle();
+    });
+  }
 
   async function releaseCallKitAudio(): Promise<void> {
     try {
@@ -372,6 +393,7 @@ export function createIOSNativeCallAdapter(): NativeCallNativePlugin {
     },
 
     async reportCallConnected(_opts) {
+      answerReminder.settle();
       // No `markConnected` in this plugin. CallKit's default behavior
       // for incoming calls auto-transitions to "connected" once the
       // user taps Accept. Outgoing calls aren't reported at all (see
@@ -379,6 +401,7 @@ export function createIOSNativeCallAdapter(): NativeCallNativePlugin {
     },
 
     async reportCallEnded(opts) {
+      answerReminder.settle();
       knownCalls.delete(opts.callId);
       try {
         await IncomingCallKit.endCall({ callId: opts.callId });
@@ -512,6 +535,7 @@ export function createIOSNativeCallAdapter(): NativeCallNativePlugin {
             // dead as with CallKit alive — WebKit's audio started under the
             // CallKit session and did not recover once it was gone.
             void releaseCallKitAudio().finally(() => cb(unwrapEvent(e)));
+            answerReminder.answered(e.call?.callerName ?? '');
           });
         case 'callDeclined':
           return IncomingCallKit.addListener('callDeclined', (e) => {

@@ -28,6 +28,8 @@ const audioGetStatusSpy: Mock = vi.fn().mockResolvedValue({
   isBtScoOn: false,
 });
 const audioSetOutputSpy: Mock = vi.fn().mockResolvedValue(undefined);
+const scheduleReminderSpy: Mock = vi.fn().mockResolvedValue(undefined);
+const cancelReminderSpy: Mock = vi.fn().mockResolvedValue(undefined);
 const audioProbeSpy: Mock = vi.fn().mockResolvedValue({
   available: true,
   hasInput: true,
@@ -62,6 +64,8 @@ vi.mock('@capacitor/core', () => ({
         forceStop: audioForceStopSpy,
         getStatus: audioGetStatusSpy,
         setOutput: audioSetOutputSpy,
+        scheduleAnswerReminder: scheduleReminderSpy,
+        cancelAnswerReminder: cancelReminderSpy,
       };
     }
     if (name === 'IOSVoIPPush') {
@@ -70,6 +74,8 @@ vi.mock('@capacitor/core', () => ({
     return new Proxy({}, { get: () => vi.fn().mockResolvedValue({}) });
   },
 }));
+
+vi.mock('@/shared/lib/i18n', () => ({ tRaw: (key: string) => key }));
 
 vi.mock('@capacitor/camera', () => ({
   Camera: {
@@ -386,6 +392,29 @@ describe('createIOSNativeCallAdapter — addListener event mapping', () => {
     // A later end of the same id by the user or the system still counts.
     endedHandler({ call: { callId: 'cid', extra: { roomId: '!r:m' } }, source: 'user' });
     expect(ended).toHaveBeenCalledWith({ callId: 'cid', roomId: '!r:m' });
+  });
+
+  // iPhone XR 2026-10-17: Accept with Forta in the background — WebKit never started
+  // the microphone off screen and the call silently did not connect.
+  it('reminds the user to open Forta after an Accept off screen, and withdraws it on connect', async () => {
+    vi.stubGlobal('document', { visibilityState: 'hidden', addEventListener: vi.fn() });
+    try {
+      const adapter = await loadAdapter();
+      await adapter.addListener('callAnswered', vi.fn());
+      const acceptedHandler = ickAddListenerSpy.mock.calls.find(([n]) => n === 'callAccepted')?.[1];
+      scheduleReminderSpy.mockClear();
+      cancelReminderSpy.mockClear();
+
+      acceptedHandler({ call: { callId: 'cid', callerName: 'Alice', extra: { roomId: '!r:m' } }, source: 'user' });
+      await vi.waitFor(() => expect(scheduleReminderSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Alice', body: 'call.openToAnswer' }),
+      ));
+
+      await adapter.reportCallConnected({ callId: 'cid' });
+      await vi.waitFor(() => expect(cancelReminderSpy).toHaveBeenCalledOnce());
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('maps "callDeclined" 1:1 (same name on both sides) but still unwraps event.call', async () => {

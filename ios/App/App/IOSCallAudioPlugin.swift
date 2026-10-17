@@ -2,6 +2,7 @@ import Capacitor
 import Foundation
 import AVFoundation
 import CallKit
+import UserNotifications
 
 /// AVAudioSession lifecycle for VoIP calls. Owns the
 /// `.playAndRecord / .voiceChat (or .videoChat)` category that keeps
@@ -223,6 +224,40 @@ public class IOSCallAudioPlugin: CAPPlugin {
     }
 
     // MARK: - Status
+
+    // MARK: - "Open Forta to answer" reminder (answer-reminder.ts)
+
+    private static let answerReminderId = "forta.answer-reminder"
+
+    /// A local notification `delayMs` from now. WebKit captures the microphone
+    /// only while the page is on screen, so an Accept taken with Forta in the
+    /// background waits until the user opens it (iPhone XR, 2026-10-17).
+    /// Scheduled here at once: the page may be suspended before it is due.
+    @objc func scheduleAnswerReminder(_ call: CAPPluginCall) {
+        let content = UNMutableNotificationContent()
+        content.title = call.getString("title") ?? "Forta"
+        content.body = call.getString("body") ?? ""
+        content.sound = .default
+        content.userInfo = ["forta_kind": "answer-reminder"]
+        let delay = max(1.0, (call.getDouble("delayMs") ?? 3000) / 1000)
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: delay, repeats: false)
+        let request = UNNotificationRequest(identifier: Self.answerReminderId, content: content, trigger: trigger)
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                call.reject("answer reminder failed: \(error.localizedDescription)", nil, error)
+            } else {
+                call.resolve()
+            }
+        }
+    }
+
+    /// Withdraws the reminder, still pending or already shown.
+    @objc func cancelAnswerReminder(_ call: CAPPluginCall) {
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: [Self.answerReminderId])
+        center.removeDeliveredNotifications(withIdentifiers: [Self.answerReminderId])
+        call.resolve()
+    }
 
     @objc func getStatus(_ call: CAPPluginCall) {
         let session = AVAudioSession.sharedInstance()
