@@ -162,6 +162,20 @@ let _matrixStartFailures = 0;
 // keeps an explicit login (which also checks), or a switch back to an account
 // whose republish is not on the chain yet, from republishing twice.
 const _keysVerifiedFor = new Set<string>();
+/**
+ * Ends the call in progress while Matrix can still tell the peer: logout used to
+ * drop it silently, and the caller rang until the invite expired. Bounded
+ * (`call-logout.ts`) and never throws.
+ */
+async function endCallBeforeLogout(): Promise<void> {
+  try {
+    const { endCallForLogout } = await import("@/features/video-calls/model/call-logout");
+    await endCallForLogout();
+  } catch (e) {
+    console.warn('[auth] ending the call on logout failed:', e);
+  }
+}
+
 function stopMatrixReconnect(): void {
   if (_matrixReconnectUnsub) { _matrixReconnectUnsub(); _matrixReconnectUnsub = null; }
 }
@@ -1703,7 +1717,9 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
   const logout = async () => {
     const logoutAddress = activeAddress.value;
 
-    // ── 0. Clear in-memory auth state ──
+    await endCallBeforeLogout(); // ── 0. Tell the peer while Matrix still can ──
+
+    // ── 0.1. Clear in-memory auth state ──
     userInfo.value = undefined;
     cancelOwnProfileRetry();
 
