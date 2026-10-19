@@ -62,6 +62,44 @@ describe("createAnswerReminder", () => {
     expect(order).toEqual(["schedule", "cancel"]);
   });
 
+  // iPhone XR 2026-10-19: CallKit full screen hid Forta at the Accept, Forta came back on
+  // screen a moment later, and the reminder still fired: the visibility event never came.
+  it("withdraws the reminder when Forta is back on screen without a visibility event", async () => {
+    vi.useFakeTimers();
+    try {
+      let visible = false;
+      const d = { ...deps(false), isPageVisible: vi.fn(() => visible) };
+      const reminder = createAnswerReminder(d);
+
+      reminder.answered("Alice");
+      await vi.advanceTimersByTimeAsync(300);
+      expect(d.cancel).not.toHaveBeenCalled();
+
+      visible = true;
+      await vi.advanceTimersByTimeAsync(300);
+      expect(d.cancel).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops watching once the reminder is due", async () => {
+    vi.useFakeTimers();
+    try {
+      let visible = false;
+      const d = { ...deps(false), isPageVisible: vi.fn(() => visible) };
+      const reminder = createAnswerReminder(d);
+
+      reminder.answered("Alice");
+      await vi.advanceTimersByTimeAsync(ANSWER_REMINDER_DELAY_MS + 500);
+      const checks = d.isPageVisible.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(d.isPageVisible.mock.calls.length).toBe(checks);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("never throws when native is missing the methods", async () => {
     const d = {
       ...deps(false),

@@ -16,6 +16,8 @@
 
 /** Long enough for an answer that does capture in the background to connect first. */
 export const ANSWER_REMINDER_DELAY_MS = 3_000;
+/** How often the page is checked while the reminder waits: the visibility event can go missing. */
+const VISIBILITY_POLL_MS = 250;
 
 export interface AnswerReminderDeps {
   schedule(opts: { delayMs: number; title: string; body: string }): Promise<void>;
@@ -43,11 +45,23 @@ export function createAnswerReminder(deps: AnswerReminderDeps): AnswerReminder {
       console.warn(`[NativeCallBridge.iOS] answer reminder ${failure}:`, e);
     });
   };
-  return {
+  const reminder: AnswerReminder = {
     answered(callerName) {
       if (deps.isPageVisible()) return;
       armed = true;
       enqueue(async () => deps.schedule({ delayMs: ANSWER_REMINDER_DELAY_MS, ...(await deps.text(callerName)) }), 'not scheduled');
+      // CallKit full screen hides Forta at the Accept and gives the screen back a moment
+      // later; the visibility event for that did not always come (iPhone XR, 2026-10-19).
+      const dueAt = Date.now() + ANSWER_REMINDER_DELAY_MS;
+      const watch = () => {
+        if (!armed) return;
+        if (deps.isPageVisible()) {
+          reminder.settle();
+          return;
+        }
+        if (Date.now() < dueAt) setTimeout(watch, VISIBILITY_POLL_MS);
+      };
+      setTimeout(watch, VISIBILITY_POLL_MS);
     },
     settle() {
       if (!armed) return;
@@ -55,4 +69,5 @@ export function createAnswerReminder(deps: AnswerReminderDeps): AnswerReminder {
       enqueue(() => deps.cancel(), 'not withdrawn');
     },
   };
+  return reminder;
 }
