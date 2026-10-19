@@ -2545,6 +2545,30 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
   /** An author's feed page. Profiles that came with it (rpc-ex) fill the user
    *  store for addresses it doesn't know yet — no profile request for the
    *  post author or the last commenter. */
+  /** Diagnostics: fetches the address's profile from the chain afresh and logs
+   *  the raw getuserprofile row, the SDK profile and its encryption key count. */
+  async function logUserProfile(addr: string): Promise<void> {
+    try {
+      await appInitializer.loadUsersInfo([addr], { update: true });
+      const raw = appInitializer.getRawUserProfile(addr);
+      const sdk = appInitializer.getUserData(addr);
+      const rawKeys = raw?.k ?? raw?.keys;
+      const keys = Array.isArray(rawKeys)
+        ? rawKeys
+        : typeof rawKeys === "string" ? rawKeys.split(",").filter(Boolean) : [];
+      console.info("[profile]", addr, {
+        registered: raw != null,
+        deleted: raw?.deleted === true,
+        keysCount: keys.length,
+        requiredKeys: REQUIRED_ENCRYPTION_KEYS,
+        raw,
+        sdk,
+      });
+    } catch (e) {
+      console.warn("[profile] load failed for", addr, e);
+    }
+  }
+
   const getProfileFeed = async (
     authorAddress: string,
     options?: { height?: number; startTxid?: string; count?: number },
@@ -2779,6 +2803,7 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
     loadCommentsByIds,
     loadUsersInfo: (addresses: string[], options?: { update?: boolean }) =>
       appInitializer.loadUsersInfo(addresses, options),
+    logUserProfile,
     login,
     logout,
     matrixError,

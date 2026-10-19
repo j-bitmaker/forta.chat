@@ -12,7 +12,8 @@ function canBeEncryptBody(source: string): string {
 }
 
 describe("canBeEncrypt peer key check", () => {
-  it("should check that all usersinfo entries have >= m keys using .every()", () => {
+  // Groups skip keyless members (see matrix-crypto-group-keyless-member.test.ts).
+  it("should check that the 1:1 peer has >= m keys using .every()", () => {
     const section = canBeEncryptBody(getSource());
     expect(section).toContain(".every(");
     expect(section).toContain("keys.length >= m");
