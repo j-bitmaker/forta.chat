@@ -55,7 +55,7 @@
 2. GitHub → Actions → Android Test APK → Run workflow → ветка `master`. После сборки скачать `https://forta.chat/apktests/latest.apk` и сохранить как `forta-old.apk`.
 3. Run workflow ещё раз → ветка `calls-stabilization` → скачать как `forta-new.apk`. `versionCode` у неё выше, ставится поверх старой.
 
-**Вариант Б, локально.** Без push и без отправки отчётов, если не положить `android/app/google-services.json` (скачивается из Firebase console проекта) и `VITE_BUG_REPORT_TOKEN` в `.env`.
+**Вариант Б, локально.** Без push и без отправки отчётов, если не положить `android/app/google-services.json` (скачивается из Firebase console проекта) и `VITE_BUG_REPORT_ENDPOINT` (адрес прокси отчётов, `services/bug-report-proxy`) в `.env`.
 
 ```bash
 git worktree add ../forta-old origin/master
@@ -845,7 +845,7 @@ cp android/app/build/outputs/apk/sideload/debug/app-sideload-debug.apk ~/forta-n
 
 - [ ] **F30. Отчёт об ошибке показывает relay/host/srflx, выбранную пару и Tor; предупреждения «нет relay» и «звонок мимо Tor» (O05, O14)**
   - Коммиты: `e9ec3f09` · Кластер: connect-fail · Отчёты: O05 (8 «Соединение…»), O14 (код)
-  - Где: Samsung и Pixel · Можно ли: можно проверить · Нужно: CI-сборка (отчёты уходят только с `VITE_BUG_REPORT_TOKEN`), Samsung на сотовой сети
+  - Где: Samsung и Pixel · Можно ли: можно проверить · Нужно: CI-сборка (отчёты уходят только с `VITE_BUG_REPORT_ENDPOINT`), Samsung на сотовой сети
   - Ограничения: клиент только показывает факты. Есть ли TURN на сервере — это `curl` к homeserver (ниже) и coturn на сервере; на эмуляторе сеть без NAT-симметрии, relay=0 там норма и ничего не значит.
   - Симптом: «Соединение…» до таймаута; в отчёте нет ни слова о том, дошёл ли клиент до relay-кандидата; пользователь с включённым Tor не знает, что звонок идёт мимо него.
   - Причина: `webrtcDiagnostics` считал relay/host/srflx только в текстовый summary, в конверт отчёта они не попадали; предупреждения о «нет relay» не было; Tor-режим на звонок не влияет (`routing.ts` проксирует только HTTP) и никак не сообщается.

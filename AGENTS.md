@@ -30,6 +30,7 @@ Feature-Sliced Design (FSD):
 - `src/features/`: features (messaging, contacts, video-calls, auth, ...)
 - `src/entities/`: domain entities (chat, matrix, auth, user, call, ...)
 - `src/shared/`: utilities, UI components, composables, local-db (Dexie)
+- `services/bug-report-proxy/`: server side of bug reports; holds the GitHub token the app no longer ships (Cloudflare Worker or Node)
 
 Key decisions:
 - **Dexie = single source of truth**: all data is read from IndexedDB through `useLiveQuery`.

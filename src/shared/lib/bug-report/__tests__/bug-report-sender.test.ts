@@ -21,20 +21,30 @@ const fakeEnv: AppEnvironment = {
   userAgent: 'test',
 };
 
-function mockIssueCreate(number = 1) {
+const KEY = '0123456789abcdef0123456789abcdef';
+
+function mockIssueCreate(number = 1, extra: Record<string, unknown> = {}) {
   return vi.fn().mockResolvedValue({
     ok: true,
+    status: 201,
     json: () =>
       Promise.resolve({
-        html_url: `https://github.com/x/y/issues/${number}`,
         number,
+        url: `https://github.com/x/y/issues/${number}`,
+        manageKey: KEY,
+        screenshotsFailed: 0,
+        ...extra,
       }),
   });
 }
 
+function sentPayload(fetchMock: ReturnType<typeof vi.fn>): Record<string, unknown> {
+  return JSON.parse(fetchMock.mock.calls.at(-1)![1].body as string);
+}
+
 describe('sendBugReport', () => {
   beforeEach(() => {
-    vi.stubEnv('VITE_BUG_REPORT_TOKEN', 'test-token');
+    vi.stubEnv('VITE_BUG_REPORT_ENDPOINT', 'https://bugs.test');
   });
 
   afterEach(() => {
@@ -42,56 +52,104 @@ describe('sendBugReport', () => {
     vi.unstubAllGlobals();
   });
 
-  it('includes reporter marker when reporterAddress provided', async () => {
+  it('posts to the proxy without any GitHub token (audit S10-06)', async () => {
+    const fetchMock = mockIssueCreate(10);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await sendBugReport({ description: 'hello', environment: fakeEnv });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://bugs.test/v1/reports');
+    expect(JSON.stringify(init.headers)).not.toMatch(/authorization|bearer/i);
+    expect(sentPayload(fetchMock)).toMatchObject({ title: '[web] hello' });
+  });
+
+  it('sends the reporter hash for the proxy to key, not a marker in the body', async () => {
     const hash = await computeReporterHash('addr-1');
     const fetchMock = mockIssueCreate(10);
     vi.stubGlobal('fetch', fetchMock);
 
-    await sendBugReport({
-      description: 'hello',
-      environment: fakeEnv,
-      reporterAddress: 'addr-1',
-    });
+    await sendBugReport({ description: 'hello', environment: fakeEnv, reporterAddress: 'addr-1' });
 
-    const lastCall = fetchMock.mock.calls.at(-1)!;
-    const body = JSON.parse(lastCall[1].body as string);
-    expect(body.body).toContain(`<!-- reporter:${hash} -->`);
+    const payload = sentPayload(fetchMock);
+    expect(payload.reporter).toBe(hash);
+    expect(payload.body).not.toContain('reporter:');
   });
 
-  it('omits marker when no address provided', async () => {
+  it('sends no reporter when no address is provided', async () => {
     const fetchMock = mockIssueCreate();
     vi.stubGlobal('fetch', fetchMock);
 
     await sendBugReport({ description: 'hi', environment: fakeEnv });
 
-    const lastCall = fetchMock.mock.calls.at(-1)!;
-    const body = JSON.parse(lastCall[1].body as string);
-    expect(body.body).not.toContain('<!-- reporter:');
+    expect(sentPayload(fetchMock).reporter).toBeUndefined();
   });
 
-  it('returns issueNumber in result', async () => {
-    const fetchMock = mockIssueCreate(42);
-    vi.stubGlobal('fetch', fetchMock);
-
-    const res = await sendBugReport({ description: 'hi', environment: fakeEnv });
-
-    expect(res.issueNumber).toBe(42);
-    expect(res.issueUrl).toBe('https://github.com/x/y/issues/42');
-  });
-
-  it('still creates issue when screenshots array is empty', async () => {
-    const fetchMock = mockIssueCreate(3);
+  it('scrubs identifiers from the title and the body before they leave the device', async () => {
+    const fetchMock = mockIssueCreate();
     vi.stubGlobal('fetch', fetchMock);
 
     await sendBugReport({
-      description: 'hi',
-      environment: fakeEnv,
-      screenshots: [],
+      description: 'call from @a1b2:matrix.pocketnet.app dropped',
+      environment: { ...fakeEnv, currentRoute: '/chat?room=!Room1:matrix.pocketnet.app' },
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const url = fetchMock.mock.calls[0][0] as string;
-    expect(url).toContain('/issues');
+    const { title, body } = sentPayload(fetchMock) as { title: string; body: string };
+    expect(title).toBe('[web] call from <user> dropped');
+    expect(body).toContain('`/chat?room=<room>`');
+    expect(body).not.toContain('matrix.pocketnet.app');
+  });
+
+  it('cuts a body the proxy would refuse', async () => {
+    const fetchMock = mockIssueCreate();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await sendBugReport({ description: 'x', environment: fakeEnv, aiDiagnostics: { logs: 'y'.repeat(70_000) } });
+
+    const body = sentPayload(fetchMock).body as string;
+    expect(body.length).toBeLessThanOrEqual(58_000);
+    expect(body).toMatch(/cut on the device/);
+  });
+
+  it('returns the issue number, link and manage key', async () => {
+    vi.stubGlobal('fetch', mockIssueCreate(42));
+
+    const res = await sendBugReport({ description: 'hi', environment: fakeEnv });
+
+    expect(res).toMatchObject({ issueNumber: 42, issueUrl: 'https://github.com/x/y/issues/42', manageKey: KEY });
+  });
+
+  it('returns a null link for a private repository', async () => {
+    vi.stubGlobal('fetch', mockIssueCreate(42, { url: null }));
+    expect((await sendBugReport({ description: 'hi', environment: fakeEnv })).issueUrl).toBeNull();
+  });
+
+  it('leaves out a screenshot the proxy would refuse and counts it as failed', async () => {
+    const fetchMock = mockIssueCreate(3);
+    vi.stubGlobal('fetch', fetchMock);
+
+    // An image that does not decode goes out as given, as compressImage falls back.
+    vi.stubGlobal('Image', class {
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        queueMicrotask(() => this.onerror?.());
+      }
+    });
+    const res = await sendBugReport({
+      description: 'hi',
+      environment: fakeEnv,
+      screenshots: ['/9j/4AAQSkZJRg', 'AAAAHGZ0eXBoZWlj'],
+    });
+
+    expect(sentPayload(fetchMock).screenshots).toEqual(['/9j/4AAQSkZJRg']);
+    expect(res).toMatchObject({ screenshotsFailed: 1, uploadError: 'unsupported image' });
+  });
+
+  it('throws without an endpoint in the build', async () => {
+    vi.stubEnv('VITE_BUG_REPORT_ENDPOINT', '');
+    vi.stubGlobal('fetch', vi.fn());
+    await expect(sendBugReport({ description: 'hi', environment: fakeEnv })).rejects.toThrow(/not configured/);
   });
 
   it('throws when issue POST fails', async () => {
@@ -108,7 +166,7 @@ describe('sendBugReport', () => {
 
 describe('sendBugReport — ICE and Tor rows (O05/O14)', () => {
   beforeEach(() => {
-    vi.stubEnv('VITE_BUG_REPORT_TOKEN', 'test-token');
+    vi.stubEnv('VITE_BUG_REPORT_ENDPOINT', 'https://bugs.test');
   });
   afterEach(() => {
     vi.unstubAllEnvs();

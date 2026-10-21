@@ -1,10 +1,17 @@
 import type { BugReportInput } from './types';
-import { buildReporterMarker, computeReporterHash } from './reporter-hash';
+import { computeReporterHash } from './reporter-hash';
+import { postToBugReportProxy } from './bug-report-proxy';
+import { scrubPii } from './scrub-pii';
 
-const REPO = 'greenShirtMystery/forta-bugs';
-const API_BASE = 'https://api.github.com';
 const THUMB_MAX_WIDTH = 800;
 const THUMB_QUALITY = 0.5;
+/** The proxy takes 60 000; a longer report would be refused whole. */
+const MAX_BODY_CHARS = 58_000;
+const TRUNCATED_NOTE = '\n\n_The report was cut on the device to fit._';
+/** Base64 length of the proxy's 2 MB screenshot cap. */
+const MAX_SCREENSHOT_BASE64 = 2_796_000;
+/** The proxy takes at most this many screenshots per report. */
+const MAX_SCREENSHOTS = 5;
 
 /**
  * Compress a base64 image via canvas.
@@ -40,64 +47,6 @@ function compressImage(
   });
 }
 
-function getToken(): string {
-  const token = import.meta.env.VITE_BUG_REPORT_TOKEN;
-  if (!token) throw new Error('Bug report token not configured');
-  return token;
-}
-
-function headers(token: string): Record<string, string> {
-  return {
-    Authorization: `Bearer ${token}`,
-    Accept: 'application/vnd.github+json',
-    'Content-Type': 'application/json',
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
-}
-
-interface ScreenshotResult {
-  url?: string;
-  /** Tiny compressed base64 as fallback when upload fails */
-  thumbBase64?: string;
-  error?: string;
-}
-
-async function uploadScreenshot(
-  token: string,
-  compressed: string,
-  index: number,
-): Promise<ScreenshotResult> {
-  try {
-    const filename = `${Date.now()}-${index}.jpg`;
-    const path = `bug-screenshots/${filename}`;
-
-    const res = await fetch(`${API_BASE}/repos/${REPO}/contents/${path}`, {
-      method: 'PUT',
-      headers: headers(token),
-      body: JSON.stringify({
-        message: `bug-report: screenshot ${filename}`,
-        content: compressed,
-      }),
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      return { url: data.content.download_url as string };
-    }
-
-    const errorBody = await res.text().catch(() => '');
-    return {
-      thumbBase64: compressed,
-      error: `upload ${res.status}: ${errorBody.slice(0, 200)}`,
-    };
-  } catch (e) {
-    return {
-      thumbBase64: compressed,
-      error: e instanceof Error ? e.message : 'network error',
-    };
-  }
-}
-
 function formatTitle(platform: string, description: string): string {
   const prefix = `[${platform}] `;
   const maxLen = 100 - prefix.length;
@@ -108,24 +57,11 @@ function formatTitle(platform: string, description: string): string {
   return `${prefix}${trimmed}`;
 }
 
-async function formatBody(
-  input: BugReportInput,
-  results: ScreenshotResult[],
-): Promise<string> {
+/** Markdown of the report. The proxy adds the reporter marker and the screenshots. */
+function formatBody(input: BugReportInput): string {
   const { description, environment: env } = input;
 
   const lines: string[] = [];
-
-  if (input.reporterAddress) {
-    try {
-      const hash = await computeReporterHash(input.reporterAddress);
-      lines.push(buildReporterMarker(hash), '');
-    } catch (e) {
-      // Marker is a nice-to-have for status tracking — never let it block
-      // the bug report itself. Log so we can diagnose if it ever happens.
-      console.warn('[bug-report] reporter hash failed, sending without marker:', e);
-    }
-  }
 
   lines.push(
     '## Description',
@@ -156,36 +92,6 @@ async function formatBody(
     '```',
     '</details>',
   );
-
-  const uploaded = results.filter((r) => r.url);
-  const failed = results.filter((r) => !r.url && r.thumbBase64);
-
-  if (uploaded.length > 0) {
-    lines.push('', '## Screenshots');
-    for (const r of uploaded) {
-      lines.push(`![screenshot](${r.url})`);
-    }
-  }
-
-  if (failed.length > 0) {
-    lines.push(
-      '',
-      `## Screenshots (upload failed: ${failed[0].error})`,
-      '',
-      '_Base64-encoded thumbnails below. Decode with any base64-to-image tool._',
-    );
-    for (let i = 0; i < failed.length; i++) {
-      lines.push(
-        '',
-        `<details><summary>Screenshot ${i + 1}</summary>`,
-        '',
-        '```',
-        failed[i].thumbBase64!,
-        '```',
-        '</details>',
-      );
-    }
-  }
 
   // Session 25 / S3-S4: call-pipeline diagnostics. Rendered only when
   // present so non-call bug reports stay short. Layout chosen so triage
@@ -319,8 +225,11 @@ async function formatBody(
 }
 
 export interface BugReportResult {
-  issueUrl: string;
+  /** Null when the reports repository is private: the reporter could not open it. */
+  issueUrl: string | null;
   issueNumber: number;
+  /** Lets this device close or reopen the issue later; the proxy issues it once. */
+  manageKey: string;
   screenshotsFailed: number;
   uploadError?: string;
 }
@@ -338,47 +247,64 @@ export function formatFcmPriority(priority?: number, originalPriority?: number):
   return name;
 }
 
+async function reporterHash(address: string | undefined): Promise<string | undefined> {
+  if (!address) return undefined;
+  try {
+    return await computeReporterHash(address);
+  } catch (e) {
+    // The marker only groups reports; it must never block one.
+    console.warn('[bug-report] reporter hash failed, sending without marker:', e);
+    return undefined;
+  }
+}
+
+/**
+ * The proxy refuses the whole report over one screenshot that is not a JPEG
+ * or PNG under 2 MB. One the canvas could not compress (HEIC, an undecodable
+ * file) stays out instead.
+ */
+function isAcceptedScreenshot(base64: string): boolean {
+  const isJpegOrPng = base64.startsWith('/9j/') || base64.startsWith('iVBOR');
+  return isJpegOrPng && base64.length <= MAX_SCREENSHOT_BASE64;
+}
+
+function capBody(body: string): string {
+  if (body.length <= MAX_BODY_CHARS) return body;
+  return body.slice(0, MAX_BODY_CHARS - TRUNCATED_NOTE.length) + TRUNCATED_NOTE;
+}
+
 export async function sendBugReport(
   input: BugReportInput,
 ): Promise<BugReportResult> {
-  const token = getToken();
+  // Compressing is independent per screenshot, so it runs at once (audit W2D-03).
+  const compressed = input.screenshots?.length
+    ? await Promise.all(input.screenshots.map((s) => compressImage(s, THUMB_MAX_WIDTH, THUMB_QUALITY)))
+    : [];
+  const screenshots = compressed.filter(isAcceptedScreenshot).slice(0, MAX_SCREENSHOTS);
+  const skipped = compressed.length - screenshots.length;
 
-  const results: ScreenshotResult[] = [];
-  if (input.screenshots?.length) {
-    // Compressing is independent per screenshot, so it runs at once (audit
-    // W2D-03). The uploads stay one after another: each Contents API PUT is a
-    // commit on the same branch, and concurrent ones fail with 409.
-    const compressed = await Promise.all(
-      input.screenshots.map((s) => compressImage(s, THUMB_MAX_WIDTH, THUMB_QUALITY)),
-    );
-    for (let i = 0; i < compressed.length; i++) {
-      results.push(await uploadScreenshot(token, compressed[i], i));
-    }
-  }
-
-  const body = await formatBody(input, results);
-
-  const res = await fetch(`${API_BASE}/repos/${REPO}/issues`, {
-    method: 'POST',
-    headers: headers(token),
-    body: JSON.stringify({
-      title: formatTitle(input.environment.platform, input.description),
-      body,
-      labels: ['bug-report'],
-    }),
+  const res = await postToBugReportProxy('/v1/reports', {
+    title: scrubPii(formatTitle(input.environment.platform, input.description)),
+    body: capBody(scrubPii(formatBody(input))),
+    reporter: await reporterHash(input.reporterAddress),
+    screenshots,
   });
 
   if (!res.ok) {
     throw new Error(`Failed to create issue: ${res.status}`);
   }
 
-  const data = await res.json();
-  const failedScreenshots = results.filter((r) => !r.url && r.thumbBase64);
-
+  const data = (await res.json()) as Record<string, unknown>;
+  if (typeof data.number !== 'number' || typeof data.manageKey !== 'string') {
+    throw new Error('Failed to create issue: malformed proxy response');
+  }
+  const storeFailed = typeof data.screenshotsFailed === 'number' ? data.screenshotsFailed : 0;
+  const storeError = typeof data.uploadError === 'string' ? data.uploadError : undefined;
   return {
-    issueUrl: data.html_url as string,
-    issueNumber: data.number as number,
-    screenshotsFailed: failedScreenshots.length,
-    uploadError: failedScreenshots[0]?.error,
+    issueUrl: typeof data.url === 'string' ? data.url : null,
+    issueNumber: data.number,
+    manageKey: data.manageKey,
+    screenshotsFailed: storeFailed + skipped,
+    uploadError: storeError ?? (skipped > 0 ? 'unsupported image' : undefined),
   };
 }

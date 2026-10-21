@@ -32,6 +32,7 @@ import {
   useBugReportStatus,
   shouldCheckOnBoot,
   markBootCheckCompleted,
+  hasManageableIssue,
 } from "@/features/bug-report";
 import { useI18n } from "@/shared/lib/i18n";
 
@@ -324,7 +325,7 @@ function runBugStatusCheck() {
   if (!authStore.address) return;
   if (!shouldCheckOnBoot()) return;
   loadBugIssues(authStore.address);
-  if (bugStatusIssues.value.length > 0) {
+  if (hasManageableIssue(bugStatusIssues.value)) {
     pendingBugCheck = true;
     openBugStatusSheet();
   } else {

@@ -140,7 +140,6 @@ const handleSend = async () => {
   errorMsg.value = "";
 
   try {
-    console.log("[BugReport] sending with reporterAddress:", authStore.address);
     const result = await sendBugReport({
       description: description.value.trim(),
       environment: environment.value,
@@ -155,8 +154,9 @@ const handleSend = async () => {
       trackCreatedIssue(authStore.address, {
         number: result.issueNumber,
         title: `[${environment.value.platform}] ${description.value.trim().slice(0, 80)}`,
+        manageKey: result.manageKey,
+        url: result.issueUrl,
       });
-      console.log("[BugReport] tracked locally for", authStore.address);
     }
     sent.value = true;
     clearBugReportDraft();
