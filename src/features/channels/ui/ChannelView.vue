@@ -6,11 +6,11 @@ import { useAuthStore } from "@/entities/auth";
 import { useToast } from "@/shared/lib/use-toast";
 import { formatDate } from "@/shared/lib/format";
 import Avatar from "@/shared/ui/avatar/Avatar.vue";
-import { PostCard } from "@/features/post-player";
 import { useChatStore } from "@/entities/chat";
 import ContextMenu from "@/shared/ui/context-menu/ContextMenu.vue";
 import type { ContextMenuItem } from "@/shared/ui/context-menu/ContextMenu.vue";
 import ChannelInfoPanel from "./ChannelInfoPanel.vue";
+import ChannelPostSlot from "./ChannelPostSlot.vue";
 
 const emit = defineEmits<{ back: [] }>();
 const { t } = useI18n();
@@ -299,6 +299,7 @@ function onCtxMenuSelect(action: string) {
     <div
       v-else
       ref="scrollContainerRef"
+      data-channel-scroll
       class="flex flex-1 flex-col-reverse overflow-y-auto px-4"
     >
       <template v-for="item in displayItems" :key="item.id">
@@ -321,7 +322,7 @@ function onCtxMenuSelect(action: string) {
           @contextmenu="onPostContextMenu($event, item.txid!)"
         >
           <div class="mx-auto max-w-6xl py-1">
-            <PostCard :txid="item.txid" :is-own="false" />
+            <ChannelPostSlot :txid="item.txid" />
           </div>
         </div>
       </template>

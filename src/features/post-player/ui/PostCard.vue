@@ -67,6 +67,10 @@ const images = computed(() =>
 const firstImage = computed(() => images.value[0] ?? null);
 const showGallery = ref(false);
 
+/** An overlay opened from this card is on screen; ChannelPostSlot keeps the card mounted then. */
+const holdsOverlay = computed(() => showModal.value || showGallery.value || showDonateModal.value);
+defineExpose({ holdsOverlay });
+
 /** Plain-text preview that handles both Editor.js JSON (articles) and plain
  *  messages, split into text/link segments. Truncated after linkifying so a
  *  cut-off link still points at its full URL. */
