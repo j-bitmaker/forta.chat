@@ -1338,9 +1338,13 @@ export function useMessages() {
       roomId: string;
     }> = [];
     // The active room's rendered list first: a room opened from Dexie has no
-    // in-memory copy in chatStore.messages unless a history load ran.
+    // in-memory copy in chatStore.messages unless a history load ran. By the
+    // time MessageInput calls this, ForwardPicker has made the target room
+    // active, so for such a source only the selection snapshot holds the
+    // messages; without it a bulk forward sent nothing and reported no failure.
     const seen = new Set<string>();
-    for (const roomMessages of [chatStore.activeMessages ?? [], ...Object.values(chatStore.messages)]) {
+    const sources = [chatStore.activeMessages ?? [], chatStore.forwardingMessages ?? [], ...Object.values(chatStore.messages)];
+    for (const roomMessages of sources) {
       for (const m of roomMessages) {
         if (idSet.has(m.id) && !seen.has(m.id)) {
           seen.add(m.id);

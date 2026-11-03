@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   attachmentsAddSpy: vi.fn(),
   getDecryptedBlobSpy: vi.fn(),
   fakeStoreMessages: {} as Record<string, unknown[]>,
+  fakeForwardingMessages: [] as unknown[],
 }));
 
 vi.mock("@/shared/lib/local-db", () => ({
@@ -68,6 +69,9 @@ vi.mock("@/entities/chat", async () => {
       get messages() {
         return mocks.fakeStoreMessages;
       },
+      get forwardingMessages() {
+        return mocks.fakeForwardingMessages;
+      },
       addMessage: vi.fn(),
       updateMessageContent: vi.fn(),
       updateMessageStatus: vi.fn(),
@@ -118,6 +122,8 @@ describe("bulk forwardMessages — media + text mixed (Session 52)", () => {
     mocks.enqueueSpy.mockReset();
     mocks.attachmentsAddSpy.mockReset();
     mocks.getDecryptedBlobSpy.mockReset();
+    mocks.fakeStoreMessages = {};
+    mocks.fakeForwardingMessages = [];
     mocks.createLocalSpy.mockResolvedValue({ clientId: "client-xyz", localId: 42 });
     mocks.enqueueSpy.mockResolvedValue(1);
     mocks.attachmentsAddSpy.mockResolvedValue(7);
@@ -189,6 +195,31 @@ describe("bulk forwardMessages — media + text mixed (Session 52)", () => {
       const payload = call[2] as { forwardedFrom?: unknown };
       expect(payload.forwardedFrom).toEqual({ senderId: "alice", senderName: "user-alice" });
     }
+  });
+
+  it("forwards a selection from a chat opened from Dexie, with no in-memory copy", async () => {
+    // The real flow: ForwardPicker makes the target room active, and a source
+    // room opened from Dexie has nothing in chatStore.messages. Only the
+    // selection snapshot still holds the messages.
+    mocks.fakeForwardingMessages = [
+      {
+        id: "d1",
+        roomId: "!source:server",
+        senderId: "alice",
+        content: "img",
+        timestamp: 100,
+        type: MessageType.image,
+        fileInfo: { name: "1.jpg", type: "image/jpeg", size: 1, url: "mxc://1" },
+      },
+      { id: "d2", roomId: "!source:server", senderId: "alice", content: "text", timestamp: 110, type: MessageType.text },
+    ];
+
+    const { forwardMessages } = useMessages();
+    const result = await forwardMessages(["d1", "d2"], "!target:server", { withSenderInfo: true });
+
+    expect(result).toEqual({ succeeded: 2, failed: 0 });
+    const ops = mocks.enqueueSpy.mock.calls.map((c) => c[0]);
+    expect(ops).toEqual(["send_file", "send_message"]);
   });
 
   it("forwards a single pdf as one m.file event", async () => {
