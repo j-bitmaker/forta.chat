@@ -92,8 +92,11 @@ const handleCommentSubmit = async (message: string) => {
 };
 
 const onKeydown = (e: KeyboardEvent) => {
-  // Escape over the open gallery closes only the gallery.
-  if (e.key === "Escape" && !showGallery.value) requestClose();
+  // Escape over the open gallery closes only the gallery. Stopped so the chat
+  // under the post (ChatWindow listens on window) stays open.
+  if (e.key !== "Escape") return;
+  e.stopPropagation();
+  if (!showGallery.value) requestClose();
 };
 
 /** Load comments; for a shared comment link also load that comment (a reply

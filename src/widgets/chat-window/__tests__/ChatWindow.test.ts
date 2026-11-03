@@ -28,6 +28,7 @@ const fakeAcceptInvite = vi.hoisted(() =>
   vi.fn(async (_roomId: string): Promise<"joined" | "banned" | "failed"> => "joined"),
 );
 const fakeToast = vi.hoisted(() => vi.fn());
+const fakeSetActiveRoom = vi.hoisted(() => vi.fn());
 const activeMessagesRef = ref<unknown[]>([]);
 const selectedMessageIdsRef = ref<Set<string>>(new Set());
 
@@ -61,7 +62,7 @@ vi.mock("@/entities/chat", async () => {
       selectionMode: false,
       forwardPickerRequested: false,
       deletingMessage: null,
-      setActiveRoom: vi.fn(),
+      setActiveRoom: fakeSetActiveRoom,
       cancelForward: vi.fn(),
       exitSelectionMode: vi.fn(),
       acceptInvite: fakeAcceptInvite,
@@ -590,5 +591,43 @@ describe("ChatWindow — voice playback outlives the chat", () => {
     expect(playbackStopSpy).not.toHaveBeenCalled();
     wrapper.unmount();
     expect(playbackStopSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("ChatWindow — Escape", () => {
+  const escape = () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+  async function mountWithRoom() {
+    fakeRoomsInitialized.value = true;
+    fakeRooms.value = [{ id: "!a:matrix.org", name: "A", members: [] }];
+    fakeActiveRoomId.value = "!a:matrix.org";
+    const wrapper = mount(ChatWindow, mountOpts);
+    await flushPromises();
+    return wrapper;
+  }
+
+  it("closes the chat when nothing is open over it", async () => {
+    const wrapper = await mountWithRoom();
+
+    escape();
+
+    expect(fakeSetActiveRoom).toHaveBeenCalledWith(null);
+    wrapper.unmount();
+  });
+
+  it("leaves the chat open when an overlay mounted later handled Escape on document", async () => {
+    const wrapper = await mountWithRoom();
+    // Like PostPlayerModal, ForwardPicker or BottomSheet: a document listener
+    // added after the chat mounted, which closes itself and stops the event.
+    const overlay = (e: KeyboardEvent) => {
+      if (e.key === "Escape") e.stopPropagation();
+    };
+    document.addEventListener("keydown", overlay);
+
+    escape();
+
+    expect(fakeSetActiveRoom).not.toHaveBeenCalled();
+    document.removeEventListener("keydown", overlay);
+    wrapper.unmount();
   });
 });

@@ -506,12 +506,16 @@ const handleDeclineInvite = async () => {
   }
 };
 
+// On window, not document: an overlay opened over the chat (post, gallery,
+// forward picker, bottom sheet) handles Escape on document and stops it, so
+// Escape closes that overlay without closing the chat too. On document this
+// listener ran first, being added earlier, and one Escape closed both.
 onMounted(() => {
-  document.addEventListener("keydown", handleKeydown);
+  window.addEventListener("keydown", handleKeydown);
 });
 
 onUnmounted(() => {
-  document.removeEventListener("keydown", handleKeydown);
+  window.removeEventListener("keydown", handleKeydown);
   if (peerKeyRecheckTimer) { clearInterval(peerKeyRecheckTimer); peerKeyRecheckTimer = null; }
 });
 </script>

@@ -141,7 +141,10 @@ const onWheel = (e: WheelEvent) => {
 };
 
 const handleKeydown = (e: KeyboardEvent) => {
-  if (e.key === "Escape") emit("close");
+  if (e.key !== "Escape") return;
+  // Stopped so the chat under the viewer (ChatWindow listens on window) stays open.
+  e.stopPropagation();
+  emit("close");
 };
 
 onMounted(() => {
