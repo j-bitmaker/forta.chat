@@ -93,7 +93,7 @@ function tryParseBlocks(input: string): ParsedArticle | null {
 
   try {
     const parsed = JSON.parse(trimmed);
-    if (parsed && Array.isArray(parsed.blocks)) return parsed as ParsedArticle;
+    if (parsed && Array.isArray(parsed.blocks)) return decodeArticle(parsed as ParsedArticle);
   } catch {
     // fall through to repair attempt
   }
@@ -101,12 +101,52 @@ function tryParseBlocks(input: string): ParsedArticle | null {
   try {
     const repaired = repairJsonStrings(trimmed);
     const parsed = JSON.parse(repaired);
-    if (parsed && Array.isArray(parsed.blocks)) return parsed as ParsedArticle;
+    if (parsed && Array.isArray(parsed.blocks)) return decodeArticle(parsed as ParsedArticle);
   } catch {
     // repair failed — give up
   }
 
   return null;
+}
+
+/** Block fields that hold text; URLs (`url`, `link`, `file`) stay as they are. */
+const TEXT_FIELDS = new Set(["text", "caption", "title", "description", "content"]);
+const PERCENT_ESCAPE_RE = /%[0-9A-Fa-f]{2}/;
+
+/**
+ * Bastyon's v2 article editor stores each block's text through
+ * encodeURIComponent, so every such article showed «7535%20%D0%9B…» in the
+ * chat card and the post. Encoded text has no raw whitespace, which keeps
+ * ordinary text such as «100% за год» or a quoted «a%20b» URL as it is.
+ */
+function decodeUriText(value: string): string {
+  if (!PERCENT_ESCAPE_RE.test(value) || /\s/.test(value)) return value;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function decodeBlockValue(value: unknown, field?: string): unknown {
+  if (typeof value === "string") return field && TEXT_FIELDS.has(field) ? decodeUriText(value) : value;
+  if (Array.isArray(value)) {
+    if (field !== "items") return value;
+    return value.map((item) => (typeof item === "string" ? decodeUriText(item) : decodeBlockValue(item)));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, decodeBlockValue(v, k)]));
+  }
+  return value;
+}
+
+function decodeArticle(article: ParsedArticle): ParsedArticle {
+  return {
+    ...article,
+    blocks: article.blocks.map((block) =>
+      block?.data ? { ...block, data: decodeBlockValue(block.data) as Record<string, unknown> } : block,
+    ),
+  };
 }
 
 export function isArticleJson(input: string): boolean {

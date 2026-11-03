@@ -510,3 +510,35 @@ describe("renderArticleHtml autolinks bare URLs", () => {
     expect(html).toContain('href="https://example.com"');
   });
 });
+
+describe("Bastyon v2 articles with URI-encoded block text", () => {
+  // Real block from post 52e2414d…: Bastyon's v2 editor stores each block's
+  // text through encodeURIComponent.
+  const encoded = json([
+    { type: "header", data: { text: "%D0%94%D0%B5%D0%BD%D1%8C", level: 2 } },
+    { type: "paragraph", data: { text: "7535%20%D0%9B%D0%B5%D1%82%D0%BE%2C%204%20%3Cb%3E%D0%90%D0%B9%3C%2Fb%3E" } },
+    { type: "list", data: { style: "unordered", items: ["%D0%BE%D0%B4%D0%B8%D0%BD", "two"] } },
+    { type: "image", data: { file: { url: "https://x.test/a%20b.jpg" }, caption: "%D0%A4%D0%BE%D1%82%D0%BE" } },
+  ]);
+
+  it("renders the decoded text in previews", () => {
+    expect(renderArticleText(encoded)).toBe("День\n7535 Лето, 4 Ай\n• один\n• two\nФото");
+  });
+
+  it("renders the decoded text in the full article and still sanitizes it", () => {
+    const html = renderArticleHtml(encoded);
+    expect(html).toContain("7535 Лето, 4 <b>Ай</b>");
+    expect(html).toContain("День");
+    expect(html).not.toContain("%D0");
+  });
+
+  it("leaves plain text with a percent sign as it is", () => {
+    expect(renderArticleText(json([{ type: "paragraph", data: { text: "Рост на 100% за год" } }]))).toBe(
+      "Рост на 100% за год",
+    );
+  });
+
+  it("does not touch image URLs", () => {
+    expect(renderArticleHtml(encoded)).toContain("a%20b.jpg");
+  });
+});
