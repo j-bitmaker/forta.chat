@@ -437,6 +437,10 @@ export function useAudioPlayback() {
 
     try {
       const el = new Audio();
+      // Setting src runs the load algorithm, which resets playbackRate to
+      // defaultPlaybackRate: with playbackRate alone every new voice played
+      // at 1x while the button showed the remembered 1.5x or 2x.
+      el.defaultPlaybackRate = playbackRate.value;
       el.playbackRate = playbackRate.value;
       setupAudioListeners(el);
       audio.value = el;

@@ -60,10 +60,21 @@ vi.stubGlobal("Audio", vi.fn(function MockAudio(this: Record<string, unknown>) {
   this.pause = mockPause;
   this.load = mockLoad;
   this.removeAttribute = mockRemoveAttribute;
-  this.src = "";
   this.currentTime = 0;
   this.duration = 10;
   this.playbackRate = 1;
+  this.defaultPlaybackRate = 1;
+  // Like a real media element: a new src runs the load algorithm, which sets
+  // playbackRate back to defaultPlaybackRate.
+  let src = "";
+  Object.defineProperty(this, "src", {
+    configurable: true,
+    get: () => src,
+    set: (value: string) => {
+      src = value;
+      this.playbackRate = this.defaultPlaybackRate;
+    },
+  });
   this.paused = true;
   this.muted = false;
   this.volume = 1;
@@ -543,6 +554,15 @@ describe("useAudioPlayback", () => {
   });
 
   describe("playback speed", () => {
+    it("plays a new voice at the chosen speed, though loading the src resets playbackRate", async () => {
+      playback.playbackRate.value = 1.5;
+
+      await playback.play(baseInfo);
+
+      expect(lastAudio.playbackRate).toBe(1.5);
+      playback.playbackRate.value = 1;
+    });
+
     it("remembers the chosen speed in localStorage", async () => {
       playback.playbackRate.value = 1;
       playback.cycleSpeed();
