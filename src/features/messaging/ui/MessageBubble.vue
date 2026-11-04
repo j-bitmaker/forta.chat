@@ -984,12 +984,12 @@ const replyPreviewSender = computed(() => {
       class="absolute left-0 top-0 bottom-0 flex items-center gap-1 pl-2"
       :class="{ 'pointer-events-none': isSwiping }"
     >
-      <button @click="onDeleteAction" class="flex size-10 items-center justify-center rounded-full bg-color-bad/20 text-color-bad">
+      <button :aria-label="t('contextMenu.delete')" @click="onDeleteAction" class="flex size-10 items-center justify-center rounded-full bg-color-bad/20 text-color-bad">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
         </svg>
       </button>
-      <button @click="onForwardAction" class="flex size-10 items-center justify-center rounded-full bg-color-bg-ac/20 text-color-bg-ac">
+      <button :aria-label="t('contextMenu.forward')" @click="onForwardAction" class="flex size-10 items-center justify-center rounded-full bg-color-bg-ac/20 text-color-bg-ac">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <polyline points="15 17 20 12 15 7" /><path d="M4 18v-2a4 4 0 0 1 4-4h12" />
         </svg>
@@ -1160,7 +1160,7 @@ const replyPreviewSender = computed(() => {
           </div>
           <!-- Upload progress overlay -->
           <div v-if="isUploading" class="absolute inset-0 flex items-center justify-center bg-black/30">
-            <button class="relative flex h-14 w-14 items-center justify-center" @click.stop="emit('cancelUpload', message)">
+            <button class="relative flex h-14 w-14 items-center justify-center" :aria-label="t('message.cancelUpload')" @click.stop="emit('cancelUpload', message)">
               <svg class="h-full w-full" viewBox="0 0 36 36">
                 <circle cx="18" cy="18" r="15" fill="none" stroke="white" stroke-opacity="0.3" stroke-width="2.5" />
                 <circle cx="18" cy="18" r="15" fill="none" stroke="white" stroke-width="2.5"
@@ -1228,7 +1228,7 @@ const replyPreviewSender = computed(() => {
         <VideoCirclePlayer :message="message" :is-own="props.isOwn" />
         <!-- Upload progress overlay for video circle -->
         <div v-if="isUploading" class="absolute inset-0 flex items-center justify-center rounded-full bg-black/30">
-          <button class="relative flex h-14 w-14 items-center justify-center" @click.stop="emit('cancelUpload', message)">
+          <button class="relative flex h-14 w-14 items-center justify-center" :aria-label="t('message.cancelUpload')" @click.stop="emit('cancelUpload', message)">
             <svg class="h-full w-full" viewBox="0 0 36 36">
               <circle cx="18" cy="18" r="15" fill="none" stroke="white" stroke-opacity="0.3" stroke-width="2.5" />
               <circle cx="18" cy="18" r="15" fill="none" stroke="white" stroke-width="2.5"
@@ -1415,7 +1415,7 @@ const replyPreviewSender = computed(() => {
           </div>
           <!-- Upload progress overlay for video -->
           <div v-if="isUploading" class="absolute inset-0 flex items-center justify-center bg-black/30">
-            <button class="relative flex h-14 w-14 items-center justify-center" @click.stop="emit('cancelUpload', message)">
+            <button class="relative flex h-14 w-14 items-center justify-center" :aria-label="t('message.cancelUpload')" @click.stop="emit('cancelUpload', message)">
               <svg class="h-full w-full" viewBox="0 0 36 36">
                 <circle cx="18" cy="18" r="15" fill="none" stroke="white" stroke-opacity="0.3" stroke-width="2.5" />
                 <circle cx="18" cy="18" r="15" fill="none" stroke="white" stroke-width="2.5"
@@ -1517,7 +1517,7 @@ const replyPreviewSender = computed(() => {
         <p v-else-if="fileState.error" class="mt-1 text-xs text-color-bad">{{ fileState.error }}</p>
         <!-- Upload progress with cancel for audio -->
         <div v-if="isUploading" class="mt-1 flex items-center gap-2">
-          <button class="relative flex h-8 w-8 shrink-0 items-center justify-center" @click.stop="emit('cancelUpload', message)">
+          <button class="relative flex h-8 w-8 shrink-0 items-center justify-center" :aria-label="t('message.cancelUpload')" @click.stop="emit('cancelUpload', message)">
             <svg class="h-full w-full" viewBox="0 0 36 36">
               <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" stroke-opacity="0.2" stroke-width="2.5" />
               <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" stroke-width="2.5"
@@ -1607,7 +1607,7 @@ const replyPreviewSender = computed(() => {
         <p v-else-if="fileState.error" class="mt-1 text-xs text-color-bad">{{ fileState.error }}</p>
         <!-- Upload progress with cancel for file -->
         <div v-if="isUploading" class="mt-1 flex items-center gap-2">
-          <button class="relative flex h-8 w-8 shrink-0 items-center justify-center" @click.stop="emit('cancelUpload', message)">
+          <button class="relative flex h-8 w-8 shrink-0 items-center justify-center" :aria-label="t('message.cancelUpload')" @click.stop="emit('cancelUpload', message)">
             <svg class="h-full w-full" viewBox="0 0 36 36">
               <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" stroke-opacity="0.2" stroke-width="2.5" />
               <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" stroke-width="2.5"

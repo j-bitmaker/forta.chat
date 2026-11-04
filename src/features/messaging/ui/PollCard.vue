@@ -2,6 +2,8 @@
 import { computed, onUnmounted, ref } from "vue";
 import type { Message } from "@/entities/chat";
 
+const { t } = useI18n();
+
 interface Props {
   message: Message;
   isOwn: boolean;
@@ -153,7 +155,7 @@ const handleVote = (optionId: string) => {
         :class="isOwn ? 'text-white/70' : 'text-color-bg-ac'"
         @click.stop="emit('end')"
       >
-        End poll
+        {{ t("poll.endPoll") }}
       </button>
     </div>
   </div>

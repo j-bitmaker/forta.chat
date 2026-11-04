@@ -409,6 +409,7 @@ const isWalletLoading = computed(
             <button
               v-if="sidebarSearchQuery"
               class="absolute right-2 top-1/2 -translate-y-1/2 text-text-on-main-bg-color hover:text-text-color"
+              :aria-label="t('common.clearSearch')"
               @click="sidebarSearchQuery = ''"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

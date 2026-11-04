@@ -3,6 +3,8 @@ interface Props {
   currentImage?: string;
 }
 
+const { t } = useI18n();
+
 const props = defineProps<Props>();
 const emit = defineEmits<{ upload: [file: File] }>();
 
@@ -42,7 +44,7 @@ const handleChange = (e: Event) => {
       @change="handleChange"
     />
     <button class="text-xs text-color-txt-ac" @click="handleClick">
-      Change avatar
+      {{ t("profile.changeAvatar") }}
     </button>
   </div>
 </template>

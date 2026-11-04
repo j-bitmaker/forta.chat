@@ -125,6 +125,7 @@ const previewSpacing = computed(() => DENSITY_MAP[themeStore.messageDensity]);
       <div class="flex items-center gap-3 border-b border-neutral-grad-0 px-4 py-3">
         <button
           class="flex h-9 w-9 items-center justify-center rounded-full text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0"
+          :aria-label="t('nav.back')"
           @click="router.back()"
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -335,6 +336,7 @@ const previewSpacing = computed(() => DENSITY_MAP[themeStore.messageDensity]);
               <button
                 class="flex h-10 w-10 items-center justify-center rounded-lg border-2 transition-all"
                 :class="!themeStore.chatWallpaper ? 'border-color-bg-ac' : 'border-neutral-grad-0'"
+                :aria-label="t('appearance.wallpaperNone')"
                 @click="themeStore.setChatWallpaper('')"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-text-on-main-bg-color">
@@ -355,6 +357,7 @@ const previewSpacing = computed(() => DENSITY_MAP[themeStore.messageDensity]);
               <button
                 class="flex h-10 w-10 items-center justify-center rounded-lg border-2 transition-all"
                 :class="showCustomWallpaper ? 'border-color-bg-ac' : 'border-neutral-grad-0'"
+                :aria-label="t('appearance.wallpaperCustom')"
                 @click="showCustomWallpaper = !showCustomWallpaper"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-text-on-main-bg-color">

@@ -82,6 +82,7 @@ function handleStop(): void {
     <div class="flex h-14 shrink-0 items-center gap-2 border-b border-neutral-grad-0 px-3">
       <button
         class="btn-press flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0"
+        :aria-label="t('nav.back')"
         @click="emit('back')"
       >
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

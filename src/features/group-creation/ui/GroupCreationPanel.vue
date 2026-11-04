@@ -84,6 +84,7 @@ const handleAvatarChange = (e: Event) => {
       <div class="flex h-14 shrink-0 items-center gap-3 border-b border-neutral-grad-0 px-3">
         <button
           class="flex h-9 w-9 items-center justify-center rounded-full text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0"
+          :aria-label="t('nav.back')"
           @click="handleBack"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -120,6 +121,7 @@ const handleAvatarChange = (e: Event) => {
           <span class="max-w-[80px] truncate text-xs text-text-color">{{ member.name }}</span>
           <button
             class="flex h-4 w-4 items-center justify-center rounded-full text-text-on-main-bg-color hover:text-text-color"
+            :aria-label="t('common.remove')"
             @click="removeMember(member.address)"
           >
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
@@ -187,6 +189,7 @@ const handleAvatarChange = (e: Event) => {
       <div class="flex h-14 shrink-0 items-center gap-3 border-b border-neutral-grad-0 px-3">
         <button
           class="flex h-9 w-9 items-center justify-center rounded-full text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0"
+          :aria-label="t('nav.back')"
           @click="goToStep1"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">

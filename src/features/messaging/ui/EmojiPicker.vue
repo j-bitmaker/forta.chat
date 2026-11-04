@@ -255,6 +255,7 @@ useAndroidBackHandler(`emoji-picker-${props.mode}`, 90, () => {
               <button
                 v-if="search"
                 class="absolute right-2 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full text-neutral-grad-2 hover:bg-neutral-grad-0 hover:text-text-color"
+                :aria-label="t('common.clearSearch')"
                 @click="search = ''"
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">

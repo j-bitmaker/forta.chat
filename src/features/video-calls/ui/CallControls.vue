@@ -278,7 +278,7 @@ watch(
           v-if="audioDevices.length === 0 && videoDevices.length === 0 && outputDevices.length === 0"
           class="py-6 text-center text-sm text-white/30"
         >
-          No devices found
+          {{ t("call.noDevices") }}
         </div>
       </div>
     </Transition>

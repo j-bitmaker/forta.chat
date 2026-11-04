@@ -7,6 +7,8 @@ import { useAudioPlayback, playbackInfoFromMessage } from "../model/use-audio-pl
 import { getChatDb } from "@/shared/lib/local-db";
 import { ensureVoiceWaveform, getVoiceWaveform, waveformBars } from "../model/voice-waveform";
 
+const { t } = useI18n();
+
 interface Props {
   message: Message;
   isOwn: boolean;
@@ -224,6 +226,7 @@ const handleCycleSpeed = () => {
     <button
       class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-colors"
       :class="props.isOwn ? 'bg-white/20 text-white hover:bg-white/30' : 'bg-color-bg-ac/10 text-color-bg-ac hover:bg-color-bg-ac/20'"
+      :aria-label="hasError ? t('message.retry') : playing ? t('voice.pause') : t('voice.play')"
       @click="handleTogglePlay"
     >
       <!-- Loading spinner -->

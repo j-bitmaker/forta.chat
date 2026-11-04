@@ -72,6 +72,7 @@ const copyAddress = async () => {
           <div class="flex h-14 shrink-0 items-center gap-3 border-b border-neutral-grad-0 px-4">
             <button
               class="btn-press flex h-11 w-11 items-center justify-center rounded-full text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0"
+              :aria-label="t('common.close')"
               @click="emit('close')"
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

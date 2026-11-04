@@ -110,10 +110,10 @@ onUnmounted(() => {
 
           <!-- Caller info -->
           <div class="text-center">
-            <h3 class="text-xl font-bold text-white">
+            <h3 id="incoming-call-peer" class="text-xl font-bold text-white">
               {{ callStore.activeCall?.peerName }}
             </h3>
-            <p class="mt-1 text-sm text-white/70">
+            <p id="incoming-call-kind" class="mt-1 text-sm text-white/70">
               {{
                 callStore.activeCall?.type === "video"
                   ? t("call.incomingVideo")

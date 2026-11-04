@@ -2,6 +2,8 @@
 import { ref, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { searchGifs, getTrending, type TenorGif } from "@/shared/lib/tenor";
 
+const { t } = useI18n();
+
 const emit = defineEmits<{ select: [gif: TenorGif]; close: [] }>();
 
 const search = ref("");
@@ -176,6 +178,7 @@ function onTouchMove() {
         <button
           v-if="search"
           class="absolute right-2 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full text-neutral-grad-2 hover:bg-neutral-grad-0 hover:text-text-color"
+          :aria-label="t('common.clearSearch')"
           @click="search = ''"
         >
           <svg

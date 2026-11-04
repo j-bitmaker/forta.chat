@@ -5,7 +5,7 @@ import PollCard from "../PollCard.vue";
 import { MessageStatus, MessageType } from "@/entities/chat";
 import type { Message } from "@/entities/chat";
 
-vi.stubGlobal("useI18n", () => ({ t: (k: string) => k }));
+vi.mock("@/shared/lib/i18n", () => ({ useI18n: () => ({ t: (k: string) => k }) }));
 
 function makePollMessage(overrides: Partial<Message> = {}): Message {
   return {
@@ -163,7 +163,7 @@ describe("PollCard", () => {
 
     const endButton = wrapper
       .findAll("button")
-      .find(b => b.text().toLowerCase().includes("end poll"));
+      .find(b => b.text().toLowerCase().includes("poll.endpoll"));
     expect(endButton).toBeDefined();
 
     await endButton!.trigger("click");

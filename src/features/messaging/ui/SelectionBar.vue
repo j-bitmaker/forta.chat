@@ -17,6 +17,7 @@ const emit = defineEmits<{
   <div class="flex h-14 shrink-0 items-center gap-1 border-t border-neutral-grad-0 bg-background-total-theme px-2 sm:gap-2 sm:px-3">
     <button
       class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0"
+      :aria-label="t('common.close')"
       @click="chatStore.exitSelectionMode()"
     >
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

@@ -114,6 +114,7 @@ const handleSnowflakeToggle = (enabled: boolean) => {
       <div class="flex items-center justify-between rounded-xl bg-background-secondary-theme px-4 py-3">
         <span class="text-sm text-text-color">{{ t("tor.useSnowflake") }}</span>
         <Toggle
+          :aria-label="t('tor.useSnowflake')"
           :model-value="torStore.isSnowflakeEnabled"
           @update:model-value="handleSnowflakeToggle"
         />

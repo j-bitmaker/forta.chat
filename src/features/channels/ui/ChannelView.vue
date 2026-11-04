@@ -344,6 +344,7 @@ function onCtxMenuSelect(action: string) {
       <button
         v-if="showScrollFab"
         class="absolute bottom-4 right-4 flex h-11 w-11 items-center justify-center rounded-full bg-background-total-theme shadow-lg transition-all hover:bg-neutral-grad-0"
+        :aria-label="t('chat.scrollToBottom')"
         @click="scrollToBottom()"
       >
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-text-on-main-bg-color">

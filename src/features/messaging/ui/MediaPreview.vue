@@ -46,6 +46,7 @@ const toggleCaptionPosition = () => {
         <div class="flex shrink-0 items-center justify-between px-4 py-3">
           <button
             class="flex h-10 w-10 items-center justify-center rounded-full text-white/80 transition-colors hover:bg-white/10"
+            :aria-label="t('common.close')"
             @click="emit('close')"
           >
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -90,6 +91,8 @@ const toggleCaptionPosition = () => {
               data-testid="media-preview-thumb"
               class="h-full w-full overflow-hidden rounded-lg border-2 transition-all"
               :class="i === props.activeIndex ? 'border-white' : 'border-transparent'"
+              :aria-label="t('media.selectFile', { n: i + 1 })"
+              :aria-pressed="i === props.activeIndex"
               @click="emit('update:activeIndex', i)"
             >
               <img v-if="f.type === 'image'" :src="f.previewUrl" class="h-full w-full object-cover" />
@@ -102,6 +105,7 @@ const toggleCaptionPosition = () => {
               type="button"
               data-testid="media-preview-remove"
               class="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-white"
+              :aria-label="t('common.remove')"
               @click.stop="emit('removeFile', i)"
             >
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
@@ -129,6 +133,7 @@ const toggleCaptionPosition = () => {
                 class="flex h-10 w-10 items-center justify-center rounded-full bg-color-bg-ac text-white transition-all"
                 :class="props.sending ? 'opacity-50' : 'hover:brightness-110'"
                 :disabled="props.sending"
+                :aria-label="t('message.sendButton')"
                 @click="handleSend"
                 @contextmenu.prevent="showCaptionMenu = !showCaptionMenu"
               >
@@ -149,7 +154,7 @@ const toggleCaptionPosition = () => {
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M12 19V5" /><path d="M5 12l7-7 7 7" />
                   </svg>
-                  {{ props.captionAbove ? "Caption below" : "Caption above" }}
+                  {{ props.captionAbove ? t("media.captionBelow") : t("media.captionAbove") }}
                 </button>
               </div>
             </div>

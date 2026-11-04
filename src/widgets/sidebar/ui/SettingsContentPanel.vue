@@ -359,6 +359,7 @@ const title = computed(() => {
             <button
               class="flex h-10 w-10 items-center justify-center rounded-lg border-2 transition-all"
               :class="!themeStore.chatWallpaper ? 'border-color-bg-ac' : 'border-neutral-grad-0'"
+              :aria-label="t('appearance.wallpaperNone')"
               @click="themeStore.setChatWallpaper('')"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-text-on-main-bg-color"><circle cx="12" cy="12" r="10" /><line x1="4.93" y1="4.93" x2="19.07" y2="19.07" /></svg>
@@ -375,6 +376,7 @@ const title = computed(() => {
             <button
               class="flex h-10 w-10 items-center justify-center rounded-lg border-2 transition-all"
               :class="showCustomWallpaper ? 'border-color-bg-ac' : 'border-neutral-grad-0'"
+              :aria-label="t('appearance.wallpaperCustom')"
               @click="showCustomWallpaper = !showCustomWallpaper"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-text-on-main-bg-color"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>

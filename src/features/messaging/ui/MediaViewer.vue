@@ -405,7 +405,7 @@ const handleShareCurrent = async () => {
       >
         <!-- Top bar -->
         <div class="flex h-12 shrink-0 items-center justify-between px-4">
-          <button class="text-white/80 hover:text-white" @click="emit('close')">
+          <button class="text-white/80 hover:text-white" :aria-label="t('common.close')" @click="emit('close')">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M18 6L6 18" /><path d="M6 6l12 12" />
             </svg>
@@ -514,6 +514,7 @@ const handleShareCurrent = async () => {
         <button
           v-if="currentIndex > 0"
           class="absolute left-4 top-1/2 hidden -translate-y-1/2 rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20 md:flex"
+          :aria-label="t('common.previous')"
           @click="goPrev"
         >
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -523,6 +524,7 @@ const handleShareCurrent = async () => {
         <button
           v-if="currentIndex < mediaMessages.length - 1"
           class="absolute right-4 top-1/2 hidden -translate-y-1/2 rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20 md:flex"
+          :aria-label="t('common.next')"
           @click="goNext"
         >
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

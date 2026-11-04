@@ -134,6 +134,7 @@ const openVideo = (e: Event) => {
       />
       <button
         class="absolute inset-0 flex items-center justify-center bg-black/30 transition-colors hover:bg-black/20"
+        :aria-label="t('post.playVideo')"
         @click="openVideo"
       >
         <div class="flex h-12 w-12 items-center justify-center rounded-full bg-white/90 shadow-lg">

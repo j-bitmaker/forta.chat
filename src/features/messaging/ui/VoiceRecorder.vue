@@ -180,6 +180,7 @@ const waveformBars = computed(() => {
     </button>
     <button
       class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-color-bg-ac/10 text-color-bg-ac transition-colors hover:bg-color-bg-ac/20 sm:h-10 sm:w-10"
+      :aria-label="isPlaying ? t('voice.pause') : t('voice.play')"
       @click="togglePreviewPlay"
     >
       <svg v-if="!isPlaying" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>

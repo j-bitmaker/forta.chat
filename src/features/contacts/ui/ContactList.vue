@@ -872,7 +872,7 @@ const onRoomContextMenu = (e: MouseEvent, room: ChatRoom) => {
             selectionStore.isSelected((item as ChatRoom).id) ? 'bg-color-bg-ac/8' :
             (item as ChatRoom).id === chatStore.activeRoomId ? 'bg-color-bg-ac/10' : ''
           ]"
-          :aria-label="`${item._title?.text || ''}${(item as ChatRoom).unreadCount ? `, ${(item as ChatRoom).unreadCount} unread` : ''}`"
+          :aria-label="`${item._title?.text || ''}${(item as ChatRoom).unreadCount ? `, ${t('contactList.unreadCount', { count: (item as ChatRoom).unreadCount })}` : ''}`"
           @click="handleSelect(item as ChatRoom)"
           @contextmenu.prevent="(e: MouseEvent) => onRoomContextMenu(e, item as ChatRoom)"
           @pointerdown="(e: PointerEvent) => getRoomLongPress(item as ChatRoom).onPointerdown(e)"

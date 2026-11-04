@@ -161,6 +161,7 @@ const underlineStyle = computed(() => {
     >
       <button
         class="flex h-8 w-8 items-center justify-center rounded-full text-text-color transition-colors hover:bg-neutral-grad-0"
+        :aria-label="t('nav.back')"
         @click="emit('back')"
       >
         <svg

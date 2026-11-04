@@ -979,7 +979,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
     <div class="input-bar-grid" :class="{ 'input-bar-grid--open': !isEditing && !chatStore.replyingTo && showForwardPreview }">
       <div class="input-bar-grid-inner">
         <div class="relative mx-auto flex max-w-6xl items-center gap-2 border-b border-neutral-grad-0 px-3 py-2">
-          <button class="flex h-8 w-8 items-center justify-center text-color-bg-ac" @click="openForwardOptions">
+          <button class="flex h-8 w-8 items-center justify-center text-color-bg-ac" :aria-label="t('forward.cancelConfirm.settings')" @click="openForwardOptions">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="15 17 20 12 15 7" /><path d="M4 18v-2a4 4 0 0 1 4-4h12" />
             </svg>
@@ -1003,7 +1003,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
     <div class="input-bar-grid" :class="{ 'input-bar-grid--open': !isEditing && !chatStore.replyingTo && !showForwardPreview && showBulkForwardPreview }">
       <div class="input-bar-grid-inner">
         <div class="relative mx-auto flex max-w-6xl items-center gap-2 border-b border-neutral-grad-0 px-3 py-2">
-          <button class="flex h-8 w-8 items-center justify-center text-color-bg-ac" @click="openForwardOptions">
+          <button class="flex h-8 w-8 items-center justify-center text-color-bg-ac" :aria-label="t('forward.cancelConfirm.settings')" @click="openForwardOptions">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="15 17 20 12 15 7" /><path d="M4 18v-2a4 4 0 0 1 4-4h12" />
             </svg>

@@ -181,6 +181,7 @@ const openExternally = async () => {
       <div class="safe-top flex items-center gap-3 px-4 py-3 text-white">
         <button
           class="flex h-9 w-9 items-center justify-center rounded-full transition-colors hover:bg-white/10"
+          :aria-label="t('common.close')"
           @click="emit('close')"
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

@@ -46,6 +46,7 @@ const handleCreate = () => {
         <h3 class="text-base font-semibold text-text-color">Create Poll</h3>
         <button
           class="flex h-8 w-8 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0"
+          :aria-label="t('common.close')"
           @click="emit('close')"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -78,6 +79,7 @@ const handleCreate = () => {
           <button
             v-if="options.length > 2"
             class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0"
+            :aria-label="t('common.remove')"
             @click="removeOption(index)"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

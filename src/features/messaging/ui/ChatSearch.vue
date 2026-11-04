@@ -200,6 +200,7 @@ const handleClose = () => {
       <!-- Close button -->
       <button
         class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0"
+        :aria-label="t('nav.closeSearch')"
         @click="handleClose"
       >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -258,6 +259,7 @@ const handleClose = () => {
       <button
         class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0 disabled:opacity-30"
         :disabled="totalMatches === 0"
+        :aria-label="t('chat.searchPrevMatch')"
         @click="goPrev"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -268,6 +270,7 @@ const handleClose = () => {
       <button
         class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0 disabled:opacity-30"
         :disabled="totalMatches === 0"
+        :aria-label="t('chat.searchNextMatch')"
         @click="goNext"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

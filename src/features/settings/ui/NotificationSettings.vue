@@ -93,6 +93,7 @@ onUnmounted(() => {
         <span class="text-sm text-text-color">{{ t("notificationsSettings.incomingCalls") }}</span>
         <Toggle
           data-testid="incoming-calls-toggle"
+          :aria-label="t('notificationsSettings.incomingCalls')"
           :model-value="incomingCallsEnabled"
           @update:model-value="setIncomingCallsEnabled"
         />
@@ -101,6 +102,7 @@ onUnmounted(() => {
         <span class="text-sm text-text-color">{{ t("notificationsSettings.batteryReminder") }}</span>
         <Toggle
           data-testid="battery-reminder-toggle"
+          :aria-label="t('notificationsSettings.batteryReminder')"
           :model-value="batteryReminderOn"
           @update:model-value="setBatteryReminder"
         />

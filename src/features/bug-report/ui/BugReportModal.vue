@@ -249,6 +249,7 @@ const handleSend = async () => {
             />
             <button
               class="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-color-bad text-white shadow"
+              :aria-label="t('common.remove')"
               @click="removeScreenshot(idx)"
             >
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
