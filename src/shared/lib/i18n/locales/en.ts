@@ -42,6 +42,8 @@ export const en = {
   "contactList.clearHistory": "Clear history",
   "contactList.deleteAndLeave": "Delete and leave",
   "contactList.cancel": "Cancel",
+  "contactList.retryLoad": "Retry loading",
+  "contactList.unreadCount": "{count} unread",
   "contactList.draft": "Draft",
 
   // ── Contact alias (local "rename contact") ──

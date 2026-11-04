@@ -44,6 +44,8 @@ export const ru: Record<TranslationKey, string> = {
   "contactList.clearHistory": "Очистить историю",
   "contactList.deleteAndLeave": "Удалить и выйти",
   "contactList.cancel": "Отмена",
+  "contactList.retryLoad": "Повторить загрузку",
+  "contactList.unreadCount": "{count} непрочитанных",
   "contactList.draft": "Черновик",
 
   // ── Contact alias (local "rename contact") ──

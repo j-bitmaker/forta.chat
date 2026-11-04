@@ -862,9 +862,11 @@ const onRoomContextMenu = (e: MouseEvent, room: ChatRoom) => {
           </div>
         </button>
 
-        <!-- Chat room item -->
+        <!-- Chat room item. The wrapper exists so the fetch-error retry
+             button below can be a sibling of the row button: a button must
+             not contain another interactive element. -->
+        <div v-else class="relative">
         <button
-          v-else
           class="flex h-[68px] w-full cursor-pointer items-center gap-3 px-3 py-2.5 hover:bg-neutral-grad-0 active:bg-neutral-grad-0"
           :class="[
             selectionStore.isSelected((item as ChatRoom).id) ? 'bg-color-bg-ac/8' :
@@ -977,10 +979,6 @@ const onRoomContextMenu = (e: MouseEvent, room: ChatRoom) => {
                 class="flex items-center gap-1 truncate text-sm text-text-on-main-bg-color"
               >
                 <span class="italic opacity-60">{{ t("contactList.loadError") }}</span>
-                <button
-                  class="ml-1 rounded p-0.5 text-xs text-color-bg-ac hover:bg-neutral-grad-2"
-                  @click.stop="chatStore.retryRoomFetch((item as ChatRoom).id)"
-                >↻</button>
               </span>
               <!-- Skeleton while encrypted message is being decrypted -->
               <span
@@ -1024,14 +1022,28 @@ const onRoomContextMenu = (e: MouseEvent, room: ChatRoom) => {
               <span
                 v-if="(item as ChatRoom).unreadCount > 0"
                 class="flex h-[20px] min-w-[20px] shrink-0 items-center justify-center rounded-full px-1.5 text-[11px] font-medium text-white"
-                :class="chatStore.mutedRoomIds.has((item as ChatRoom).id) ? 'bg-neutral-grad-2' : 'bg-color-bg-ac'"
-                :aria-label="`${(item as ChatRoom).unreadCount} unread messages`"
+                :class="[
+                  chatStore.mutedRoomIds.has((item as ChatRoom).id) ? 'bg-neutral-grad-2' : 'bg-color-bg-ac',
+                  // leave room for the retry button rendered over this corner
+                  isRoomFetchError((item as ChatRoom).id) && !getPreview(item as ChatRoom).text ? 'mr-7' : '',
+                ]"
+                :aria-label="t('contactList.unreadCount', { count: (item as ChatRoom).unreadCount })"
               >
                 {{ (item as ChatRoom).unreadCount > 99 ? "99+" : (item as ChatRoom).unreadCount }}
               </span>
             </div>
           </div>
         </button>
+        <!-- Fetch error — retry, outside the row button (see wrapper above) -->
+        <button
+          v-if="isRoomFetchError((item as ChatRoom).id) && !getPreview(item as ChatRoom).text"
+          type="button"
+          data-testid="room-fetch-retry"
+          class="absolute bottom-2.5 right-3 rounded px-1.5 py-0.5 text-xs text-color-bg-ac hover:bg-neutral-grad-2"
+          :aria-label="t('contactList.retryLoad')"
+          @click.stop="chatStore.retryRoomFetch((item as ChatRoom).id)"
+        >↻</button>
+        </div>
       </template>
       </template>
     </RecycleScroller>
