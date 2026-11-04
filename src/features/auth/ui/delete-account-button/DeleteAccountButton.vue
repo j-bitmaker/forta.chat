@@ -68,8 +68,13 @@ const handleConfirm = async () => {
       data-testid="delete-account-confirm"
       @click.self="showConfirm = false"
     >
-      <div class="mx-4 max-w-sm rounded-xl bg-background-secondary-theme p-6 shadow-xl">
-        <p class="mb-4 text-sm text-text-color">{{ t("settings.deleteAccount.question") }}</p>
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="delete-account-confirm-title"
+        class="mx-4 max-w-sm rounded-xl bg-background-secondary-theme p-6 shadow-xl"
+      >
+        <p id="delete-account-confirm-title" class="mb-4 text-sm text-text-color">{{ t("settings.deleteAccount.question") }}</p>
         <div class="flex flex-wrap justify-end gap-3">
           <button
             type="button"
@@ -109,8 +114,13 @@ const handleConfirm = async () => {
       data-testid="delete-account-error"
       @click.self="errorKey = null"
     >
-      <div class="mx-4 max-w-sm rounded-xl bg-background-secondary-theme p-6 shadow-xl">
-        <p class="mb-4 text-sm text-text-color">{{ t(errorKey) }}</p>
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="delete-account-error-title"
+        class="mx-4 max-w-sm rounded-xl bg-background-secondary-theme p-6 shadow-xl"
+      >
+        <p id="delete-account-error-title" class="mb-4 text-sm text-text-color">{{ t(errorKey) }}</p>
         <div class="flex justify-end">
           <button
             type="button"

@@ -32,6 +32,20 @@ describe("DeleteAccountButton", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
   });
 
+  it("the confirmation is an alert dialog named by its question (a11y, manual pass 2026-11-03)", async () => {
+    const w = mount(DeleteAccountButton, { attachTo: document.body });
+    await w.find("button").trigger("click");
+    const dialog = q("delete-account-confirm")!.querySelector('[role="alertdialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog!.getAttribute("aria-modal")).toBe("true");
+    const titleId = dialog!.getAttribute("aria-labelledby");
+    expect(titleId).toBeTruthy();
+    expect(document.getElementById(titleId!)?.textContent).toContain("settings.deleteAccount.question");
+    // The dialog's own buttons live inside it, so they are announced in its context.
+    expect(dialog!.contains(q("delete-account-cancel"))).toBe(true);
+    expect(dialog!.contains(q("delete-account-yes"))).toBe(true);
+  });
+
   it("asks before deleting and does nothing on cancel", async () => {
     const w = mount(DeleteAccountButton, { attachTo: document.body });
     await w.find("button").trigger("click");
