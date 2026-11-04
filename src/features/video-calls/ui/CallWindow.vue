@@ -523,6 +523,7 @@ const isAnyScreenSharing = computed(
               class="minimize-btn absolute left-4 z-30"
               style="top: calc(var(--safe-area-inset-top, 0px) + 16px)"
               :title="t('call.minimize')"
+              :aria-label="t('call.minimize')"
               @click="minimize"
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

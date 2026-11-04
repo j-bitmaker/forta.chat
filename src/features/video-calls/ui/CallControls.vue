@@ -296,6 +296,7 @@ watch(
           compact && 'ctrl-btn--compact',
         ]"
         :title="callStore.audioMuted ? t('call.unmute') : t('call.mute')"
+        :aria-label="callStore.audioMuted ? t('call.unmute') : t('call.mute')"
         @click="callService.toggleMute()"
       >
         <!-- Mic on -->
@@ -323,6 +324,7 @@ watch(
           compact && 'ctrl-btn--compact',
         ]"
         :title="callStore.videoMuted ? t('call.cameraOn') : t('call.cameraOff')"
+        :aria-label="callStore.videoMuted ? t('call.cameraOn') : t('call.cameraOff')"
         @click="callService.toggleCamera()"
       >
         <!-- Camera on -->
@@ -345,6 +347,7 @@ watch(
           compact && 'ctrl-btn--compact',
         ]"
         :title="callStore.screenSharing ? t('call.stopScreenShare') : t('call.screenShare')"
+        :aria-label="callStore.screenSharing ? t('call.stopScreenShare') : t('call.screenShare')"
         @click="callService.toggleScreenShare()"
       >
         <svg :width="compact ? 18 : 20" :height="compact ? 18 : 20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -365,6 +368,7 @@ watch(
           compact && 'ctrl-btn--compact',
         ]"
         :title="speakerOn ? t('call.speakerOn') : t('call.speakerOff')"
+        :aria-label="speakerOn ? t('call.speakerOn') : t('call.speakerOff')"
         data-testid="speaker-toggle"
         @click="toggleSpeaker()"
       >
@@ -389,6 +393,7 @@ watch(
           compact && 'ctrl-btn--compact',
         ]"
         :title="t('call.devices')"
+        :aria-label="t('call.devices')"
         @click="toggleDeviceMenu()"
       >
         <svg :width="compact ? 16 : 18" :height="compact ? 16 : 18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -405,6 +410,7 @@ watch(
         class="ctrl-btn ctrl-btn--hangup"
         :class="compact && 'ctrl-btn--hangup-compact'"
         :title="t('call.hangup')"
+        :aria-label="t('call.hangup')"
         @click="callService.hangup()"
       >
         <svg :width="compact ? 20 : 22" :height="compact ? 20 : 22" viewBox="0 0 24 24" fill="currentColor">

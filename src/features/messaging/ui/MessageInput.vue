@@ -952,7 +952,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
             <div class="text-xs font-medium text-color-bg-ac">{{ t("message.editing") }}</div>
             <div class="truncate text-xs text-text-on-main-bg-color">{{ chatStore.editingMessage?.content }}</div>
           </div>
-          <button class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0" @click="cancelEdit">
+          <button class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0" :aria-label="t('common.cancel')" @click="cancelEdit">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
           </button>
         </div>
@@ -968,7 +968,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
             <div class="truncate text-xs font-medium text-color-bg-ac">{{ chatStore.getDisplayName(chatStore.replyingTo?.senderId ?? '') }}</div>
             <div class="truncate text-xs text-text-on-main-bg-color">{{ replyInputPreviewText }}</div>
           </div>
-          <button class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0" @click="cancelReply">
+          <button class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0" :aria-label="t('common.cancel')" @click="cancelReply">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
           </button>
         </div>
@@ -991,7 +991,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
             </div>
             <div class="truncate text-xs text-text-on-main-bg-color">{{ forwardPreviewText }}</div>
           </div>
-          <button class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0" @click="cancelForward">
+          <button class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0" :aria-label="t('common.cancel')" @click="cancelForward">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
           </button>
 
@@ -1022,7 +1022,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
               </template>
             </div>
           </div>
-          <button class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0" @click="cancelBulkForward">
+          <button class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0" :aria-label="t('common.cancel')" @click="cancelBulkForward">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
           </button>
         </div>
@@ -1120,7 +1120,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
             <div class="truncate text-xs text-text-on-main-bg-color/40">{{ linkPreview.activePreview.value.description || linkPreview.activePreview.value.title || linkPreview.activePreview.value.url }}</div>
           </template>
         </div>
-        <button class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0" @click="linkPreview.dismiss()">
+        <button class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0" :aria-label="t('common.close')" @click="linkPreview.dismiss()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
         </button>
         </div>
@@ -1146,6 +1146,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
         <button
           class="btn-press flex h-10 w-10 min-h-tap min-w-tap shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color/60 transition-colors hover:text-text-on-main-bg-color"
           :title="t('message.emoji')"
+          :aria-label="t('message.emoji')"
           @click="toggleEmojiPicker"
         >
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -1170,7 +1171,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
         <transition name="btn-morph">
           <button v-if="showDonateShortcut && showSecondaryActions"
             class="btn-press flex h-10 w-10 min-h-tap min-w-tap shrink-0 items-center justify-center rounded-full text-color-txt-ac/60 transition-colors hover:text-color-txt-ac"
-            :disabled="sending" :title="t('wallet.sendPkoin')" @click="emit('donate')">
+            :disabled="sending" :title="t('wallet.sendPkoin')" :aria-label="t('wallet.sendPkoin')" @click="emit('donate')">
             <svg width="20" height="20" viewBox="0 0 18 18" fill="currentColor">
               <path fill-rule="evenodd" clip-rule="evenodd" d="M17.2584 1.97869L15.182 0L12.7245 2.57886C11.5308 1.85218 10.1288 1.43362 8.62907 1.43362C7.32722 1.43362 6.09904 1.74902 5.01676 2.30756L2.81787 6.45386e-05L0.741455 1.97875L2.73903 4.07498C1.49651 5.46899 0.741455 7.30694 0.741455 9.32124C0.741455 11.1753 1.38114 12.8799 2.45184 14.2264L0.741455 16.0213L2.81787 18L4.61598 16.1131C5.79166 16.8092 7.1637 17.2088 8.62907 17.2088C10.2903 17.2088 11.8317 16.6953 13.1029 15.8182L15.182 18L17.2584 16.0213L15.1306 13.7884C16.0049 12.5184 16.5167 10.9796 16.5167 9.32124C16.5167 7.50123 15.9003 5.8252 14.8648 4.49052L17.2584 1.97869ZM3.5551 9.32124C3.5551 12.1235 5.82679 14.3952 8.62907 14.3952C11.4313 14.3952 13.703 12.1235 13.703 9.32124C13.703 6.51896 11.4313 4.24727 8.62907 4.24727C5.82679 4.24727 3.5551 6.51896 3.5551 9.32124Z" />
             </svg>
@@ -1181,7 +1182,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
         <transition name="btn-morph">
           <button v-if="showSecondaryActions" ref="attachBtnRef"
             class="btn-press flex h-10 w-10 min-h-tap min-w-tap shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color/60 transition-colors hover:text-text-on-main-bg-color"
-            :disabled="sending" :title="t('message.attach')" @click="toggleAttachmentPanel">
+            :disabled="sending" :title="t('message.attach')" :aria-label="t('message.attach')" @click="toggleAttachmentPanel">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
             </svg>
@@ -1212,6 +1213,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
             </transition>
             <button
               class="rec-btn flex h-10 w-10 min-h-tap min-w-tap items-center justify-center rounded-full text-text-on-main-bg-color/60 transition-colors hover:text-text-on-main-bg-color"
+              :aria-label="isVideoMode ? t('message.recordVideo') : t('message.recordVoice')"
               @touchstart.prevent="handleRecordTouchStart" @touchmove="handleRecordTouchMove" @touchend="handleRecordTouchEnd"
               @mousedown.prevent="handleRecordMouseDown">
               <transition name="mode-icon" mode="out-in">
@@ -1272,13 +1274,14 @@ const handleKitchenSelect = async (imageUrl: string) => {
           <div class="absolute bottom-full left-0 right-0 z-50 mb-2 flex justify-center">
             <button class="flex h-10 w-10 items-center justify-center rounded-full bg-neutral-grad-0 text-text-color shadow-md transition-colors hover:bg-neutral-grad-1"
               :title="t('voice.stopAndPreview')"
+              :aria-label="t('voice.stopAndPreview')"
               @click="isVideoMode ? videoRecorder.stopAndPreview() : voiceRecorder.stopAndPreview()">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2" /></svg>
             </button>
           </div>
           <!-- Send button — big circle -->
           <button class="flex h-12 w-12 items-center justify-center rounded-full bg-color-bg-ac text-white shadow-lg transition-all hover:brightness-110"
-            title="Send" @click="isVideoMode ? handleVideoCircleSend() : handleVoiceSend()">
+            :title="t('voice.send')" :aria-label="t('voice.send')" @click="isVideoMode ? handleVideoCircleSend() : handleVoiceSend()">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M12 19V5" /><path d="M5 12l7-7 7 7" />
             </svg>
@@ -1289,7 +1292,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
       <!-- ======= PREVIEW state ======= -->
       <template v-else-if="recState === 'preview'">
         <!-- Cancel button -->
-        <button class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-color-bad transition-colors hover:bg-neutral-grad-0" @click="cancelRec">
+        <button class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-color-bad transition-colors hover:bg-neutral-grad-0" :aria-label="t('voice.discard')" @click="cancelRec">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
           </svg>
@@ -1298,7 +1301,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
         <div class="flex h-[44px] flex-1 items-center gap-2 rounded-2xl bg-chat-input-bg px-4">
           <!-- Voice: play button + timer -->
           <template v-if="!isVideoMode">
-            <button class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-color-bg-ac/10 text-color-bg-ac" @click="togglePreviewPlay">
+            <button class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-color-bg-ac/10 text-color-bg-ac" :aria-label="isPreviewPlaying ? t('voice.pause') : t('voice.play')" @click="togglePreviewPlay">
               <svg v-if="!isPreviewPlaying" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
               <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg>
             </button>
@@ -1314,7 +1317,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
         </div>
         <!-- Send button -->
         <button class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-color-bg-ac text-white transition-all hover:brightness-110"
-          @click="isVideoMode ? handleVideoCirclePreviewSend() : handleVoicePreviewSend()">
+          :aria-label="t('voice.send')" @click="isVideoMode ? handleVideoCirclePreviewSend() : handleVoicePreviewSend()">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
         </button>
       </template>
