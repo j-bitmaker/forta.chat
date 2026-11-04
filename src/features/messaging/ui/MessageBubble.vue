@@ -560,6 +560,17 @@ const isFailed = computed(() => isMessageFailedForRetry(props.message));
 
 // Tapping the red (!) reveals why the send failed (stored on the message by
 // the send pipeline). Logged too, so the error can be grabbed from devtools.
+// The retry / cancel bar sits on the own (accent) bubble, where the red
+// error colour is unreadable in both themes; use the on-accent text token
+// there. Jumbo emoji have no bubble, so the bar sits on the chat background
+// and keeps the error colour.
+const failedBarTextClass = computed(() =>
+  jumboEmojiCount.value ? "text-color-bad" : "text-text-on-bg-ac-color",
+);
+const failedBarHoverClass = computed(() =>
+  jumboEmojiCount.value ? "hover:bg-color-bad/10" : "hover:bg-text-on-bg-ac-color/15",
+);
+
 const isSendErrorShown = ref(false);
 const toggleSendError = () => {
   isSendErrorShown.value = !isSendErrorShown.value;
@@ -1784,11 +1795,17 @@ const replyPreviewSender = computed(() => {
         </div>
 
         <!-- Failed text message: retry / cancel bar -->
-        <div v-if="isFailed && props.isOwn && !hasFileInfo" class="mt-1 flex items-center gap-1 text-[11px] text-[#FF4444]">
+        <div
+          v-if="isFailed && props.isOwn && !hasFileInfo"
+          data-testid="failed-message-bar"
+          class="mt-1 flex items-center gap-1 text-[11px]"
+          :class="failedBarTextClass"
+        >
           <button
             type="button"
             data-testid="retry-message"
-            class="flex items-center gap-1.5 rounded px-2 py-1 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+            class="flex items-center gap-1.5 rounded px-2 py-1 transition-colors"
+            :class="failedBarHoverClass"
             @click.stop="emit('retryMessage', message)"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1799,7 +1816,8 @@ const replyPreviewSender = computed(() => {
           <button
             type="button"
             data-testid="cancel-message"
-            class="rounded px-2 py-1 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+            class="rounded px-2 py-1 transition-colors"
+            :class="failedBarHoverClass"
             @click.stop="emit('cancelMessage', message)"
           >
             {{ t('message.cancelSend') }}
