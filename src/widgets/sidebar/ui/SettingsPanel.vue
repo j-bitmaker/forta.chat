@@ -759,8 +759,13 @@ const handleLogout = () => {
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
         @click.self="showRemoveConfirm = false"
       >
-        <div class="mx-4 max-w-sm rounded-xl bg-background-secondary-theme p-6 shadow-xl">
-          <p class="mb-4 text-sm text-text-color">
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="remove-account-title"
+          class="mx-4 max-w-sm rounded-xl bg-background-secondary-theme p-6 shadow-xl"
+        >
+          <p id="remove-account-title" class="mb-4 text-sm text-text-color">
             {{ t('settings.removeAccountConfirm') }}
           </p>
           <div class="flex justify-end gap-3">

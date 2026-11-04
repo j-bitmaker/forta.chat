@@ -507,6 +507,9 @@ const isAnyScreenSharing = computed(
       <div
         v-if="show"
         ref="callContainerRef"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="t('call.callScreen')"
         class="call-container fixed inset-0 z-50 flex flex-col"
         @mousemove="showControls"
         @click="showControls"

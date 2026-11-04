@@ -41,9 +41,9 @@ const handleCreate = () => {
     <div class="fixed inset-0 z-50 bg-black/40" @click="emit('close')" />
 
     <!-- Panel -->
-    <div class="fixed bottom-0 left-0 right-0 z-50 mx-auto max-w-lg rounded-t-2xl bg-background-total-theme p-5 shadow-xl" style="padding-bottom: calc(max(var(--app-bottom-inset, 0px), var(--safe-area-inset-bottom, 0px)) + 1.25rem)">
+    <div class="fixed bottom-0 left-0 right-0 z-50 mx-auto max-w-lg rounded-t-2xl bg-background-total-theme p-5 shadow-xl" role="dialog" aria-modal="true" aria-labelledby="poll-creator-title" style="padding-bottom: calc(max(var(--app-bottom-inset, 0px), var(--safe-area-inset-bottom, 0px)) + 1.25rem)">
       <div class="mb-4 flex items-center justify-between">
-        <h3 class="text-base font-semibold text-text-color">Create Poll</h3>
+        <h3 id="poll-creator-title" class="text-base font-semibold text-text-color">{{ t("poll.createPoll") }}</h3>
         <button
           class="flex h-8 w-8 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0"
           :aria-label="t('common.close')"

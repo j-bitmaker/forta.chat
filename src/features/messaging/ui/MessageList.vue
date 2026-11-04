@@ -1711,8 +1711,13 @@ defineExpose({ scrollToMessage, setSearchQuery });
           class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
           @click.self="closeDeleteModal"
         >
-          <div class="w-full max-w-xs rounded-xl bg-background-total-theme p-5 shadow-xl">
-            <h3 class="mb-4 text-base font-semibold text-text-color">
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-message-title"
+            class="w-full max-w-xs rounded-xl bg-background-total-theme p-5 shadow-xl"
+          >
+            <h3 id="delete-message-title" class="mb-4 text-base font-semibold text-text-color">
               {{ isBulkDelete
                 ? t("messageList.deleteMessagesTitle", { count: deleteCount })
                 : chatStore.deletingMessage?.callInfo ? t("messageList.deleteCall") : t("messageList.deleteMessage") }}

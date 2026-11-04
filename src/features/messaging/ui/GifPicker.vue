@@ -260,7 +260,12 @@ function onTouchMove() {
             @touchend="onTouchEnd()"
             @click="onTouchEnd()"
           >
-            <div class="gif-preview-card mx-4 max-h-[70vh] max-w-[90vw] overflow-hidden rounded-2xl bg-background-total-theme shadow-2xl">
+            <div
+              role="dialog"
+              aria-modal="true"
+              :aria-label="previewGif.title || t('gif.preview')"
+              class="gif-preview-card mx-4 max-h-[70vh] max-w-[90vw] overflow-hidden rounded-2xl bg-background-total-theme shadow-2xl"
+            >
               <img
                 :src="previewGif.animatedPreviewUrl"
                 :alt="previewGif.title"

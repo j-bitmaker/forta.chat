@@ -396,6 +396,9 @@ const handleShareCurrent = async () => {
     <transition name="media-fade">
       <div
         v-if="props.show && currentMessage"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="t('media.viewer')"
         class="fixed inset-0 z-50 flex flex-col bg-black safe-all"
         tabindex="0"
         @keydown="handleKeydown"

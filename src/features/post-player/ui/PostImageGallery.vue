@@ -62,6 +62,9 @@ useAndroidBackHandler(`post-image-gallery-${++postImageGalleryInstanceCounter}`,
   <Teleport to="body">
     <div
       v-if="currentSrc"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="t('post.gallery')"
       class="fixed inset-0 z-[60] flex flex-col bg-black safe-all"
       data-testid="post-image-gallery"
       @click.stop

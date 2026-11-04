@@ -41,7 +41,14 @@ const toggleCaptionPosition = () => {
 <template>
   <Teleport to="body">
     <transition name="media-preview">
-      <div v-if="props.show && files.length > 0" class="fixed inset-0 z-50 flex flex-col bg-black/95" style="padding-top: var(--safe-area-inset-top, 0px)">
+      <div
+        v-if="props.show && files.length > 0"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="t('media.previewTitle')"
+        class="fixed inset-0 z-50 flex flex-col bg-black/95"
+        style="padding-top: var(--safe-area-inset-top, 0px)"
+      >
         <!-- Top bar -->
         <div class="flex shrink-0 items-center justify-between px-4 py-3">
           <button

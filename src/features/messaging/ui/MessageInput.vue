@@ -1071,8 +1071,13 @@ const handleKitchenSelect = async (imageUrl: string) => {
           class="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
           @click.self="dismissCancelForward"
         >
-          <div class="mx-4 w-full max-w-sm rounded-2xl bg-background-total-theme p-5 shadow-xl">
-            <div class="mb-1 text-center text-base font-semibold text-text-color">
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="cancel-forward-title"
+            class="mx-4 w-full max-w-sm rounded-2xl bg-background-total-theme p-5 shadow-xl"
+          >
+            <div id="cancel-forward-title" class="mb-1 text-center text-base font-semibold text-text-color">
               {{ isCancellingBulkForward ? t("forward.bulkCancelConfirm.title", { count: bulkForwardCount }) : t("forward.cancelConfirm.title") }}
             </div>
             <div class="mb-5 text-center text-sm text-text-on-main-bg-color">

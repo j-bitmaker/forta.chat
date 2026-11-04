@@ -49,8 +49,13 @@ const onCancel = () => emit("close");
     class="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4"
     @click.self="onCancel"
   >
-    <div class="w-full max-w-sm rounded-xl bg-background-total-theme p-5 shadow-xl">
-      <h3 class="mb-3 text-base font-semibold text-text-color">{{ t("contact.renameTitle") }}</h3>
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="rename-contact-title"
+      class="w-full max-w-sm rounded-xl bg-background-total-theme p-5 shadow-xl"
+    >
+      <h3 id="rename-contact-title" class="mb-3 text-base font-semibold text-text-color">{{ t("contact.renameTitle") }}</h3>
       <input
         autocomplete="off"
         ref="inputRef"

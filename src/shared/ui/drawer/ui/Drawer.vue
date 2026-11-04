@@ -4,6 +4,8 @@ import { useAndroidBackHandler } from "@/shared/lib/composables/use-android-back
 
 interface Props {
   id: string;
+  /** Accessible name of the drawer (it is a modal dialog for assistive tech). */
+  label?: string;
 }
 
 const props = defineProps<Props>();
@@ -50,6 +52,9 @@ useAndroidBackHandler(`drawer-${props.id}`, 85, () => {
         <transition @after-leave="onAfterLeaveTransition" name="slide-in">
           <div
             v-show="isDisplayCurrentDrawer"
+            role="dialog"
+            aria-modal="true"
+            :aria-label="props.label"
             class="h-screen w-[320px] bg-background-total-theme safe-y"
             @click.stop
           >

@@ -64,6 +64,9 @@ const copyAddress = async () => {
     <transition name="panel-slide">
       <div
         v-if="props.show && props.channel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="channelinfo-panel-title"
         class="safe-y fixed right-0 top-0 z-50 h-full w-full bg-background-total-theme shadow-xl sm:w-[360px] sm:max-w-full"
         @click.stop
       >
@@ -79,7 +82,7 @@ const copyAddress = async () => {
                 <path d="M18 6L6 18" /><path d="M6 6l12 12" />
               </svg>
             </button>
-            <span class="text-base font-semibold text-text-color">{{ t("chatInfo.information") }}</span>
+            <span id="channelinfo-panel-title" class="text-base font-semibold text-text-color">{{ t("chatInfo.information") }}</span>
           </div>
 
           <!-- Content -->

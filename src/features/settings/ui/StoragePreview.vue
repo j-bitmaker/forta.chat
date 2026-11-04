@@ -174,6 +174,9 @@ const openExternally = async () => {
 <template>
   <Teleport to="body">
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="storage-preview-title"
       class="fixed inset-0 z-50 flex flex-col bg-black/90"
       @click.self="emit('close')"
     >
@@ -189,7 +192,7 @@ const openExternally = async () => {
           </svg>
         </button>
         <div class="min-w-0 flex-1">
-          <div class="truncate text-sm font-medium">{{ friendlyName }}</div>
+          <div id="storage-preview-title" class="truncate text-sm font-medium">{{ friendlyName }}</div>
           <div class="truncate text-xs text-white/60">{{ formatBytes(entry.size) }}</div>
         </div>
         <button

@@ -105,6 +105,9 @@ const startCall = (type: "voice" | "video", event?: MouseEvent) => {
     <transition name="panel-slide">
       <div
         v-if="props.show"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="userprofile-panel-title"
         class="safe-y fixed right-0 top-0 z-50 h-full w-full bg-background-total-theme shadow-xl sm:w-[360px] sm:max-w-full"
         @click.stop
       >
@@ -120,7 +123,7 @@ const startCall = (type: "voice" | "video", event?: MouseEvent) => {
                 <path d="M18 6L6 18" /><path d="M6 6l12 12" />
               </svg>
             </button>
-            <span class="text-base font-semibold text-text-color">{{ t("chatInfo.information") }}</span>
+            <span id="userprofile-panel-title" class="text-base font-semibold text-text-color">{{ t("chatInfo.information") }}</span>
           </div>
 
           <!-- Content -->

@@ -105,6 +105,9 @@ void props.mode;
         <transition :name="isMobile ? 'brs-slide' : 'brs-scale'" appear>
           <div
             v-if="props.show"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="bug-report-status-title"
             class="flex flex-col bg-background-total-theme"
             :class="
               isMobile
@@ -133,7 +136,7 @@ void props.mode;
                   <path d="M6 6l12 12" />
                 </svg>
               </button>
-              <span class="truncate text-base font-semibold text-text-color">
+              <span id="bug-report-status-title" class="truncate text-base font-semibold text-text-color">
                 {{ t("bugReportStatus.manageTitle") }}
               </span>
               <div class="w-8" />

@@ -65,6 +65,9 @@ watch(
         @click="emit('cancel')"
       >
         <div
+          role="dialog"
+          aria-modal="true"
+          :aria-label="t('joinRoom.dialogTitle')"
           class="w-full max-w-sm rounded-2xl bg-background-total-theme p-6 shadow-xl"
           @click.stop
         >

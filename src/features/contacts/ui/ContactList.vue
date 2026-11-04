@@ -1076,8 +1076,13 @@ const onRoomContextMenu = (e: MouseEvent, room: ChatRoom) => {
           class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
           @click.self="deleteConfirm = { show: false, roomId: null }"
         >
-          <div class="w-full max-w-xs rounded-xl bg-background-total-theme p-5 shadow-xl">
-            <h3 class="mb-3 text-base font-semibold text-text-color">{{ t("contactList.deleteChat") }}</h3>
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="contact-list-delete-title"
+            class="w-full max-w-xs rounded-xl bg-background-total-theme p-5 shadow-xl"
+          >
+            <h3 id="contact-list-delete-title" class="mb-3 text-base font-semibold text-text-color">{{ t("contactList.deleteChat") }}</h3>
             <p class="mb-4 text-sm text-text-on-main-bg-color">
               {{ deleteTargetIsDm ? t("contactList.deleteDmConfirm") : t("contactList.deleteChatConfirm") }}
             </p>

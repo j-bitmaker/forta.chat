@@ -96,7 +96,13 @@ onUnmounted(() => {
         v-if="show"
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm safe-all"
       >
-        <div class="flex flex-col items-center gap-6">
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="incoming-call-kind"
+          aria-describedby="incoming-call-peer"
+          class="flex flex-col items-center gap-6"
+        >
           <!-- Pulsating ring animation -->
           <div class="relative">
             <div class="absolute inset-0 animate-ping rounded-full bg-color-good/30" style="animation-duration: 2s" />

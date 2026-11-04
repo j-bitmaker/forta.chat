@@ -193,8 +193,13 @@ const handleSnowflakeToggle = (enabled: boolean) => {
       class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
       @click.self="cancelDisableTor()"
     >
-      <div class="mx-4 max-w-sm rounded-xl bg-background-secondary-theme p-6 shadow-xl">
-        <p class="mb-4 text-sm text-text-color">
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="tor-disable-title"
+        class="mx-4 max-w-sm rounded-xl bg-background-secondary-theme p-6 shadow-xl"
+      >
+        <p id="tor-disable-title" class="mb-4 text-sm text-text-color">
           {{ t("tor.disableWarning") }}
         </p>
         <div class="flex justify-end gap-3">

@@ -418,8 +418,13 @@ const { thumbnails: mediaThumbnails } = useMediaThumbnails(mediaEntries);
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
         @click.self="showClearConfirm = false"
       >
-        <div class="mx-4 max-w-sm rounded-xl bg-background-secondary-theme p-6 shadow-xl">
-          <h3 class="mb-2 text-base font-semibold text-text-color">{{ t('storage.confirmTitle') }}</h3>
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="storage-clear-title"
+          class="mx-4 max-w-sm rounded-xl bg-background-secondary-theme p-6 shadow-xl"
+        >
+          <h3 id="storage-clear-title" class="mb-2 text-base font-semibold text-text-color">{{ t('storage.confirmTitle') }}</h3>
           <p class="mb-4 text-sm text-text-on-main-bg-color">{{ t('storage.confirmBody') }}</p>
           <div class="flex justify-end gap-3">
             <button

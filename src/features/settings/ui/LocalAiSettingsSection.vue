@@ -467,8 +467,13 @@ async function handleDeleteConfirmed(): Promise<void> {
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
         @click.self="modelPendingDelete = null"
       >
-        <div class="mx-4 max-w-sm rounded-xl bg-background-secondary-theme p-6 shadow-xl">
-          <p class="mb-4 text-sm text-text-on-main-bg-color">
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="ai-model-delete-title"
+          class="mx-4 max-w-sm rounded-xl bg-background-secondary-theme p-6 shadow-xl"
+        >
+          <p id="ai-model-delete-title" class="mb-4 text-sm text-text-on-main-bg-color">
             {{ isModelResident(modelPendingDelete.id) ? t("ai.deleteConfirm") : t("ai.discardDownloadConfirm") }}
           </p>
           <div class="flex justify-end gap-3">

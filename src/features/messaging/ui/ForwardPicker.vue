@@ -185,6 +185,9 @@ const handleShareExternal = async () => {
         <transition :name="isMobile ? 'fp-slide' : 'fp-scale'" appear>
           <div
             v-if="props.show"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="forward-picker-title"
             class="flex flex-col bg-background-total-theme"
             :class="isMobile
               ? 'h-full w-full safe-y'
@@ -195,7 +198,7 @@ const handleShareExternal = async () => {
               <button class="flex h-8 w-8 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0" :aria-label="t('common.close')" @click="handleClose">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
               </button>
-              <span class="text-base font-semibold text-text-color">{{ t("forward.title") }}</span>
+              <span id="forward-picker-title" class="text-base font-semibold text-text-color">{{ t("forward.title") }}</span>
               <button
                 v-if="isShareExternalVisible"
                 data-testid="forward-share-external"

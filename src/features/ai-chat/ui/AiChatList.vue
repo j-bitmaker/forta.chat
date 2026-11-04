@@ -202,8 +202,13 @@ const onChatContextMenu = (e: MouseEvent, chat: AiChat) => {
           class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
           @click.self="closeDeleteConfirm"
         >
-          <div class="w-full max-w-xs rounded-xl bg-background-total-theme p-5 shadow-xl">
-            <h3 class="mb-3 text-base font-semibold text-text-color">{{ t("ai.deleteChat") }}</h3>
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="ai-chat-delete-title"
+            class="w-full max-w-xs rounded-xl bg-background-total-theme p-5 shadow-xl"
+          >
+            <h3 id="ai-chat-delete-title" class="mb-3 text-base font-semibold text-text-color">{{ t("ai.deleteChat") }}</h3>
             <p class="mb-4 text-sm text-text-on-main-bg-color">{{ t("ai.deleteChatConfirm") }}</p>
             <div class="flex gap-2">
               <button

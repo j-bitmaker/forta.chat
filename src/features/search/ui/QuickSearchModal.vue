@@ -85,6 +85,9 @@ const handleBackdropClick = () => {
 
         <!-- Modal -->
         <div
+          role="dialog"
+          aria-modal="true"
+          :aria-label="t('quickSearch.title')"
           class="relative w-full max-w-[480px] overflow-hidden rounded-xl border border-neutral-grad-0 bg-chat-sidebar shadow-2xl"
           @keydown="handleKeydown"
         >
