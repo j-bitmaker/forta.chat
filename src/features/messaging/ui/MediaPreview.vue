@@ -76,19 +76,31 @@ const toggleCaptionPosition = () => {
 
         <!-- Thumbnail strip (multiple files) -->
         <div v-if="files.length > 1" class="flex shrink-0 gap-2 overflow-x-auto px-4 py-2">
-          <button
+          <!-- Thumbnail and its remove button are siblings: a button must not
+               contain another interactive element. The wrapper keeps the
+               original box, clipping and dimming so the strip looks the same. -->
+          <div
             v-for="(f, i) in files"
             :key="i"
-            class="relative h-14 w-14 shrink-0 overflow-hidden rounded-lg border-2 transition-all"
-            :class="i === props.activeIndex ? 'border-white' : 'border-transparent opacity-60'"
-            @click="emit('update:activeIndex', i)"
+            class="relative h-14 w-14 shrink-0 overflow-hidden rounded-lg transition-all"
+            :class="i === props.activeIndex ? '' : 'opacity-60'"
           >
-            <img v-if="f.type === 'image'" :src="f.previewUrl" class="h-full w-full object-cover" />
-            <div v-else class="flex h-full w-full items-center justify-center bg-white/10">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" class="text-white"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-            </div>
+            <button
+              type="button"
+              data-testid="media-preview-thumb"
+              class="h-full w-full overflow-hidden rounded-lg border-2 transition-all"
+              :class="i === props.activeIndex ? 'border-white' : 'border-transparent'"
+              @click="emit('update:activeIndex', i)"
+            >
+              <img v-if="f.type === 'image'" :src="f.previewUrl" class="h-full w-full object-cover" />
+              <div v-else class="flex h-full w-full items-center justify-center bg-white/10">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" class="text-white"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+              </div>
+            </button>
             <!-- Remove button -->
             <button
+              type="button"
+              data-testid="media-preview-remove"
               class="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-white"
               @click.stop="emit('removeFile', i)"
             >
@@ -96,7 +108,7 @@ const toggleCaptionPosition = () => {
                 <path d="M18 6L6 18" /><path d="M6 6l12 12" />
               </svg>
             </button>
-          </button>
+          </div>
         </div>
 
         <!-- Caption input + send -->
